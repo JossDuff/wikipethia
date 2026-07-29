@@ -12,7 +12,7 @@ intentional, not an oversight. Two call sites before a trait.
 
 ## v1 — personal tool, ethresear.ch only
 
-### [ ] M1 — Fetch
+### [x] M1 — Fetch
 
 Discourse HTTP client, rate limiter, and a `sync` subcommand that walks
 `/latest.json` and writes raw topic JSON to disk. Checkpointed so an interrupt

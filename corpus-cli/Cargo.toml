@@ -1,0 +1,9 @@
+[package]
+name = "corpus-cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.4", features = ["derive"] }
+corpus-fetch = { version = "0.1.0", path = "../corpus-fetch" }

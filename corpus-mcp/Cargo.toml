@@ -1,0 +1,8 @@
+[package]
+name = "corpus-mcp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rmcp = { version = "3.0.0", features = ["server", "transport-io"] }
+tokio = { version = "1.53.1", features = ["rt", "macros"] }

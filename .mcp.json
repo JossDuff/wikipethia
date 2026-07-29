@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "wikipethia": {
+      "type": "stdio",
+      "command": "cargo",
+      "args": ["run", "-q", "-p", "corpus-mcp"]
+    }
+  }
+}

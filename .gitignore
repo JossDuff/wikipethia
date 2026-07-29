@@ -1,0 +1,6 @@
+/target
+/data
+corpus.sqlite
+corpus.sqlite-wal
+corpus.sqlite-shm
+*.fastembed_cache/

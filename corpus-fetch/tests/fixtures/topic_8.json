@@ -1,0 +1,23 @@
+{
+  "id": 8,
+  "title": "Read this before posting",
+  "posts_count": 1,
+  "highest_post_number": 1,
+  "chunk_size": 3,
+  "created_at": "2017-08-17T22:57:31.812Z",
+  "category_id": 3,
+  "tags": [],
+  "post_stream": {
+    "posts": [
+      {
+        "id": 301,
+        "post_number": 1,
+        "username": "admin",
+        "created_at": "2017-08-17T22:57:31.812Z",
+        "raw": "This forum is for original research and analysis.",
+        "cooked": "<p>This forum is for original research and analysis.</p>"
+      }
+    ],
+    "stream": [301]
+  }
+}
