@@ -97,6 +97,34 @@ pub fn sync(fetcher: &mut dyn Fetcher, opts: &SyncOptions) -> Result<SyncStats, 
     Ok(stats)
 }
 
+/// Fetch one specific topic (with batch follow-ups) and write it to disk,
+/// skipping if already present. The manual refresh path for a stale thread —
+/// delete the file first to force a refetch — and the way to capture a topic
+/// the paged walk would take hours to reach.
+pub fn sync_topic(
+    fetcher: &mut dyn Fetcher,
+    opts: &SyncOptions,
+    topic_id: u64,
+) -> Result<SyncStats, FetchError> {
+    let topics_dir = opts.data_dir.join("topics");
+    fs::create_dir_all(&topics_dir).map_err(|source| FetchError::Io {
+        path: topics_dir.clone(),
+        source,
+    })?;
+    let path = topics_dir.join(format!("{topic_id}.json"));
+    let mut stats = SyncStats::default();
+    if path.exists() {
+        stats.skipped = 1;
+        eprintln!("skip  {topic_id:>6}  (already on disk)");
+    } else {
+        let full = fetch_full_topic(fetcher, &opts.base_url, topic_id)?;
+        write_atomic(&path, &full)?;
+        stats.fetched = 1;
+        eprintln!("fetch {topic_id:>6}");
+    }
+    Ok(stats)
+}
+
 /// Fetch a topic and complete its `post_stream.posts` against
 /// `post_stream.stream` with `post_ids[]` batch follow-ups. The returned
 /// value is self-contained: every still-existing post, with `raw`.

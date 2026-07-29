@@ -7,4 +7,4 @@ pub mod sync;
 
 pub use client::{Clock, HttpClient, RealClock};
 pub use error::FetchError;
-pub use sync::{Fetcher, SyncOptions, SyncStats, sync};
+pub use sync::{Fetcher, SyncOptions, SyncStats, sync, sync_topic};

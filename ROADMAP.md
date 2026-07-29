@@ -31,13 +31,15 @@ round trip. Timebox to an hour. This de-risks M5; if `rmcp` turns out to be
 unworkable, better to know now while the fallback (a thin Python MCP shim over
 the CLI) is still cheap.
 
-### [ ] M2 — Parse
+### [x] M2 — Parse
 
 Raw JSON → `Document`. Strip `[quote=...]` blocks, keep `raw` markdown and its
 `$$...$$` intact, tolerate gaps in `post_stream.stream`. Persist to SQLite.
 
 **Gate:** unit tests pass over committed fixtures, including a MathJax-heavy post,
-a thread with 200+ replies, and a topic with deleted posts. No network in tests.
+the longest live thread (topic 426, 144 posts — the forum has no 200+ thread;
+verified against `/top.json?period=all`, still 7× `chunk_size` so the batch-merge
+path is exercised), and a topic with deleted posts. No network in tests.
 
 ### [ ] M3 — Lexical search and the eval set
 
