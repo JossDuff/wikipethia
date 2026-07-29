@@ -1,5 +1,7 @@
 //! CLI: sync, index, search, add, and eval subcommands.
 
+mod eval;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -39,16 +41,31 @@ enum Command {
         #[arg(long, default_value = "corpus.sqlite")]
         db: PathBuf,
     },
-    /// Search the corpus (arrives in M3).
-    Search { query: String },
+    /// Search the corpus lexically (BM25 over FTS5).
+    Search {
+        query: String,
+        /// Database file to search.
+        #[arg(long, default_value = "corpus.sqlite")]
+        db: PathBuf,
+        /// Maximum number of documents returned.
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
     /// Add a source by URL (arrives in M8).
     Add {
         url: String,
         #[arg(long)]
         note: Option<String>,
     },
-    /// Run the retrieval eval set (arrives in M3).
-    Eval,
+    /// Run the retrieval eval set and report recall@10.
+    Eval {
+        /// Database file to search.
+        #[arg(long, default_value = "corpus.sqlite")]
+        db: PathBuf,
+        /// Hand-written question set (see ROADMAP.md M3).
+        #[arg(long, default_value = "tests/eval/questions.toml")]
+        questions: PathBuf,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -80,15 +97,52 @@ fn main() -> anyhow::Result<()> {
             check_source(&source)?;
             index(&source, &db)
         }
-        Command::Search { .. } => bail!("search is not implemented until M3"),
+        Command::Search { query, db, limit } => search(&query, &db, limit),
         Command::Add { .. } => bail!("add is not implemented until M8"),
-        Command::Eval => bail!("eval is not implemented until M3"),
+        Command::Eval { db, questions } => {
+            let text = fs::read_to_string(&questions).with_context(|| {
+                format!(
+                    "reading {} — the eval set is hand-written; see ROADMAP.md M3 \
+                     and tests/eval/questions.toml.example for the format",
+                    questions.display()
+                )
+            })?;
+            let questions = eval::parse_questions(&text)?;
+            let store = Store::open(&db)?;
+            eval::run(&store, &questions)
+        }
     }
 }
 
 fn check_source(source: &str) -> anyhow::Result<()> {
     if source != "ethresearch" {
         bail!("unknown source {source:?} — only \"ethresearch\" exists until M6");
+    }
+    Ok(())
+}
+
+fn search(query: &str, db: &Path, limit: usize) -> anyhow::Result<()> {
+    let store = Store::open(db)?;
+    if store.count()? == 0 {
+        bail!("{} holds no documents — run index first?", db.display());
+    }
+    let hits = store.search(query, limit)?;
+    if hits.is_empty() {
+        println!("no results");
+        return Ok(());
+    }
+    for (rank, hit) in hits.iter().enumerate() {
+        let author = hit.author.as_deref().unwrap_or("unknown");
+        // published is ISO-8601; the date is its first ten characters.
+        let date = hit.published.get(..10).unwrap_or(&hit.published);
+        println!(
+            "{:2}. {:5.2}  {} — {author}, {date}",
+            rank + 1,
+            hit.score,
+            hit.title
+        );
+        println!("           {}  {}", hit.doc_id, hit.url);
+        println!("           {}", hit.snippet.replace('\n', " "));
     }
     Ok(())
 }

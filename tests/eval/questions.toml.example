@@ -1,0 +1,16 @@
+# Example format for tests/eval/questions.toml — the hand-written eval set.
+#
+# Twenty questions where you already know which posts should surface. Write
+# them honestly, before you are attached to the system's answers (ROADMAP M3).
+# `expect` holds full document ids as shown in `corpus search` output;
+# every id must exist in the corpus or `eval` refuses to run.
+#
+# Copy this file to questions.toml and replace the examples.
+
+[[questions]]
+question = "How does minimal viable plasma handle exits and withheld blocks?"
+expect = ["ethresearch/post/1249"]
+
+[[questions]]
+question = "Can prediction markets resist manipulation using language models?"
+expect = ["ethresearch/post/50423"]
