@@ -41,7 +41,7 @@ the longest live thread (topic 426, 144 posts — the forum has no 200+ thread;
 verified against `/top.json?period=all`, still 7× `chunk_size` so the batch-merge
 path is exercised), and a topic with deleted posts. No network in tests.
 
-### [ ] M3 — Lexical search and the eval set
+### [x] M3 — Lexical search and the eval set
 
 FTS5 index and a `search` subcommand. Chunk long posts with overlap; carry topic
 title, category, tags, author, and date onto every chunk.

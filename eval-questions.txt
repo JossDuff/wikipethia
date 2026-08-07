@@ -1,0 +1,62 @@
+Q1. What is the current account abstraction flow on Ethereum?
+A1. ERC/EIP 4337 (AA alt mempool), EIP 7702 (set code for EOAs), and EIP 8141 (frame transactions)
+
+Q2. Why does Ethereum have blobs?
+A2. To give L2s a cheaper space to store rollup data and to reduce the demand on calldata.  EIP 4844 (discussion at https://ethereum-magicians.org/t/eip-4844-shard-blob-transactions/8430).  Blobs have their own independent fee market and are pruned after 18 days.
+
+Q3. Why did Ethereum raise the staking cap for validators?
+A3. To allow individuals running multiple validator nodes to consolidate to 1 node.  This reduces strain on the network's p2p network while keeping security the same.  It also reduces the number of BLS signatures aggregated each epoch.  Redundant validator indices controlled by one entity add load without adding decentralization.  https://eips.ethereum.org/EIPS/eip-7251 (and the fradamt consolidation FAQ at notes.ethereum.org/@fradamt/maxeb-consolidation is a good secondary). 
+
+Q4. What benefit do native rollups bring to Ethereum?
+A4. Native rollups allow for an L2 to use Ethereum's EVM execution instead of maintaining their own VM.  This allows the rollup transaction to be verified within EVM execution instead of relying on a ZK or optimistic proof.  A pathway for EVM-equivalent rollups to rid themselves of security councils and other attack vectors, unlocking full Ethereum L1 security. https://ethresear.ch/t/native-rollups-superpowers-from-l1-execution/21517
+
+Q5. What problem does FOCIL solve?
+A5. FOCIL reduces censorship by block builders by adding an additional block validity requirement.  The new requirement is that transactions in the inclusion list MUST be in the block or else the block is not valid.  FOCIL is EIP-7805, and the validity condition is conditional — 16 includers are selected from the validator set each slot, and each can propose a list of transactions which must conditionally be included in the block for that slot (the escape hatch is a full block).  Real world example it solves: Titan builder choosing to not include Tornado Cash transactions because of sanction concerns.  https://ethresear.ch/t/fork-choice-enforced-inclusion-lists-focil-a-simple-committee-based-inclusion-list-proposal/19870
+
+Q6. What is PBS?
+A6. Proposer builder separation is the idea that a block proposer can auction off their right to decide on the ordering of transactions in a block to a 3rd party "builder".  This allows proposers to gain more profit themselves without having to do extra computation, and allows for builders to compete in an open marketplace.  PBS is instantiated out-of-protocol today via MEV-Boost/relays, with EIP-7732 (ePBS) as the enshrinement path
+https://ethresear.ch/t/proposer-block-builder-separation-friendly-fee-market-designs/9725
+
+Q7. What are the services a validator participates in?
+Beacon proposer, FFG, FOCIL (scheduled for Hegota), LMD-GHOST, sync, execution, block building.
+https://ethresear.ch/t/decoupling-throughput-from-local-building/22004
+https://ethresear.ch/t/fork-choice-enforced-inclusion-lists-focil-a-simple-committee-based-inclusion-list-proposal/19870
+https://ethresear.ch/t/payload-timeliness-committee-ptc-an-epbs-design/16054
+https://ethresear.ch/t/peerdas-a-simpler-das-approach-using-battle-tested-p2p-components/16541
+https://ethresear.ch/t/from-4844-to-danksharding-a-path-to-scaling-ethereum-da/18046
+https://ethresear.ch/t/subnetdas-an-intermediate-das-approach/17169
+https://ethresear.ch/t/fulldas-towards-massive-scalability-with-32mb-blocks-and-beyond/19529
+https://ethresear.ch/t/das-fork-choice/19578
+https://ethresear.ch/t/number-of-peers-you-need-for-peer-sampling-in-peerdas-eip-7594/20562
+https://ethresear.ch/t/view-merge-as-a-replacement-for-proposer-boost/13739
+https://ethresear.ch/t/balancing-attack-lmd-edition/11853
+https://ethresear.ch/t/3-slot-finality-ssf-is-not-about-single-slot/20927
+
+Q8. What are some proposals for L1 privacy?
+Posts propose privacy pools/shielded transfers (EIP-8182), private proof-of-burn wormholes (EIP-7503, with the plausible-deniability cost analysis), frame-transaction-enabled privacy (EIP-8141's three gates), plus wallet/RPC-level privacy per the self-sovereignty roadmap.
+https://ethereum-magicians.org/t/a-maximally-simple-l1-privacy-roadmap/23459
+https://ethresear.ch/t/ethereum-privacy-the-road-to-self-sovereignty/22115
+https://ethresear.ch/t/wormholes-and-the-cost-of-plausible-deniability/23728
+https://ethresear.ch/t/frame-transactions-and-the-three-gates-to-privacy/24666
+https://ethereum-magicians.org/t/eip-7503-zero-knowledge-wormholes-private-proof-of-burn-ppob/15456
+https://ethereum-magicians.org/t/eip-8141-frame-transaction/27617
+https://ethereum-magicians.org/t/eip-8182-private-eth-and-erc-20-transfers/27889
+
+Q9. How does PeerDAS scale blob throughput beyond EIP-4844?
+A9. PeerDAS (EIP-7594) is data availability sampling built on Ethereum's existing gossip/p2p stack: blob data is erasure-coded and split into columns, each node custodies and samples only a subset, so total DA scales beyond 4844 while honest nodes do roughly the same work as under 4844 (under ~1MB downloaded per slot). It shipped in Fusaka (Dec 2025), with blob targets raised incrementally via BPO forks afterward. https://ethresear.ch/t/peerdas-a-simpler-das-approach-using-battle-tested-p2p-components/16541 
+
+Q10. Why enshrine PBS in-protocol (ePBS) instead of keeping MEV-Boost?
+A10. Out-of-protocol PBS relies on trusted relays as intermediaries between proposers and builders; MEV-Boost accounts for the overwhelming majority of Ethereum blocks, making relays a centralization, liveness, and trust risk. ePBS (EIP-7732) moves the fair exchange (builder pays ↔ payload revealed) into consensus so the protocol itself guarantees it, removing the relay trust assumption; it also enables pipelining benefits. https://ethresear.ch/t/why-enshrine-proposer-builder-separation-a-viable-path-to-epbs/15710
+
+Q11. What is lean Ethereum and what are its main pillars?
+A11. Lean Ethereum is a long-horizon initiative (proposed by Justin Drake, July 2025) to redesign Ethereum's core protocol for simplicity, post-quantum security, and verifiability on minimal hardware. It replaces BLS/elliptic-curve cryptography with hash-based post-quantum signatures, uses minimal zkVMs to aggregate signatures and prove the chain (via recursive STARKs), and targets a consensus protocol that is stable for decades. Its three pillars: lean consensus (formerly Beam Chain — 3-slot finality, larger validator set, lower stake/hardware thresholds), lean data (DAS-based scaling), and lean execution (zkVM-proven execution, RISC-V direction). Follow-on research includes "The Extremely Lean Chain," which pushes state minimization further by having stakers manage and occasionally ZK-prove their own state — shrinking per-validator state enough to theoretically support millions of validators.
+Sources:
+https://blog.ethereum.org/2025/07/31/lean-ethereum (canonical announcement)
+https://leanroadmap.org/
+https://ethresear.ch/t/the-extremely-lean-chain/25369
+https://ethresear.ch/t/lean-execution-a-holistic-approach-to-secure-efficient-adaptive-and-resourceful-execution-throughput-to-scale-the-world-computer/25374
+
+Q12. What does "The Extremely Lean Chain" propose, and how does it provide validator privacy?
+A12. It minimizes beacon chain state by pushing state management onto stakers: validators submit a daily ZK-STARK proving their own participation and new balance, eliminating end-of-epoch processing and shrinking per-validator state to 6 bytes (1-byte effective balance + 5-byte deposit-tree index), scaling to millions of validators. For privacy, the validator registry is rebuilt each day with fresh pubkeys — each identity re-randomizes daily, only the validator knows the link to past identities, and their proof reveals only their balance change and slashed status. Withdrawal addresses are hidden behind a commitment at deposit time, and the design provides SSLE nearly for free.
+https://ethresear.ch/t/the-extremely-lean-chain/25369
+
