@@ -12,6 +12,9 @@ use serde::Deserialize;
 /// Results per query the metric is computed over.
 pub const K: usize = 10;
 
+/// Turns a question into a query vector; `None` runs the eval lexical-only.
+pub type EmbedQuery<'a> = &'a dyn Fn(&str) -> anyhow::Result<Vec<f32>>;
+
 #[derive(Deserialize)]
 struct QuestionFile {
     questions: Vec<Question>,
@@ -48,7 +51,14 @@ pub fn recall_at_k(expect: &[String], got: &[String]) -> f64 {
     found as f64 / expect.len() as f64
 }
 
-pub fn run(store: &Store, questions: &[Question]) -> anyhow::Result<()> {
+/// Run both rankings per question — lexical (BM25 only) and fused (hybrid,
+/// when `embed_query` is available) — so every eval run reports the delta
+/// retrieval changes are judged by.
+pub fn run(
+    store: &Store,
+    questions: &[Question],
+    embed_query: Option<EmbedQuery<'_>>,
+) -> anyhow::Result<()> {
     // An expect id that is not in the corpus at all is a typo in the
     // questions file, not a retrieval miss — fail loudly instead of
     // silently deflating the score.
@@ -64,21 +74,37 @@ pub fn run(store: &Store, questions: &[Question]) -> anyhow::Result<()> {
         }
     }
 
-    let mut total = 0.0;
-    println!("recall@{K}  question");
+    let mut lex_total = 0.0;
+    let mut fused_total = 0.0;
+    println!("  lex fused  question");
     for q in questions {
-        let got: Vec<String> = store
+        let lex: Vec<String> = store
             .search(&q.question, K)?
             .into_iter()
             .map(|hit| hit.doc_id)
             .collect();
-        let recall = recall_at_k(&q.expect, &got);
-        total += recall;
-        println!("     {recall:.2}  {}", q.question);
+        let lex_recall = recall_at_k(&q.expect, &lex);
+        lex_total += lex_recall;
+        let fused_recall = match embed_query {
+            Some(embed) => {
+                let vector = embed(&q.question)?;
+                let got: Vec<String> = store
+                    .hybrid_search(&q.question, Some(&vector), K)?
+                    .into_iter()
+                    .map(|hit| hit.doc_id)
+                    .collect();
+                recall_at_k(&q.expect, &got)
+            }
+            None => lex_recall,
+        };
+        fused_total += fused_recall;
+        println!(" {lex_recall:.2}  {fused_recall:.2}  {}", q.question);
     }
-    let mean = total / questions.len() as f64;
+    let n = questions.len() as f64;
+    let (lex_mean, fused_mean) = (lex_total / n, fused_total / n);
     println!(
-        "\nmean recall@{K}: {mean:.3} over {} questions",
+        "\nmean recall@{K}: lexical {lex_mean:.3}, fused {fused_mean:.3} (Δ {:+.3}) over {} questions",
+        fused_mean - lex_mean,
         questions.len()
     );
     Ok(())

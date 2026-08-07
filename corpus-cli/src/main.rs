@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use corpus_core::{Store, parse_topic};
+use corpus_core::{Embedder, Store, parse_topic};
+use corpus_embed::{DIM, FastEmbedder, MODEL_ID};
 use corpus_fetch::{HttpClient, SyncOptions, sync, sync_topic};
 
 #[derive(Parser)]
@@ -50,6 +51,16 @@ enum Command {
         /// Maximum number of documents returned.
         #[arg(long, default_value_t = 10)]
         limit: usize,
+    },
+    /// Compute embeddings for chunks that lack them. The first run downloads
+    /// the model to the fastembed cache.
+    Embed {
+        /// Database file to embed.
+        #[arg(long, default_value = "corpus.sqlite")]
+        db: PathBuf,
+        /// Discard existing vectors and re-embed everything.
+        #[arg(long)]
+        force: bool,
     },
     /// Add a source by URL (arrives in M8).
     Add {
@@ -98,6 +109,7 @@ fn main() -> anyhow::Result<()> {
             index(&source, &db)
         }
         Command::Search { query, db, limit } => search(&query, &db, limit),
+        Command::Embed { db, force } => embed(&db, force),
         Command::Add { .. } => bail!("add is not implemented until M8"),
         Command::Eval { db, questions } => {
             let text = fs::read_to_string(&questions).with_context(|| {
@@ -109,7 +121,21 @@ fn main() -> anyhow::Result<()> {
             })?;
             let questions = eval::parse_questions(&text)?;
             let store = Store::open(&db)?;
-            eval::run(&store, &questions)
+            let embedder = if store.embedding_count()? > 0 {
+                Some(FastEmbedder::new()?)
+            } else {
+                eprintln!("note: no embeddings — lexical only; run `corpus embed`");
+                None
+            };
+            let f;
+            let embed_query: Option<eval::EmbedQuery<'_>> = match &embedder {
+                Some(e) => {
+                    f = |q: &str| Ok(e.embed_query(q)?);
+                    Some(&f)
+                }
+                None => None,
+            };
+            eval::run(&store, &questions, embed_query)
         }
     }
 }
@@ -126,7 +152,8 @@ fn search(query: &str, db: &Path, limit: usize) -> anyhow::Result<()> {
     if store.count()? == 0 {
         bail!("{} holds no documents — run index first?", db.display());
     }
-    let hits = store.search(query, limit)?;
+    let query_vec = query_vector(&store, query)?;
+    let hits = store.hybrid_search(query, query_vec.as_deref(), limit)?;
     if hits.is_empty() {
         println!("no results");
         return Ok(());
@@ -144,6 +171,65 @@ fn search(query: &str, db: &Path, limit: usize) -> anyhow::Result<()> {
         println!("           {}  {}", hit.doc_id, hit.url);
         println!("           {}", hit.snippet.replace('\n', " "));
     }
+    Ok(())
+}
+
+/// The query embedding, when the corpus has vectors to search against;
+/// otherwise a note that ranking is lexical-only.
+fn query_vector(store: &Store, query: &str) -> anyhow::Result<Option<Vec<f32>>> {
+    if store.embedding_count()? == 0 {
+        eprintln!("note: no embeddings — BM25 only; run `corpus embed` for hybrid search");
+        return Ok(None);
+    }
+    let missing = store.missing_embedding_count()?;
+    if missing > 0 {
+        eprintln!("note: {missing} chunks lack embeddings — run `corpus embed`");
+    }
+    Ok(Some(FastEmbedder::new()?.embed_query(query)?))
+}
+
+fn embed(db: &Path, force: bool) -> anyhow::Result<()> {
+    let mut store = Store::open(db)?;
+    if store.count()? == 0 {
+        bail!("{} holds no documents — run index first?", db.display());
+    }
+    let embedder = FastEmbedder::new()?;
+    if store.ensure_embedding_space(MODEL_ID, DIM, force)? {
+        println!("existing vectors discarded — re-embedding everything");
+    }
+    let total = store.missing_embedding_count()?;
+    if total == 0 {
+        println!(
+            "nothing to do: {} vectors present, model {MODEL_ID}",
+            store.embedding_count()?
+        );
+        return Ok(());
+    }
+    let mut done = 0usize;
+    loop {
+        let batch = store.chunks_missing_embedding(64)?;
+        if batch.is_empty() {
+            break;
+        }
+        let texts: Vec<String> = batch
+            .iter()
+            .map(|c| c.content.clone())
+            .collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let vectors = embedder.embed(&refs)?;
+        let rows: Vec<(i64, Vec<f32>)> = batch
+            .iter()
+            .map(|c| c.rowid)
+            .zip(vectors)
+            .collect();
+        store.write_embeddings(&rows)?;
+        done += rows.len();
+        println!("embedded {done}/{total}");
+    }
+    println!(
+        "embed done: {done} chunks, model {MODEL_ID} → {}",
+        db.display()
+    );
     Ok(())
 }
 
@@ -179,6 +265,10 @@ fn index(source: &str, db: &Path) -> anyhow::Result<()> {
     );
     if errors > 0 {
         bail!("{errors} topic file(s) failed to index");
+    }
+    let missing = store.missing_embedding_count()?;
+    if missing > 0 {
+        println!("{missing} chunks lack embeddings — run `corpus embed` to enable hybrid search");
     }
     Ok(())
 }

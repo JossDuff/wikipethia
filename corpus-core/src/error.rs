@@ -8,4 +8,9 @@ pub enum CoreError {
 
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+
+    // A String because the fastembed backend surfaces `anyhow::Error`,
+    // which cannot carry through #[from].
+    #[error("embedding error: {0}")]
+    Embed(String),
 }

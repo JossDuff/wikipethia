@@ -1,0 +1,13 @@
+[package]
+name = "corpus-embed"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+corpus-core = { version = "0.1.0", path = "../corpus-core" }
+# default-features off drops image-models; what remains is the ONNX runtime
+# (downloaded prebuilt at build time) and hf-hub over ureq — no async runtime.
+fastembed = { version = "5.17.4", default-features = false, features = [
+  "ort-download-binaries-native-tls",
+  "hf-hub-native-tls",
+] }

@@ -21,9 +21,10 @@ or UI code. If a task seems to need them, stop and ask.
 
 ```
 corpus-core/    documents, adapters, index, search   — no I/O beyond the DB
-corpus-fetch/   HTTP client, rate limiting, adapters — all network lives here
+corpus-embed/   the fastembed Embedder impl — model cache and its one-time download
+corpus-fetch/   HTTP client, rate limiting, adapters — all crawl network lives here
 corpus-mcp/     MCP server (stdio + http transports)
-corpus-cli/     sync, search, add, eval subcommands
+corpus-cli/     sync, index, search, embed, add, eval subcommands
 sources.toml    the manifest — source of truth for what is in the corpus
 ```
 
@@ -34,6 +35,8 @@ cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p corpus-cli -- sync [--source <id>] [--limit N]
+cargo run -p corpus-cli -- index
+cargo run -p corpus-cli -- embed [--force]
 cargo run -p corpus-cli -- search "<query>"
 cargo run -p corpus-cli -- eval
 ```
@@ -63,8 +66,11 @@ threading a special case through.
 **Never commit the built index.** `corpus.sqlite` and embedding artifacts are
 gitignored. They ship as release assets.
 
-**Ask before adding a dependency.** Especially anything that pulls in tokio
-features, a headless browser, or a second async runtime.
+**Ask before adding a dependency.** Tokio itself is fine when something needs
+it — the thing being protected is the polite crawl above, not the runtime.
+Still ask before a headless browser or a second async runtime. Already
+approved: the embedding stack (fastembed/ort in `corpus-embed`, sqlite-vec in
+`corpus-core`).
 
 ## Retrieval invariants
 

@@ -1,7 +1,8 @@
 //! SQLite persistence — the one place corpus-core does I/O.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Once;
 
 use rusqlite::{Connection, params};
 use serde_json::Value;
@@ -12,7 +13,10 @@ use crate::error::CoreError;
 
 /// Bumped when the schema changes; stored in `PRAGMA user_version`.
 /// v2 added `chunks` and the FTS5 index; opening a v1 file backfills them.
-const SCHEMA_VERSION: i64 = 2;
+/// v3 added the `meta` table. The vector table `chunks_vec` is deliberately
+/// NOT part of the schema — its dimension belongs to the embedding model, so
+/// [`Store::ensure_embedding_space`] creates it lazily.
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -62,6 +66,11 @@ CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
   INSERT INTO chunks_fts(rowid, title, author, tags, content)
   VALUES (new.id, new.title, new.author, new.tags, new.content);
 END;
+
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT NOT NULL PRIMARY KEY,
+  value TEXT NOT NULL
+) STRICT;
 ";
 
 /// Per-column BM25 weights: title, author, tags, content. Title and author
@@ -83,20 +92,55 @@ pub struct SearchHit {
     pub published: String,
     /// Matched terms bracketed, e.g. `… the [exit] game …`.
     pub snippet: String,
-    /// Relevance, higher is better (negated BM25).
+    /// Relevance, higher is better (negated BM25 from [`Store::search`],
+    /// RRF score from [`Store::hybrid_search`]).
     pub score: f64,
+}
+
+/// A chunk that still needs a vector, as handed to an `Embedder`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChunkToEmbed {
+    /// `chunks.id`, which is also the `chunks_vec` rowid.
+    pub rowid: i64,
+    pub title: String,
+    pub content: String,
 }
 
 pub struct Store {
     conn: Connection,
+    /// Whether the lazily-created vector table exists in this file.
+    has_vec: bool,
+}
+
+/// Register sqlite-vec for every connection opened after this call.
+/// Process-global; auto-extensions run at connection creation, so this must
+/// precede `Connection::open`.
+fn register_sqlite_vec() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| unsafe {
+        // SAFETY: sqlite3_vec_init matches the auto-extension entrypoint ABI;
+        // the cast papers over a missing-arguments declaration on the C side
+        // (sqlite-vec issue #206). Pinned to sqlite-vec 0.1.x.
+        rusqlite::auto_extension::register_auto_extension(std::mem::transmute::<
+            *const (),
+            unsafe extern "C" fn(
+                *mut rusqlite::ffi::sqlite3,
+                *mut *mut std::ffi::c_char,
+                *const rusqlite::ffi::sqlite3_api_routines,
+            ) -> i32,
+        >(sqlite_vec::sqlite3_vec_init as *const ()))
+        .expect("registering sqlite-vec");
+    });
 }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self, CoreError> {
+        register_sqlite_vec();
         Self::init(Connection::open(path)?)
     }
 
     pub fn open_in_memory() -> Result<Self, CoreError> {
+        register_sqlite_vec();
         Self::init(Connection::open_in_memory()?)
     }
 
@@ -110,7 +154,8 @@ impl Store {
             backfill_chunks(&mut conn)?;
         }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        Ok(Self { conn })
+        let has_vec = table_exists(&conn, "chunks_vec")?;
+        Ok(Self { conn, has_vec })
     }
 
     /// Insert or overwrite by id, all in one transaction. Re-indexing the
@@ -142,7 +187,7 @@ impl Store {
                     doc.content,
                     serde_json::to_string(&doc.meta)?,
                 ])?;
-                write_chunks(&tx, doc)?;
+                write_chunks(&tx, doc, self.has_vec)?;
             }
         }
         tx.commit()?;
@@ -221,6 +266,327 @@ impl Store {
             meta: serde_json::from_str(&row.get::<_, String>(7)?)?,
         }))
     }
+
+    /// Create the vector table for `model_id`/`dim` if it doesn't match what
+    /// is already there (or `force` is set). Returns true when existing
+    /// vectors were discarded — the caller should announce a full re-embed.
+    ///
+    /// DDL runs outside a transaction (virtual-table creation and
+    /// transactions don't mix reliably); the worst interrupted state is an
+    /// empty table with stale meta, which the next call repairs.
+    pub fn ensure_embedding_space(
+        &mut self,
+        model_id: &str,
+        dim: usize,
+        force: bool,
+    ) -> Result<bool, CoreError> {
+        let current = self.embedding_model()?;
+        let matches = current == Some((model_id.to_string(), dim));
+        if self.has_vec && matches && !force {
+            return Ok(false);
+        }
+        let discarding = self.has_vec && self.embedding_count()? > 0;
+        self.conn
+            .execute_batch("DROP TABLE IF EXISTS chunks_vec")?;
+        self.conn.execute_batch(&format!(
+            "CREATE VIRTUAL TABLE chunks_vec USING vec0(embedding float[{dim}] distance_metric=cosine)"
+        ))?;
+        self.meta_set("embedding.model", model_id)?;
+        self.meta_set("embedding.dim", &dim.to_string())?;
+        self.has_vec = true;
+        Ok(discarding)
+    }
+
+    /// The model the vector table was built for, if any.
+    pub fn embedding_model(&self) -> Result<Option<(String, usize)>, CoreError> {
+        let (Some(model), Some(dim)) = (
+            self.meta_get("embedding.model")?,
+            self.meta_get("embedding.dim")?,
+        ) else {
+            return Ok(None);
+        };
+        let dim = dim
+            .parse()
+            .map_err(|_| CoreError::Parse(format!("meta embedding.dim {dim:?} is not a number")))?;
+        Ok(Some((model, dim)))
+    }
+
+    /// Chunks with no vector yet, oldest first. `NOT IN` (a full scan of the
+    /// vector table) rather than a LEFT JOIN because vec0's query planner
+    /// only guarantees full scans, KNN, and rowid point lookups.
+    ///
+    /// Chunks under [`MIN_EMBED_CHARS`] are not part of the vector space at
+    /// all: embeddings of very short texts ("Great post!", "+1, see above")
+    /// sit in a hub region near everything and crowd real matches out of
+    /// KNN results. Short chunks stay fully searchable lexically.
+    pub fn chunks_missing_embedding(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ChunkToEmbed>, CoreError> {
+        let sql = if self.has_vec {
+            "SELECT id, title, content FROM chunks
+             WHERE length(content) >= ?2 AND id NOT IN (SELECT rowid FROM chunks_vec)
+             ORDER BY id LIMIT ?1"
+        } else {
+            "SELECT id, title, content FROM chunks
+             WHERE length(content) >= ?2 ORDER BY id LIMIT ?1"
+        };
+        let mut stmt = self.conn.prepare_cached(sql)?;
+        let rows = stmt
+            .query_map(params![limit as i64, MIN_EMBED_CHARS], |row| {
+                Ok(ChunkToEmbed {
+                    rowid: row.get(0)?,
+                    title: row.get(1)?,
+                    content: row.get(2)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn missing_embedding_count(&self) -> Result<usize, CoreError> {
+        let sql = if self.has_vec {
+            "SELECT COUNT(*) FROM chunks
+             WHERE length(content) >= ?1 AND id NOT IN (SELECT rowid FROM chunks_vec)"
+        } else {
+            "SELECT COUNT(*) FROM chunks WHERE length(content) >= ?1"
+        };
+        let n: i64 = self
+            .conn
+            .query_row(sql, [MIN_EMBED_CHARS], |row| row.get(0))?;
+        Ok(n as usize)
+    }
+
+    pub fn embedding_count(&self) -> Result<usize, CoreError> {
+        if !self.has_vec {
+            return Ok(0);
+        }
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM chunks_vec", [], |row| row.get(0))?;
+        Ok(n as usize)
+    }
+
+    /// Store vectors for the given chunk rowids, in one transaction.
+    pub fn write_embeddings(&mut self, rows: &[(i64, Vec<f32>)]) -> Result<(), CoreError> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt = tx
+                .prepare_cached("INSERT INTO chunks_vec (rowid, embedding) VALUES (?1, ?2)")?;
+            for (rowid, vector) in rows {
+                stmt.execute(params![rowid, vec_blob(vector)])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Hybrid retrieval: reciprocal rank fusion over the BM25 ranking and
+    /// the vector KNN ranking. Fusion happens at the DOCUMENT level — the
+    /// level recall is measured at. Fusing chunk ranks instead fragments a
+    /// document's lexical strength (its best chunk can sit at chunk rank 30
+    /// while the doc is lexical rank 1) and lets vector-only noise displace
+    /// exact hits, which violates the retrieval invariant.
+    ///
+    /// With no usable `query_vec` (absent, no vectors indexed, or dimension
+    /// mismatch) the ranking degrades to pure BM25 order.
+    pub fn hybrid_search(
+        &self,
+        query: &str,
+        query_vec: Option<&[f32]>,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>, CoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Lexical side: the existing doc-level ranking, which streams the
+        // full match set so a document's rank is never truncated mid-dedup.
+        let lex_docs = self.search(query, CANDIDATES)?;
+
+        // Vector side: KNN over chunks, deduplicated to documents in
+        // distance order. Fetch extra chunks so multi-chunk documents don't
+        // starve the doc list. Skipped silently unless the vector matches
+        // the indexed space.
+        let mut vec_docs: Vec<(String, i64)> = Vec::new(); // (doc_id, best chunk rowid)
+        if let Some(qv) = query_vec {
+            let dim_ok = self
+                .embedding_model()?
+                .is_some_and(|(_, dim)| dim == qv.len());
+            if self.has_vec && dim_ok && self.embedding_count()? > 0 {
+                let mut stmt = self.conn.prepare_cached(
+                    "SELECT v.rowid, c.doc_id
+                     FROM chunks_vec v
+                     JOIN chunks c ON c.id = v.rowid
+                     WHERE v.embedding MATCH ?1 AND k = ?2
+                     ORDER BY v.distance",
+                )?;
+                let rows: Vec<(i64, String)> = stmt
+                    .query_map(params![vec_blob(qv), (CANDIDATES * 2) as i64], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })?
+                    .collect::<Result<_, _>>()?;
+                let mut seen = HashSet::new();
+                for (rowid, doc_id) in rows {
+                    if seen.insert(doc_id.clone()) {
+                        vec_docs.push((doc_id, rowid));
+                        if vec_docs.len() == CANDIDATES {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Reciprocal rank fusion over 1-based document ranks. Ties break
+        // lexical-first (the exact-hit invariant), then by doc id for
+        // determinism.
+        struct Fused {
+            score: f64,
+            lex_rank: Option<usize>,
+            hit: Option<SearchHit>,
+            best_rowid: Option<i64>,
+        }
+        let mut fused: HashMap<String, Fused> = HashMap::new();
+        for (rank0, hit) in lex_docs.into_iter().enumerate() {
+            fused.insert(
+                hit.doc_id.clone(),
+                Fused {
+                    score: 1.0 / (RRF_K + (rank0 + 1) as f64),
+                    lex_rank: Some(rank0),
+                    hit: Some(hit),
+                    best_rowid: None,
+                },
+            );
+        }
+        for (rank0, (doc_id, rowid)) in vec_docs.into_iter().enumerate() {
+            let entry = fused.entry(doc_id).or_insert(Fused {
+                score: 0.0,
+                lex_rank: None,
+                hit: None,
+                best_rowid: None,
+            });
+            entry.score += 1.0 / (RRF_K + (rank0 + 1) as f64);
+            if entry.hit.is_none() {
+                entry.best_rowid = Some(rowid);
+            }
+        }
+
+        let mut order: Vec<(String, Fused)> = fused.into_iter().collect();
+        order.sort_by(|a, b| {
+            b.1.score
+                .total_cmp(&a.1.score)
+                .then_with(|| match (a.1.lex_rank, b.1.lex_rank) {
+                    (Some(x), Some(y)) => x.cmp(&y),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                })
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        order.truncate(limit);
+
+        // Vector-only documents need their display fields fetched.
+        let vector_only: Vec<i64> = order
+            .iter()
+            .filter_map(|(_, f)| f.best_rowid.filter(|_| f.hit.is_none()))
+            .collect();
+        let mut fetched = self.chunk_hits(&vector_only)?;
+
+        let mut hits = Vec::new();
+        for (_, fused) in order {
+            let hit = fused.hit.or_else(|| {
+                fused
+                    .best_rowid
+                    .and_then(|rowid| fetched.remove(&rowid))
+            });
+            let Some(mut hit) = hit else { continue };
+            hit.score = fused.score;
+            hits.push(hit);
+        }
+        Ok(hits)
+    }
+
+    /// Display fields for chunks that only the vector side surfaced. Their
+    /// snippet is the start of the chunk — there are no matched terms to
+    /// bracket.
+    fn chunk_hits(&self, rowids: &[i64]) -> Result<HashMap<i64, SearchHit>, CoreError> {
+        if rowids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let ids = rowids
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, doc_id, chunk_id, url, title, author, published, content
+             FROM chunks WHERE id IN ({ids})"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
+            let content: String = row.get(7)?;
+            let snippet: String = content
+                .chars()
+                .take(150)
+                .map(|c| if c == '\n' { ' ' } else { c })
+                .collect();
+            Ok((
+                row.get::<_, i64>(0)?,
+                SearchHit {
+                    doc_id: row.get(1)?,
+                    chunk_id: row.get(2)?,
+                    url: row.get(3)?,
+                    title: row.get(4)?,
+                    author: row.get(5)?,
+                    published: row.get(6)?,
+                    snippet,
+                    score: 0.0,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    fn meta_get(&self, key: &str) -> Result<Option<String>, CoreError> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT value FROM meta WHERE key = ?1")?;
+        let mut rows = stmt.query([key])?;
+        Ok(rows.next()?.map(|row| row.get(0)).transpose()?)
+    }
+
+    fn meta_set(&self, key: &str, value: &str) -> Result<(), CoreError> {
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+}
+
+/// Reciprocal rank fusion constant — the standard dampener, large enough
+/// that a single first-place rank cannot swamp presence in both lists.
+const RRF_K: f64 = 60.0;
+/// Document candidates taken from each side before fusing.
+const CANDIDATES: usize = 50;
+/// Chunks shorter than this never enter the vector space (see
+/// [`Store::chunks_missing_embedding`]).
+const MIN_EMBED_CHARS: i64 = 200;
+
+/// sqlite-vec takes vectors as little-endian f32 blobs.
+fn vec_blob(vector: &[f32]) -> Vec<u8> {
+    vector.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+fn table_exists(conn: &Connection, name: &str) -> Result<bool, CoreError> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [name],
+        |row| row.get(0),
+    )?;
+    Ok(n > 0)
 }
 
 /// Turn free text into a valid FTS5 MATCH expression: each whitespace token
@@ -246,7 +612,21 @@ fn fts_query(user: &str) -> Option<String> {
 /// because re-chunking can shrink the count and stale trailing chunks must
 /// go; the triggers keep `chunks_fts` in sync either way. Must run inside
 /// the caller's transaction.
-fn write_chunks(conn: &Connection, doc: &Document) -> Result<(), CoreError> {
+///
+/// When the vector table exists, the doc's vec rows are dropped too — point
+/// deletes by rowid, the only delete shape vec0 guarantees. The replacement
+/// chunks then read as missing embeddings until the next embed pass.
+fn write_chunks(conn: &Connection, doc: &Document, has_vec: bool) -> Result<(), CoreError> {
+    if has_vec {
+        let rowids: Vec<i64> = conn
+            .prepare_cached("SELECT id FROM chunks WHERE doc_id = ?1")?
+            .query_map([&doc.id], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        let mut del = conn.prepare_cached("DELETE FROM chunks_vec WHERE rowid = ?1")?;
+        for rowid in rowids {
+            del.execute([rowid])?;
+        }
+    }
     conn.prepare_cached("DELETE FROM chunks WHERE doc_id = ?1")?
         .execute([&doc.id])?;
     let mut stmt = conn.prepare_cached(
@@ -310,7 +690,8 @@ fn backfill_chunks(conn: &mut Connection) -> Result<(), CoreError> {
             .collect::<Result<_, _>>()?;
         drop(stmt);
         for doc in &docs {
-            write_chunks(&tx, doc)?;
+            // A v1 file predates the vector table, so there is none to clear.
+            write_chunks(&tx, doc, false)?;
         }
     }
     tx.commit()?;

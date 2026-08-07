@@ -7,6 +7,7 @@ edition.workspace = true
 anyhow = "1.0.104"
 clap = { version = "4.6.4", features = ["derive"] }
 corpus-core = { version = "0.1.0", path = "../corpus-core" }
+corpus-embed = { version = "0.1.0", path = "../corpus-embed" }
 corpus-fetch = { version = "0.1.0", path = "../corpus-fetch" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

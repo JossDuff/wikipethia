@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["corpus-core", "corpus-fetch", "corpus-mcp", "corpus-cli"]
+members = ["corpus-core", "corpus-embed", "corpus-fetch", "corpus-mcp", "corpus-cli"]
 
 [workspace.package]
 version = "0.1.0"

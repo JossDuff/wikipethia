@@ -55,7 +55,7 @@ are attached to.
 **Gate:** `eval` runs and reports recall@10. Spot-check that searching a known
 topic area ranks the obvious authors' posts in the top five.
 
-### [ ] M4 — Semantic and hybrid
+### [x] M4 — Semantic and hybrid
 
 Embedding trait, local implementation, `sqlite-vec` index, reciprocal rank fusion
 over BM25 and vector similarity.
