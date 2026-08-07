@@ -62,6 +62,33 @@ fn file_backed_store_persists_in_wal_mode() {
 }
 
 #[test]
+fn find_by_meta_matches_integers_and_strings() {
+    let mut store = Store::open_in_memory().unwrap();
+    let mut other = doc("other");
+    other.meta.insert("topic_id".into(), json!(999));
+    other.meta.insert("kind".into(), json!("stub"));
+    let mut bare = doc("bare");
+    bare.meta = Map::new();
+    store
+        .upsert(&[doc("a"), doc("b"), other, bare])
+        .unwrap();
+
+    // Integer equality: exactly the topic's docs, ordered by id.
+    let hits = store.find_by_meta("topic_id", &json!(426)).unwrap();
+    let ids: Vec<&str> = hits.iter().map(|d| d.id.as_str()).collect();
+    assert_eq!(ids, ["a", "b"]);
+
+    // String equality.
+    let hits = store.find_by_meta("kind", &json!("stub")).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, "other");
+
+    // Missing key matches nothing; unsupported value types are an error.
+    assert!(store.find_by_meta("nope", &json!(1)).unwrap().is_empty());
+    assert!(store.find_by_meta("topic_id", &json!(true)).is_err());
+}
+
+#[test]
 fn parsed_fixture_survives_store_and_reload() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/topic_20660.json");
     let topic: Value = serde_json::from_str(&fs::read_to_string(fixture).unwrap()).unwrap();

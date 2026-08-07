@@ -267,6 +267,116 @@ impl Store {
         }))
     }
 
+    /// Documents whose meta JSON field `key` equals `value` (integer or
+    /// string only — other JSON types are a Parse error). Full-scan
+    /// `json_extract`, ORDER BY id for determinism: fine at hundreds of
+    /// documents, index it if a source ever brings tens of thousands.
+    /// Callers sort by their own semantics — corpus-core doesn't know what
+    /// the key means.
+    pub fn find_by_meta(&self, key: &str, value: &Value) -> Result<Vec<Document>, CoreError> {
+        let sql = "SELECT id, source, url, title, author, published, content, meta
+                   FROM documents WHERE json_extract(meta, ?1) = ?2 ORDER BY id";
+        let path = format!("$.{key}");
+        let mut stmt = self.conn.prepare_cached(sql)?;
+        let map = |row: &rusqlite::Row<'_>| {
+            Ok(Document {
+                id: row.get(0)?,
+                source: row.get(1)?,
+                url: row.get(2)?,
+                title: row.get(3)?,
+                author: row.get(4)?,
+                published: row.get(5)?,
+                content: row.get(6)?,
+                meta: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_default(),
+            })
+        };
+        let docs = if let Some(n) = value.as_i64() {
+            stmt.query_map(params![path, n], map)?
+                .collect::<Result<_, _>>()?
+        } else if let Some(s) = value.as_str() {
+            stmt.query_map(params![path, s], map)?
+                .collect::<Result<_, _>>()?
+        } else {
+            return Err(CoreError::Parse(format!(
+                "find_by_meta only matches integer or string values, got {value}"
+            )));
+        };
+        Ok(docs)
+    }
+
+    /// Documents nearest to `doc_id`'s first embedded chunk, excluding the
+    /// document itself, best first; `score` is cosine similarity
+    /// (1 - distance). `Ok(None)` when the lookup is impossible: no vector
+    /// table, unknown doc, or a doc whose every chunk is below the embed
+    /// floor. Callers that must distinguish those cases `get()` first.
+    pub fn similar_docs(
+        &self,
+        doc_id: &str,
+        limit: usize,
+    ) -> Result<Option<Vec<SearchHit>>, CoreError> {
+        if !self.has_vec || limit == 0 {
+            return Ok(None);
+        }
+        let source_rowid: Option<i64> = {
+            let mut stmt = self.conn.prepare_cached(
+                "SELECT id FROM chunks
+                 WHERE doc_id = ?1 AND id IN (SELECT rowid FROM chunks_vec)
+                 ORDER BY seq LIMIT 1",
+            )?;
+            let mut rows = stmt.query([doc_id])?;
+            rows.next()?.map(|row| row.get(0)).transpose()?
+        };
+        let Some(source_rowid) = source_rowid else {
+            return Ok(None);
+        };
+        let blob: Vec<u8> = self.conn.query_row(
+            "SELECT embedding FROM chunks_vec WHERE rowid = ?1",
+            [source_rowid],
+            |row| row.get(0),
+        )?;
+        let vector = vec_from_blob(&blob);
+
+        // Extra headroom: the KNN list loses the source doc's own chunks
+        // and collapses multi-chunk documents.
+        let k = (limit + 1) * 3;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT v.rowid, v.distance, c.doc_id
+             FROM chunks_vec v
+             JOIN chunks c ON c.id = v.rowid
+             WHERE v.embedding MATCH ?1 AND k = ?2
+             ORDER BY v.distance",
+        )?;
+        let rows: Vec<(i64, f64, String)> = stmt
+            .query_map(params![vec_blob(&vector), k as i64], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<Result<_, _>>()?;
+
+        let mut seen = HashSet::new();
+        let mut picked: Vec<(i64, f64)> = Vec::new();
+        for (rowid, distance, hit_doc) in rows {
+            if hit_doc == doc_id || !seen.insert(hit_doc) {
+                continue;
+            }
+            picked.push((rowid, distance));
+            if picked.len() == limit {
+                break;
+            }
+        }
+        let rowids: Vec<i64> = picked.iter().map(|(rowid, _)| *rowid).collect();
+        let mut fetched = self.chunk_hits(&rowids)?;
+        let hits = picked
+            .into_iter()
+            .filter_map(|(rowid, distance)| {
+                fetched.remove(&rowid).map(|mut hit| {
+                    hit.score = 1.0 - distance;
+                    hit
+                })
+            })
+            .collect();
+        Ok(Some(hits))
+    }
+
     /// Create the vector table for `model_id`/`dim` if it doesn't match what
     /// is already there (or `force` is set). Returns true when existing
     /// vectors were discarded — the caller should announce a full re-embed.
@@ -578,6 +688,14 @@ const MIN_EMBED_CHARS: i64 = 200;
 /// sqlite-vec takes vectors as little-endian f32 blobs.
 fn vec_blob(vector: &[f32]) -> Vec<u8> {
     vector.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// The inverse of [`vec_blob`]. Trailing bytes that don't fill an f32 are
+/// dropped — they can only mean a corrupt row.
+fn vec_from_blob(blob: &[u8]) -> Vec<f32> {
+    blob.chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect()
 }
 
 fn table_exists(conn: &Connection, name: &str) -> Result<bool, CoreError> {

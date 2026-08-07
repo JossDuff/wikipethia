@@ -387,7 +387,13 @@ dependencies = [
 name = "corpus-mcp"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "corpus-core",
+ "corpus-embed",
  "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

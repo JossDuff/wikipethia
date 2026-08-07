@@ -293,6 +293,48 @@ fn changing_the_model_resets_the_embedding_space() {
 }
 
 #[test]
+fn similar_docs_finds_semantic_neighbors_without_word_overlap() {
+    let mut store = seeded_store();
+    embed_all(&mut store, &FakeEmbedder);
+
+    // test/c is all "car"; test/b shares the axis via "automobile"/"vehicle"
+    // with zero word overlap; test/d (rockets) is off-axis.
+    let hits = store.similar_docs("test/c", 10).unwrap().unwrap();
+    let ids: Vec<&str> = hits.iter().map(|h| h.doc_id.as_str()).collect();
+    assert!(!ids.contains(&"test/c"), "must exclude itself: {ids:?}");
+    let b = ids.iter().position(|id| *id == "test/b").expect("test/b");
+    let d = ids.iter().position(|id| *id == "test/d");
+    if let Some(d) = d {
+        assert!(b < d, "semantic neighbor must outrank off-axis doc: {ids:?}");
+    }
+    for pair in hits.windows(2) {
+        assert!(pair[0].score >= pair[1].score);
+    }
+    assert!(hits.iter().all(|h| h.score.is_finite()));
+
+    // Limit respected.
+    assert!(store.similar_docs("test/c", 1).unwrap().unwrap().len() <= 1);
+}
+
+#[test]
+fn similar_docs_is_none_outside_the_vector_space() {
+    let mut store = seeded_store();
+    // No embedding space at all.
+    assert!(store.similar_docs("test/c", 5).unwrap().is_none());
+
+    embed_all(&mut store, &FakeEmbedder);
+    // Unknown document.
+    assert!(store.similar_docs("test/nope", 5).unwrap().is_none());
+    // A doc whose only chunk is below the embed floor.
+    store
+        .upsert(&[doc("test/short", "Stub", "Great post! +1")])
+        .unwrap();
+    assert!(store.similar_docs("test/short", 5).unwrap().is_none());
+    // Limit zero.
+    assert!(store.similar_docs("test/c", 0).unwrap().is_none());
+}
+
+#[test]
 fn opening_a_v2_database_migrates_to_v3() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("v2.sqlite");

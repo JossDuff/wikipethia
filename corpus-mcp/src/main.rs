@@ -1,27 +1,56 @@
-//! MCP server (stdio + http transports).
+//! MCP server (stdio transport): the corpus exposed to LLM clients.
 //!
-//! M1 spike: one hardcoded tool over stdio, to prove the rmcp round trip
-//! before M5 builds the real `search_posts`/`get_topic` tools on it.
+//! stdout carries the protocol — every diagnostic in this crate must go to
+//! stderr.
 
-use rmcp::{ServiceExt, tool, tool_router, transport::stdio};
+mod tools;
 
-#[derive(Clone)]
-struct WikipethiaSpike;
+use std::path::PathBuf;
 
-#[tool_router(server_handler)]
-impl WikipethiaSpike {
-    #[tool(
-        name = "ping",
-        description = "Health check for the wikipethia corpus server. Returns a fixed string."
-    )]
-    fn ping(&self) -> String {
-        "pong — wikipethia rmcp spike, round trip works".to_string()
-    }
-}
+use corpus_core::Store;
+use corpus_embed::FastEmbedder;
+use rmcp::{ServiceExt, transport::stdio};
+
+use tools::CorpusServer;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let service = WikipethiaSpike.serve(stdio()).await?;
+async fn main() -> anyhow::Result<()> {
+    let db = db_path();
+    let store = Store::open(&db)?;
+    if store.count()? == 0 {
+        // Failing the connection beats serving an empty corpus silently —
+        // this line shows up in the client's MCP logs.
+        anyhow::bail!(
+            "{} holds no documents — run `cargo run -p corpus-cli -- index` first",
+            db.display()
+        );
+    }
+    let embedder = if store.embedding_count()? > 0 {
+        // Built once; model load is slow and FastEmbedder is shared safely.
+        Some(FastEmbedder::new()?)
+    } else {
+        eprintln!(
+            "corpus-mcp: {} has no embeddings — serving lexical-only ranking \
+             (run `cargo run -p corpus-cli -- embed`)",
+            db.display()
+        );
+        None
+    };
+    let service = CorpusServer::new(store, embedder)?.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
+}
+
+/// `--db <path>` beats `CORPUS_DB` beats `corpus.sqlite` (the .mcp.json
+/// entry launches from the repo root, so the relative default works).
+fn db_path() -> PathBuf {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--db"
+            && let Some(path) = args.next()
+        {
+            return PathBuf::from(path);
+        }
+    }
+    std::env::var("CORPUS_DB").map_or_else(|_| PathBuf::from("corpus.sqlite"), PathBuf::from)
 }
