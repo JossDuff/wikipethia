@@ -1,10 +1,23 @@
 # ids resolved mechanically from the cited URLs (each
 # expect is the topic OP's document id).
 #
-# Held back until EthMagicians / EIPs / blogs are ingestible (M6/M7):
-#   Q1 account abstraction flow  (EIP-4337/7702/8141 — magicians + EIPs only)
-#   Q2 why blobs                 (magicians discussion thread only)
+# Held back until EIPs / blogs / HackMD are ingestible (M7):
 #   Q3 staking cap raise         (eips.ethereum.org + HackMD only)
+
+[[questions]]
+question = "What is the current account abstraction flow on Ethereum?"
+# Canonical EthMagicians threads for the EIPs Joss's answer names:
+# t/7160 ERC-4337 (vbuterin), t/19923 EIP-7702 (vbuterin), t/27617 EIP-8141
+expect = [
+    "ethmagicians/post/21055",
+    "ethmagicians/post/48140",
+    "ethmagicians/post/66767",
+]
+
+[[questions]]
+question = "Why does Ethereum have blobs?"
+# https://ethereum-magicians.org/t/eip-4844-shard-blob-transactions/8430
+expect = ["ethmagicians/post/23602"]
 
 [[questions]]
 question = "What benefit do native rollups bring to Ethereum?"
@@ -44,16 +57,17 @@ expect = [
 
 [[questions]]
 question = "What are some proposals for L1 privacy?"
-# ethresear.ch expects only; add when EthMagicians lands (M6):
-#   https://ethereum-magicians.org/t/a-maximally-simple-l1-privacy-roadmap/23459
-#   https://ethereum-magicians.org/t/eip-7503-zero-knowledge-wormholes-private-proof-of-burn-ppob/15456
-#   https://ethereum-magicians.org/t/eip-8141-frame-transaction/27617
-#   https://ethereum-magicians.org/t/eip-8182-private-eth-and-erc-20-transfers/27889
-# t/22115, t/23728, t/24666
+# ethresear.ch: t/22115, t/23728, t/24666
+# ethmagicians: t/23459 privacy roadmap, t/15456 EIP-7503,
+#               t/27617 EIP-8141, t/27889 EIP-8182
 expect = [
     "ethresearch/post/53768",
     "ethresearch/post/57586",
     "ethresearch/post/59572",
+    "ethmagicians/post/57010",
+    "ethmagicians/post/39908",
+    "ethmagicians/post/66767",
+    "ethmagicians/post/67658",
 ]
 
 [[questions]]

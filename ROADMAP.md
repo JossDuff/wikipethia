@@ -86,7 +86,7 @@ descriptions to change more than the code does.
 
 ## v2 — the corpus grows
 
-### [ ] M6 — Manifest and adapter trait
+### [x] M6 — Manifest and adapter trait
 
 Introduce `sources.toml` and the adapter trait, with EthMagicians as the second
 Discourse source. A second instance of the same adapter is the cheapest possible

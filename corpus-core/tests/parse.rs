@@ -109,6 +109,23 @@ fn every_document_carries_the_retrieval_invariants() {
 }
 
 #[test]
+fn a_real_ethmagicians_payload_parses_under_its_own_source() {
+    // The second-forum proof M6 exists for: a live ethereum-magicians.org
+    // capture goes through the same parser with a different source id.
+    let docs = parse_topic(
+        &fixture("magicians_topic_29277.json"),
+        "ethmagicians",
+        "https://ethereum-magicians.org",
+    )
+    .unwrap();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].id, "ethmagicians/post/72635");
+    assert_eq!(docs[0].source, "ethmagicians");
+    assert!(docs[0].url.starts_with("https://ethereum-magicians.org/t/"));
+    assert_eq!(docs[0].meta["topic_id"], serde_json::json!(29277));
+}
+
+#[test]
 fn one_rawless_post_is_skipped_not_fatal() {
     // Live forum reality (post 11811 in topic 465): the server omits raw
     // for a few degenerate posts even with include_raw=1. One such post is
