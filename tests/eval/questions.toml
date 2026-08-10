@@ -1,5 +1,4 @@
-# The hand-written retrieval eval set (ROADMAP M3). Questions authored by Joss
-# in eval-questions.txt; ids resolved mechanically from the cited URLs (each
+# ids resolved mechanically from the cited URLs (each
 # expect is the topic OP's document id).
 #
 # Held back until EthMagicians / EIPs / blogs are ingestible (M6/M7):
@@ -29,18 +28,18 @@ question = "What are the services a validator participates in?"
 # t/22004, t/19870, t/16054, t/16541, t/18046, t/17169,
 # t/19529, t/19578, t/20562, t/13739, t/11853, t/20927
 expect = [
-  "ethresearch/post/53517",
-  "ethresearch/post/48719",
-  "ethresearch/post/40221",
-  "ethresearch/post/41277",
-  "ethresearch/post/44459",
-  "ethresearch/post/42542",
-  "ethresearch/post/47912",
-  "ethresearch/post/48033",
-  "ethresearch/post/50233",
-  "ethresearch/post/35312",
-  "ethresearch/post/31278",
-  "ethresearch/post/51049",
+    "ethresearch/post/53517",
+    "ethresearch/post/48719",
+    "ethresearch/post/40221",
+    "ethresearch/post/41277",
+    "ethresearch/post/44459",
+    "ethresearch/post/42542",
+    "ethresearch/post/47912",
+    "ethresearch/post/48033",
+    "ethresearch/post/50233",
+    "ethresearch/post/35312",
+    "ethresearch/post/31278",
+    "ethresearch/post/51049",
 ]
 
 [[questions]]
@@ -52,9 +51,9 @@ question = "What are some proposals for L1 privacy?"
 #   https://ethereum-magicians.org/t/eip-8182-private-eth-and-erc-20-transfers/27889
 # t/22115, t/23728, t/24666
 expect = [
-  "ethresearch/post/53768",
-  "ethresearch/post/57586",
-  "ethresearch/post/59572",
+    "ethresearch/post/53768",
+    "ethresearch/post/57586",
+    "ethresearch/post/59572",
 ]
 
 [[questions]]
@@ -72,12 +71,27 @@ question = "What is lean Ethereum and what are its main pillars?"
 # ethresear.ch expects only; blog.ethereum.org/2025/07/31/lean-ethereum and
 # leanroadmap.org join at M7.
 # t/25369, t/25374
-expect = [
-  "ethresearch/post/61091",
-  "ethresearch/post/61106",
-]
+expect = ["ethresearch/post/61091", "ethresearch/post/61106"]
 
 [[questions]]
 question = "What does \"The Extremely Lean Chain\" propose, and how does it provide validator privacy?"
 # https://ethresear.ch/t/the-extremely-lean-chain/25369
 expect = ["ethresearch/post/61091"]
+
+[[questions]]
+question = "What would be the tradeoffs of adding a new commitment scheme or erasure coding algorithm to Ethereum?"
+# https://ethresear.ch/t/faster-block-blob-propagation-in-ethereum/21370 (RLNC, potuz)
+expect = ["ethresearch/post/52013"]
+
+[[questions]]
+question = "What are all the different types of L2s and what are their tradeoffs?"
+# TODO when EthMagicians lands (M6): https://ethereum-magicians.org/t/i-think-its-ok-to-allow-stage-1-rollups-shorter-withdrawal-windows-1-2-days-but-we-should-be-more-conservative-on-stage-2/26392
+# t/15016 based rollups, t/21517 native rollups, t/426 plasma,
+# t/8045 sidechains, t/18868 fast-finality optimistic rollups
+expect = [
+    "ethresearch/post/38018",
+    "ethresearch/post/52332",
+    "ethresearch/post/1249",
+    "ethresearch/post/22765",
+    "ethresearch/post/46287",
+]

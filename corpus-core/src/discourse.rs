@@ -33,6 +33,7 @@ pub fn parse_topic(topic: &Value, base_url: &str) -> Result<Vec<Document>, CoreE
 
     let base = base_url.trim_end_matches('/');
     let mut docs = Vec::with_capacity(posts.len());
+    let mut raw_missing = 0usize;
     for post in posts {
         if post["post_type"].as_u64() != Some(POST_TYPE_REGULAR) {
             continue;
@@ -40,13 +41,14 @@ pub fn parse_topic(topic: &Value, base_url: &str) -> Result<Vec<Document>, CoreE
         let post_id = post["id"]
             .as_u64()
             .ok_or_else(|| CoreError::Parse(format!("post in topic {topic_id} has no id")))?;
-        // With include_raw=1 this cannot be absent; if it is, the sync was
-        // wrong and silently indexing nothing would hide it.
-        let raw = post["raw"].as_str().ok_or_else(|| {
-            CoreError::Parse(format!(
-                "post {post_id} has no raw (fetched without include_raw=1?)"
-            ))
-        })?;
+        // Even with include_raw=1 the server omits raw for a few degenerate
+        // posts (suspended-user remnants — live example: post 11811 in
+        // topic 465). Skip those; the every-post check below still catches
+        // a topic fetched without include_raw=1 at all.
+        let Some(raw) = post["raw"].as_str() else {
+            raw_missing += 1;
+            continue;
+        };
         let post_number = post["post_number"]
             .as_u64()
             .ok_or_else(|| CoreError::Parse(format!("post {post_id} has no post_number")))?;
@@ -82,6 +84,11 @@ pub fn parse_topic(topic: &Value, base_url: &str) -> Result<Vec<Document>, CoreE
             content: strip_quote_blocks(raw),
             meta,
         });
+    }
+    if docs.is_empty() && raw_missing > 0 {
+        return Err(CoreError::Parse(format!(
+            "no post in topic {topic_id} has raw (fetched without include_raw=1?)"
+        )));
     }
     Ok(docs)
 }

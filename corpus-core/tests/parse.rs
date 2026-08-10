@@ -109,12 +109,36 @@ fn every_document_carries_the_retrieval_invariants() {
 }
 
 #[test]
-fn missing_raw_is_an_error_not_an_empty_document() {
+fn one_rawless_post_is_skipped_not_fatal() {
+    // Live forum reality (post 11811 in topic 465): the server omits raw
+    // for a few degenerate posts even with include_raw=1. One such post is
+    // dropped; the rest of the topic survives.
+    let full = parse_topic(&fixture("topic_20660.json"), BASE).unwrap();
     let mut topic = fixture("topic_20660.json");
     topic["post_stream"]["posts"][0]
         .as_object_mut()
         .unwrap()
         .remove("raw");
-    let err = parse_topic(&topic, BASE).unwrap_err();
-    assert!(err.to_string().contains("include_raw"), "{err}");
+    let docs = parse_topic(&topic, BASE).unwrap();
+    assert_eq!(docs.len(), full.len() - 1);
+    assert!(docs.iter().all(|d| d.id != full[0].id));
+}
+
+#[test]
+fn a_rawless_post_is_skipped_but_a_rawless_topic_errors() {
+    let mut topic = serde_json::json!({
+        "id": 465, "title": "T", "post_stream": { "stream": [1, 2], "posts": [
+            { "id": 1, "post_type": 1, "post_number": 1, "username": "a",
+              "created_at": "2020-01-01T00:00:00Z", "raw": "real content" },
+            { "id": 2, "post_type": 1, "post_number": 2, "username": "b",
+              "created_at": "2020-01-02T00:00:00Z" }
+        ]}
+    });
+    let docs = parse_topic(&topic, "https://ethresear.ch").unwrap();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].id, "ethresearch/post/1");
+
+    // Every post lacking raw means the fetch itself was wrong — still an error.
+    topic["post_stream"]["posts"][0].as_object_mut().unwrap().remove("raw");
+    assert!(parse_topic(&topic, "https://ethresear.ch").is_err());
 }

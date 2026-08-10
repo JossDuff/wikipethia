@@ -92,14 +92,18 @@ fn main() -> anyhow::Result<()> {
                 limit,
                 ..SyncOptions::default()
             };
+            let started = std::time::Instant::now();
             let stats = match topic {
                 Some(id) => sync_topic(&mut HttpClient::new(), &opts, id)?,
                 None => sync(&mut HttpClient::new(), &opts)?,
             };
+            let secs = started.elapsed().as_secs();
             println!(
-                "sync done: {} fetched, {} already on disk, in {}",
+                "sync done: {} fetched, {} already on disk, in {}m{:02}s → {}",
                 stats.fetched,
                 stats.skipped,
+                secs / 60,
+                secs % 60,
                 opts.data_dir.join("topics").display()
             );
             Ok(())
