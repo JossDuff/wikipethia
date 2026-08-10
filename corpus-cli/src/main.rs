@@ -45,6 +45,10 @@ enum Command {
         /// Database file to write.
         #[arg(long, default_value = "corpus.sqlite")]
         db: PathBuf,
+        /// Rewrite documents even when unchanged, re-cutting their chunks
+        /// (and dropping their vectors). Required after a chunking change.
+        #[arg(long)]
+        force: bool,
     },
     /// Search the corpus lexically (BM25 over FTS5).
     Search {
@@ -96,13 +100,10 @@ fn main() -> anyhow::Result<()> {
                     bail!("--topic needs --source: topic ids are source-relative");
                 };
                 let entry = manifest.select(Some(source))?[0];
-                if entry.kind != Kind::Discourse {
-                    bail!("--topic only applies to discourse sources");
-                }
-                let adapter = corpus_fetch::DiscourseAdapter {
-                    source_id: entry.id.clone(),
-                    base_url: entry.url.clone(),
-                    data_dir: PathBuf::from("data").join(&entry.id),
+                // Exhaustive on purpose: a new kind at M7 must decide here
+                // whether "--topic" means anything for it.
+                let adapter = match entry.kind {
+                    Kind::Discourse => manifest::discourse_adapter(entry),
                 };
                 let stats = adapter.sync_topic(&mut HttpClient::new(), topic_id)?;
                 println!(
@@ -111,25 +112,39 @@ fn main() -> anyhow::Result<()> {
                 );
                 return Ok(());
             }
+            // Per-source failures don't abort the rest of the run — an
+            // unattended multi-source sync must not let one flaky forum
+            // starve the others. Still exits non-zero if anything failed.
+            let mut failed = Vec::new();
             for entry in manifest.select(source.as_deref())? {
                 let started = std::time::Instant::now();
                 // One fresh client per source, sources strictly sequential —
                 // this is what keeps "one request per second per host" true.
-                let stats = adapter_for(entry).sync(&mut HttpClient::new(), limit)?;
-                let secs = started.elapsed().as_secs();
-                println!(
-                    "sync {}: {} fetched, {} already on disk, in {}m{:02}s → data/{}/topics",
-                    entry.id,
-                    stats.fetched,
-                    stats.skipped,
-                    secs / 60,
-                    secs % 60,
-                    entry.id
-                );
+                match adapter_for(entry).sync(&mut HttpClient::new(), limit) {
+                    Ok(stats) => {
+                        let secs = started.elapsed().as_secs();
+                        println!(
+                            "sync {}: {} fetched, {} already on disk, in {}m{:02}s → data/{}/topics",
+                            entry.id,
+                            stats.fetched,
+                            stats.skipped,
+                            secs / 60,
+                            secs % 60,
+                            entry.id
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("sync {} failed: {err:#}", entry.id);
+                        failed.push(entry.id.clone());
+                    }
+                }
+            }
+            if !failed.is_empty() {
+                bail!("sync failed for: {} (resume by re-running)", failed.join(", "));
             }
             Ok(())
         }
-        Command::Index { source, db } => index(source.as_deref(), &db),
+        Command::Index { source, db, force } => index(source.as_deref(), &db, force),
         Command::Search { query, db, limit } => search(&query, &db, limit),
         Command::Embed { db, force } => embed(&db, force),
         Command::Add { .. } => bail!("add is not implemented until M8"),
@@ -253,7 +268,7 @@ fn embed(db: &Path, force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn index(source: Option<&str>, db: &Path) -> anyhow::Result<()> {
+fn index(source: Option<&str>, db: &Path, force: bool) -> anyhow::Result<()> {
     let manifest = Manifest::load()?;
     let selected = manifest.select(source)?;
     let mut store = Store::open(db)?;
@@ -271,15 +286,21 @@ fn index(source: Option<&str>, db: &Path) -> anyhow::Result<()> {
         let adapter = adapter_for(entry);
         let paths = match adapter.raw_files() {
             Ok(paths) => paths,
+            // An explicitly requested source with nothing on disk is an
+            // error — succeeding with "0 files" would let a scripted
+            // sync-then-index pipeline pass against an empty corpus. Only
+            // an index-everything run skips quietly past unsynced sources.
+            Err(err) if source.is_some() => {
+                return Err(err).context(format!("reading {}'s raw files — run sync first?", entry.id));
+            }
             Err(err) => {
-                // A source that was never synced shouldn't sink the others.
                 eprintln!("skipping {}: {err} — run sync first?", entry.id);
                 continue;
             }
         };
         for path in &paths {
             // One bad file shouldn't sink the run; report it and keep going.
-            match index_raw_file(&mut store, adapter.as_ref(), path) {
+            match index_raw_file(&mut store, adapter.as_ref(), path, force) {
                 Ok((wrote, total)) => {
                     files += 1;
                     written += wrote;
@@ -312,10 +333,15 @@ fn index_raw_file(
     store: &mut Store,
     adapter: &dyn Adapter,
     path: &Path,
+    force: bool,
 ) -> anyhow::Result<(usize, usize)> {
     let text = fs::read_to_string(path)?;
     let raw = serde_json::from_str(&text)?;
     let docs = adapter.parse(&raw)?;
-    let written = store.upsert(&docs)?;
+    let written = if force {
+        store.upsert_forced(&docs)?
+    } else {
+        store.upsert(&docs)?
+    };
     Ok((written, docs.len()))
 }

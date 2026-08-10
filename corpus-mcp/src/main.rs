@@ -25,6 +25,18 @@ async fn main() -> anyhow::Result<()> {
             db.display()
         );
     }
+    // A db migrated from pre-M6 has documents but no manifest tiers until
+    // an index run records them — surface that instead of silently serving
+    // tierless citations (the retrieval invariant promises tier).
+    for stats in store.source_stats()? {
+        if stats.tier.is_none() {
+            eprintln!(
+                "corpus-mcp: source {:?} has no tier recorded — run \
+                 `cargo run -p corpus-cli -- index` to record manifest tiers",
+                stats.id
+            );
+        }
+    }
     let embedder = if store.embedding_count()? > 0 {
         // Built once; model load is slow and FastEmbedder is shared safely.
         Some(FastEmbedder::new()?)

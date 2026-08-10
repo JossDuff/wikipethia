@@ -188,7 +188,21 @@ impl Store {
     /// from forcing a full re-embed. Meta is compared in serialized form;
     /// if a parser change ever reorders keys, everything reads as changed
     /// once — a one-time re-chunk and re-embed, not corruption.
+    ///
+    /// The skip also means chunking-policy changes never reach stored
+    /// documents — [`Store::upsert_forced`] is the escape hatch.
     pub fn upsert(&mut self, docs: &[Document]) -> Result<usize, CoreError> {
+        self.upsert_with(docs, false)
+    }
+
+    /// [`Store::upsert`] without the unchanged-skip: every document's chunks
+    /// are re-cut (dropping their vectors for re-embedding). Required to
+    /// apply a chunking change to an existing database.
+    pub fn upsert_forced(&mut self, docs: &[Document]) -> Result<usize, CoreError> {
+        self.upsert_with(docs, true)
+    }
+
+    fn upsert_with(&mut self, docs: &[Document], force: bool) -> Result<usize, CoreError> {
         use rusqlite::OptionalExtension;
         let tx = self.conn.transaction()?;
         let mut written = 0;
@@ -211,18 +225,19 @@ impl Store {
             )?;
             for doc in docs {
                 let meta_json = serde_json::to_string(&doc.meta)?;
-                let unchanged = existing
-                    .query_row([&doc.id], |row| {
-                        Ok(row.get::<_, String>(0)? == doc.source
-                            && row.get::<_, String>(1)? == doc.url
-                            && row.get::<_, String>(2)? == doc.title
-                            && row.get::<_, Option<String>>(3)? == doc.author
-                            && row.get::<_, String>(4)? == doc.published
-                            && row.get::<_, String>(5)? == doc.content
-                            && row.get::<_, String>(6)? == meta_json)
-                    })
-                    .optional()?
-                    .unwrap_or(false);
+                let unchanged = !force
+                    && existing
+                        .query_row([&doc.id], |row| {
+                            Ok(row.get::<_, String>(0)? == doc.source
+                                && row.get::<_, String>(1)? == doc.url
+                                && row.get::<_, String>(2)? == doc.title
+                                && row.get::<_, Option<String>>(3)? == doc.author
+                                && row.get::<_, String>(4)? == doc.published
+                                && row.get::<_, String>(5)? == doc.content
+                                && row.get::<_, String>(6)? == meta_json)
+                        })
+                        .optional()?
+                        .unwrap_or(false);
                 if unchanged {
                     continue;
                 }
@@ -253,13 +268,14 @@ impl Store {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        // No tier joins here: they'd run per FTS-matching chunk before the
+        // top-N cut (measured +33% on broad terms). Tier is filled by point
+        // lookups on the <= limit survivors instead.
         let sql = format!(
             "SELECT c.doc_id, c.chunk_id, c.url, c.title, c.author, c.published,
-                    snippet(chunks_fts, 3, '[', ']', ' … ', 20), {BM25}, s.tier
+                    snippet(chunks_fts, 3, '[', ']', ' … ', 20), {BM25}
              FROM chunks_fts
              JOIN chunks c ON c.id = chunks_fts.rowid
-             JOIN documents d ON d.id = c.doc_id
-             LEFT JOIN sources s ON s.id = d.source
              WHERE chunks_fts MATCH ?1
              ORDER BY {BM25}"
         );
@@ -281,7 +297,7 @@ impl Store {
                 title: row.get(3)?,
                 author: row.get(4)?,
                 published: row.get(5)?,
-                tier: row.get(8)?,
+                tier: None,
                 snippet: row.get(6)?,
                 score: -row.get::<_, f64>(7)?,
             });
@@ -289,7 +305,28 @@ impl Store {
                 break;
             }
         }
+        drop(rows);
+        drop(stmt);
+        self.fill_tiers(&mut hits)?;
         Ok(hits)
+    }
+
+    /// Resolve `tier` for already-cut hits: one documents point lookup plus
+    /// one sources lookup per hit — never part of the ranking query.
+    fn fill_tiers(&self, hits: &mut [SearchHit]) -> Result<(), CoreError> {
+        use rusqlite::OptionalExtension;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT s.tier FROM documents d
+             LEFT JOIN sources s ON s.id = d.source
+             WHERE d.id = ?1",
+        )?;
+        for hit in hits {
+            hit.tier = stmt
+                .query_row([&hit.doc_id], |row| row.get(0))
+                .optional()?
+                .flatten();
+        }
+        Ok(())
     }
 
     pub fn count(&self) -> Result<usize, CoreError> {
@@ -350,8 +387,21 @@ impl Store {
              ORDER BY id"
         );
         let mut stmt = self.conn.prepare_cached(&sql)?;
-        let map = |row: &rusqlite::Row<'_>| {
-            Ok(Document {
+        let mut rows = if let Some(n) = value.as_i64() {
+            stmt.query(params![n, source])?
+        } else if let Some(s) = value.as_str() {
+            stmt.query(params![s, source])?
+        } else {
+            return Err(CoreError::Parse(format!(
+                "find_by_meta only matches integer or string values, got {value}"
+            )));
+        };
+        // Manual loop so a corrupt meta blob propagates as an error, same as
+        // `get` — swallowing it here once misidentified a thread's OP
+        // (missing post_number sorts to the end).
+        let mut docs = Vec::new();
+        while let Some(row) = rows.next()? {
+            docs.push(Document {
                 id: row.get(0)?,
                 source: row.get(1)?,
                 url: row.get(2)?,
@@ -359,20 +409,9 @@ impl Store {
                 author: row.get(4)?,
                 published: row.get(5)?,
                 content: row.get(6)?,
-                meta: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_default(),
-            })
-        };
-        let docs = if let Some(n) = value.as_i64() {
-            stmt.query_map(params![n, source], map)?
-                .collect::<Result<_, _>>()?
-        } else if let Some(s) = value.as_str() {
-            stmt.query_map(params![s, source], map)?
-                .collect::<Result<_, _>>()?
-        } else {
-            return Err(CoreError::Parse(format!(
-                "find_by_meta only matches integer or string values, got {value}"
-            )));
-        };
+                meta: serde_json::from_str(&row.get::<_, String>(7)?)?,
+            });
+        }
         Ok(docs)
     }
 
@@ -747,12 +786,8 @@ impl Store {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT c.id, c.doc_id, c.chunk_id, c.url, c.title, c.author, c.published,
-                    c.content, s.tier
-             FROM chunks c
-             JOIN documents d ON d.id = c.doc_id
-             LEFT JOIN sources s ON s.id = d.source
-             WHERE c.id IN ({ids})"
+            "SELECT id, doc_id, chunk_id, url, title, author, published, content
+             FROM chunks WHERE id IN ({ids})"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
@@ -771,13 +806,29 @@ impl Store {
                     title: row.get(4)?,
                     author: row.get(5)?,
                     published: row.get(6)?,
-                    tier: row.get(8)?,
+                    tier: None,
                     snippet,
                     score: 0.0,
                 },
             ))
         })?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        let mut fetched: HashMap<i64, SearchHit> = rows.collect::<Result<_, _>>()?;
+        drop(stmt);
+        {
+            use rusqlite::OptionalExtension;
+            let mut tier_stmt = self.conn.prepare_cached(
+                "SELECT s.tier FROM documents d
+                 LEFT JOIN sources s ON s.id = d.source
+                 WHERE d.id = ?1",
+            )?;
+            for hit in fetched.values_mut() {
+                hit.tier = tier_stmt
+                    .query_row([&hit.doc_id], |row| row.get(0))
+                    .optional()?
+                    .flatten();
+            }
+        }
+        Ok(fetched)
     }
 
     fn meta_get(&self, key: &str) -> Result<Option<String>, CoreError> {

@@ -213,16 +213,32 @@ impl CorpusServer {
     fn get_topic(&self, Parameters(p): Parameters<GetTopicParams>) -> Result<String, ErrorData> {
         let store = self.store();
         let mut source_scope = p.source.clone();
-        let tid: i64 = match (p.topic_id, &p.doc_id) {
-            (Some(tid), _) => tid as i64,
-            (None, Some(doc_id)) => {
-                let doc = store
-                    .get(doc_id)
-                    .map_err(internal)?
-                    .ok_or_else(|| unknown_doc(doc_id))?;
-                // A doc pins the source; ignore any conflicting source param.
-                source_scope = Some(doc.source.clone());
-                doc.meta
+        // A typo'd source must not masquerade as a missing topic.
+        if let Some(src) = &source_scope {
+            let stats = store.source_stats().map_err(internal)?;
+            if !stats.iter().any(|s| &s.id == src) {
+                return Err(ErrorData::invalid_params(
+                    format!(
+                        "unknown source {src:?} — known sources: {}",
+                        stats.iter().map(|s| s.id.as_str()).collect::<Vec<_>>().join(", ")
+                    ),
+                    None,
+                ));
+            }
+        }
+        // A doc_id, when present, always pins the source — models routinely
+        // pass doc_id AND topic_id together, and the doc is the stronger
+        // signal.
+        let tid: i64 = if let Some(doc_id) = &p.doc_id {
+            let doc = store
+                .get(doc_id)
+                .map_err(internal)?
+                .ok_or_else(|| unknown_doc(doc_id))?;
+            source_scope = Some(doc.source.clone());
+            match p.topic_id {
+                Some(tid) => tid as i64,
+                None => doc
+                    .meta
                     .get("topic_id")
                     .and_then(Value::as_i64)
                     .ok_or_else(|| {
@@ -230,14 +246,15 @@ impl CorpusServer {
                             format!("{doc_id:?} is not part of a discussion thread"),
                             None,
                         )
-                    })?
+                    })?,
             }
-            (None, None) => {
-                return Err(ErrorData::invalid_params(
-                    "provide doc_id (from search_posts) or topic_id",
-                    None,
-                ));
-            }
+        } else if let Some(tid) = p.topic_id {
+            tid as i64
+        } else {
+            return Err(ErrorData::invalid_params(
+                "provide doc_id (from search_posts) or topic_id",
+                None,
+            ));
         };
         let mut posts = store
             .find_by_meta("topic_id", &Value::from(tid), source_scope.as_deref())
@@ -585,6 +602,30 @@ mod tests {
             .unwrap();
         assert!(out.contains("Topic ethresearch/7"));
         assert!(!out.contains("magicians"));
+
+        // doc_id passed ALONGSIDE topic_id still pins the source — models
+        // routinely send both.
+        let out = s
+            .get_topic(Parameters(GetTopicParams {
+                doc_id: Some("ethresearch/post/7002".into()),
+                topic_id: Some(7),
+                source: None,
+                reply_offset: None,
+            }))
+            .unwrap();
+        assert!(out.contains("Topic ethresearch/7"));
+
+        // A typo'd source names the real ones instead of "not in corpus".
+        let err = s
+            .get_topic(Parameters(GetTopicParams {
+                doc_id: None,
+                topic_id: Some(7),
+                source: Some("ethereum-magicians".into()),
+                reply_offset: None,
+            }))
+            .unwrap_err();
+        assert!(err.message.contains("known sources"), "{}", err.message);
+        assert!(err.message.contains("ethmagicians"), "{}", err.message);
 
         // get_post_context stays inside the anchor doc's forum too.
         let out = s

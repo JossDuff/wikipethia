@@ -175,6 +175,13 @@ fn unchanged_documents_are_skipped_on_reupsert() {
     assert_eq!(written, 1);
     assert_ne!(chunk_ids(&store), before);
     assert!(store.get("a").unwrap().unwrap().content.contains("wexlurb"));
+
+    // upsert_forced is the escape hatch: identical docs rewrite anyway
+    // (how a chunking-policy change reaches an existing database).
+    let ids_before_force = chunk_ids(&store);
+    let written = store.upsert_forced(&[doc("b")]).unwrap();
+    assert_eq!(written, 1);
+    assert_ne!(chunk_ids(&store), ids_before_force);
 }
 
 #[test]

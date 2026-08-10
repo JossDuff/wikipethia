@@ -71,6 +71,21 @@ impl Manifest {
                     source.url
                 );
             }
+            // The "one request per second per host" hard rule (CLAUDE.md) is
+            // implemented as one sequential rate-limited client per SOURCE —
+            // which is only per-host if no two sources share a host. Enforce
+            // that here so the invariant holds by construction.
+            if manifest.sources[..i]
+                .iter()
+                .any(|s| host(&s.url) == host(&source.url))
+            {
+                bail!(
+                    "sources.toml: {:?} shares a host with an earlier source — two \
+                     sources on one host would each get their own rate limiter and \
+                     break the one-request-per-second-per-host rule",
+                    source.id
+                );
+            }
             if source.tier.trim().is_empty() {
                 bail!("sources.toml: tier for {:?} is empty", source.id);
             }
@@ -97,15 +112,29 @@ impl Manifest {
     }
 }
 
+fn host(url: &str) -> &str {
+    let rest = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    rest.split('/').next().unwrap_or(rest)
+}
+
 /// The one place a manifest entry becomes a concrete adapter. New kinds
 /// (M7) add a variant and an arm here.
 pub fn adapter_for(source: &Source) -> Box<dyn Adapter> {
     match source.kind {
-        Kind::Discourse => Box::new(DiscourseAdapter {
-            source_id: source.id.clone(),
-            base_url: source.url.clone(),
-            data_dir: PathBuf::from("data").join(&source.id),
-        }),
+        Kind::Discourse => Box::new(discourse_adapter(source)),
+    }
+}
+
+/// Also used directly by `sync --topic`, which needs the concrete type for
+/// its Discourse-only `sync_topic` — one constructor so the data layout
+/// can never drift between the two call sites.
+pub fn discourse_adapter(source: &Source) -> DiscourseAdapter {
+    DiscourseAdapter {
+        source_id: source.id.clone(),
+        base_url: source.url.clone(),
+        data_dir: PathBuf::from("data").join(&source.id),
     }
 }
 
@@ -162,6 +191,17 @@ mod tests {
         // Trailing slash on url.
         let slashurl = GOOD.replace("https://ethresear.ch", "https://ethresear.ch/");
         assert!(Manifest::parse(&slashurl).unwrap_err().to_string().contains("trailing"));
+        // Two sources on one host would defeat the per-host rate limit.
+        let same_host = GOOD.replace(
+            "url = \"https://ethereum-magicians.org\"",
+            "url = \"https://ethresear.ch\"",
+        );
+        assert!(
+            Manifest::parse(&same_host)
+                .unwrap_err()
+                .to_string()
+                .contains("shares a host")
+        );
         // Missing field.
         assert!(Manifest::parse("[[sources]]\nid = \"x\"").is_err());
         // Empty file (missing sources field) and explicit empty list.
