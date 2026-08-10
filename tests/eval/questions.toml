@@ -31,8 +31,12 @@ expect = ["ethresearch/post/48719"]
 
 [[questions]]
 question = "What is PBS?"
-# https://ethresear.ch/t/proposer-block-builder-separation-friendly-fee-market-designs/9725
-expect = ["ethresearch/post/26652"]
+# 2026-08-10 diagnostics: potuz's "ePBS design constraints" OP opens by
+# explaining what PBS entails — Joss agreed it answers the definitional
+# question better than the original expect (vbuterin's fee-market design
+# post, t/9725 post 26652, kept here for the record).
+# https://ethresear.ch/t/epbs-design-constraints/18728
+expect = ["ethresearch/post/45970"]
 
 [[questions]]
 question = "What are the services a validator participates in?"
@@ -94,8 +98,12 @@ expect = ["ethresearch/post/61091"]
 
 [[questions]]
 question = "What would be the tradeoffs of adding a new commitment scheme or erasure coding algorithm to Ethereum?"
-# https://ethresear.ch/t/faster-block-blob-propagation-in-ethereum/21370 (RLNC, potuz)
-expect = ["ethresearch/post/52013"]
+# 2026-08-10 diagnostics: vbuterin's reply #27 in the RLNC thread states the
+# tradeoff directly ("a lot of needless complexity to introduce a whole new
+# commitment scheme…") — Joss agreed it's the better answer than the OP
+# (t/21370 post 52013, kept here for the record).
+# https://ethresear.ch/t/faster-block-blob-propagation-in-ethereum/21370/27
+expect = ["ethresearch/post/52648"]
 
 [[questions]]
 question = "What are all the different types of L2s and what are their tradeoffs?"
