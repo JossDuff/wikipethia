@@ -144,5 +144,10 @@ Listed so they stay out of scope, not because they are unimportant.
   chunking, math that does not survive cleanly. A day, not an afternoon.
 - **Reranking** — cross-encoder via `ort`. Probably the largest remaining quality
   win, but do not attempt it until `eval` shows hybrid fusion has plateaued.
+- **Agent-level answer eval** — a second eval layer where a model answers each
+  question through the MCP tools and is judged on whether its answer cites the
+  expected posts. Covers the agent-class questions (annotated in
+  questions.toml) that single-query recall@10 structurally cannot measure;
+  ground-truth answers already exist in eval-questions.txt.
 - **Web frontend** — a weekend once retrieval is good, and a mistake before then.
   Deliberately not scoped here.
