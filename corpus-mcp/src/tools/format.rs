@@ -18,11 +18,19 @@ pub const MAX_LIMIT: usize = 50;
 /// Hard cap on get_post_context before/after.
 pub const MAX_CONTEXT: usize = 10;
 
-/// The one citation shape every citable unit carries.
-/// Source `tier` joins this line at M6 when sources.toml exists.
-pub fn citation(doc_id: &str, author: Option<&str>, published: &str, url: &str) -> String {
+/// The one citation shape every citable unit carries:
+/// `doc_id · author · date · tier · url`. The tier segment is omitted when
+/// the document's source has no manifest row.
+pub fn citation(
+    doc_id: &str,
+    author: Option<&str>,
+    published: &str,
+    tier: Option<&str>,
+    url: &str,
+) -> String {
+    let tier = tier.map(|t| format!("{t} · ")).unwrap_or_default();
     format!(
-        "{doc_id} · {} · {} · {url}",
+        "{doc_id} · {} · {} · {tier}{url}",
         author.unwrap_or("unknown"),
         date(published)
     )
@@ -72,12 +80,22 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn citation_shape_and_unknown_author() {
+    fn citation_shape_with_and_without_tier() {
         assert_eq!(
-            citation("ethresearch/post/1", Some("vb"), "2018-01-03T22:07:33Z", "https://x"),
+            citation(
+                "ethresearch/post/1",
+                Some("vb"),
+                "2018-01-03T22:07:33Z",
+                Some("research"),
+                "https://x"
+            ),
+            "ethresearch/post/1 · vb · 2018-01-03 · research · https://x"
+        );
+        assert_eq!(
+            citation("ethresearch/post/1", Some("vb"), "2018-01-03T22:07:33Z", None, "https://x"),
             "ethresearch/post/1 · vb · 2018-01-03 · https://x"
         );
-        assert!(citation("id", None, "2018-01-03", "u").contains("unknown"));
+        assert!(citation("id", None, "2018-01-03", None, "u").contains("unknown"));
     }
 
     #[test]

@@ -1,5 +1,10 @@
-//! HTTP client with per-host politeness: one request per second, backoff on
-//! 429 (honoring `Retry-After`) and on transient failures.
+//! HTTP client with per-client politeness: one request per second, backoff
+//! on 429 (honoring `Retry-After`) and on transient failures.
+//!
+//! The limiter is per `HttpClient` instance, not per host. "One request per
+//! second per host" (the CLAUDE.md rule) holds because the CLI creates one
+//! client per source and runs sources sequentially — never point two live
+//! clients at the same host.
 
 use std::time::{Duration, Instant};
 

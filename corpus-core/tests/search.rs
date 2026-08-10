@@ -21,7 +21,7 @@ fn fixture(name: &str) -> Value {
 fn store() -> Store {
     let mut store = Store::open_in_memory().unwrap();
     for name in ["topic_426.json", "topic_20660.json"] {
-        let docs = parse_topic(&fixture(name), BASE).unwrap();
+        let docs = parse_topic(&fixture(name), "ethresearch", BASE).unwrap();
         store.upsert(&docs).unwrap();
     }
     store

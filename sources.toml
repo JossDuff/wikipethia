@@ -1,0 +1,22 @@
+# The manifest — source of truth for what is in the corpus (see CLAUDE.md).
+# Adding a Discourse forum is an edit here and nothing else:
+#   corpus sync && corpus index && corpus embed
+#
+# id:   directory under data/ and the doc-id prefix ("<id>/post/<n>").
+#       [a-z0-9_-] only, and stable forever — doc_ids embed it.
+# kind: which adapter fetches and parses it ("discourse" today;
+#       git/feed/page arrive at M7).
+# url:  base URL of the instance, no trailing slash.
+# tier: opaque source-quality label carried on every search result.
+
+[[sources]]
+id = "ethresearch"
+kind = "discourse"
+url = "https://ethresear.ch"
+tier = "research"
+
+[[sources]]
+id = "ethmagicians"
+kind = "discourse"
+url = "https://ethereum-magicians.org"
+tier = "standards"

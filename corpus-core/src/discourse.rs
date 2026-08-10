@@ -1,5 +1,6 @@
-//! Discourse topic JSON → [`Document`]s. Deliberately a concrete module, not
-//! an adapter trait — the trait arrives at M6 with a second call site.
+//! Discourse topic JSON → [`Document`]s. Works for any Discourse instance —
+//! the caller supplies the source id and base URL (the adapter trait binding
+//! them lives in `corpus_fetch::adapter`, where the crawl side is).
 //!
 //! Input is the self-contained topic JSON that `corpus-fetch` writes: every
 //! still-existing post inlined in `post_stream.posts` with `raw` present.
@@ -12,14 +13,18 @@ use crate::clean::strip_quote_blocks;
 use crate::document::Document;
 use crate::error::CoreError;
 
-pub const SOURCE: &str = "ethresearch";
-
 /// Regular user post. Other types (moderator action, small-action, whisper)
 /// are bookkeeping, not research — indexing them would pollute the corpus.
 const POST_TYPE_REGULAR: u64 = 1;
 
 /// Parse one topic's JSON into one [`Document`] per regular post.
-pub fn parse_topic(topic: &Value, base_url: &str) -> Result<Vec<Document>, CoreError> {
+/// `source` becomes the doc-id prefix (`{source}/post/{id}`) and the
+/// `Document::source` field.
+pub fn parse_topic(
+    topic: &Value,
+    source: &str,
+    base_url: &str,
+) -> Result<Vec<Document>, CoreError> {
     let topic_id = topic["id"]
         .as_u64()
         .ok_or_else(|| CoreError::Parse("topic has no id".into()))?;
@@ -75,8 +80,8 @@ pub fn parse_topic(topic: &Value, base_url: &str) -> Result<Vec<Document>, CoreE
         }
 
         docs.push(Document {
-            id: format!("{SOURCE}/post/{post_id}"),
-            source: SOURCE.into(),
+            id: format!("{source}/post/{post_id}"),
+            source: source.into(),
             url,
             title: title.into(),
             author: post["username"].as_str().map(String::from),

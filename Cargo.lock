@@ -376,6 +376,7 @@ dependencies = [
 name = "corpus-fetch"
 version = "0.1.0"
 dependencies = [
+ "corpus-core",
  "serde",
  "serde_json",
  "tempfile",

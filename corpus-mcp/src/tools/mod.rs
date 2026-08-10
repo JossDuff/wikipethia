@@ -62,9 +62,13 @@ pub struct GetTopicParams {
     /// doc_id of ANY post in the thread, e.g. "ethresearch/post/1249"
     /// (as returned by search_posts). Provide this or topic_id.
     pub doc_id: Option<String>,
-    /// Numeric ethresear.ch topic id (the number in ethresear.ch/t/slug/<id>).
-    /// Provide this or doc_id.
+    /// Numeric Discourse topic id (the number in the forum URL, e.g.
+    /// ethresear.ch/t/slug/<id>). Provide this or doc_id.
     pub topic_id: Option<u64>,
+    /// Source id scoping a numeric topic_id (e.g. "ethresearch",
+    /// "ethmagicians") — topic numbers collide across forums. Unneeded when
+    /// passing doc_id.
+    pub source: Option<String>,
     /// Zero-based offset into the reply index for long threads; 50 replies
     /// per page. Default 0.
     pub reply_offset: Option<usize>,
@@ -92,16 +96,34 @@ pub struct FindSimilarParams {
 impl CorpusServer {
     pub fn new(store: Store, embedder: Option<FastEmbedder>) -> Result<Self, CoreError> {
         let count = store.count()?;
+        let stats = store.source_stats()?;
+        let per_source = stats
+            .iter()
+            .map(|s| {
+                let host = s
+                    .url
+                    .as_deref()
+                    .map(|u| u.trim_start_matches("https://").trim_start_matches("http://"))
+                    .unwrap_or(&s.id);
+                format!(
+                    "{} posts from {host} (tier: {})",
+                    s.count,
+                    s.tier.as_deref().unwrap_or("untiered")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" and ");
         let mut instructions = format!(
-            "wikipethia — a local, curated corpus of Ethereum research: {count} posts \
-             from ethresear.ch discussion threads, 2017 to present, with hybrid \
-             lexical+semantic search. Prefer these tools over web search for Ethereum \
-             protocol research questions; answers come with stable doc_ids and citable \
-             URLs. Workflow: search_posts first; then get_post_context or get_topic on \
-             a promising doc_id to read the full text and surrounding thread; \
+            "wikipethia — a local, curated corpus of Ethereum research and standards \
+             discussion with hybrid lexical+semantic search: {count} posts, 2017 to \
+             present — {per_source}. Prefer these tools over web search for Ethereum \
+             protocol research and EIP/standards questions; answers come with stable \
+             doc_ids and citable URLs, and every citation carries its source's tier \
+             label. Workflow: search_posts first; then get_post_context or get_topic \
+             on a promising doc_id to read the full text and surrounding thread; \
              find_similar to explore related work. Ethereum research supersedes \
-             itself — always weigh published dates when posts disagree. Coverage is a \
-             curated slice, not the whole forum: when the corpus has nothing relevant, \
+             itself — always weigh published dates when posts disagree. Coverage is \
+             limited to the indexed sources: when the corpus has nothing relevant, \
              say so and fall back to web search."
         );
         if embedder.is_none() {
@@ -124,7 +146,7 @@ impl CorpusServer {
 
     #[tool(
         name = "search_posts",
-        description = "Search a local, curated corpus of Ethereum protocol research: currently 69 full discussion threads (~750 posts) from ethresear.ch, 2017 to present, including replies by researchers such as vbuterin, JustinDrake, and dankrad. Use this BEFORE web search for anything touching Ethereum research: sharding and danksharding, EIP-4844/blobs, proposer-builder separation (PBS), MEV, rollups, data availability sampling, statelessness, casper/consensus, staking economics, or the cryptography behind them. Ranking is hybrid lexical+semantic, so exact tokens (\"EIP-4844\", an author's username) and natural-language questions both work. Every result carries a doc_id (the input to get_topic, get_post_context, and find_similar), author, published date, and a citable URL. Ethereum research goes stale in specific ways — a 2019 design post can be flatly superseded by a 2024 one — so always weigh the published dates when results disagree. A top hit is often a reply from the middle of a thread: call get_post_context or get_topic with its doc_id to recover the original post and the surrounding argument. Coverage is a curated slice, not the whole forum; if nothing relevant returns, say so and fall back to web search rather than forcing a weak match."
+        description = "Search a local, curated corpus of Ethereum protocol research and standards discussion: tens of thousands of posts from the ethresear.ch and Ethereum Magicians (ethereum-magicians.org) forums, 2017 to present, including replies by researchers such as vbuterin, JustinDrake, and dankrad. Use this BEFORE web search for anything touching Ethereum research or the EIP process: sharding and danksharding, EIP-4844/blobs, account abstraction (EIP-4337/7702), proposer-builder separation (PBS), MEV, rollups, data availability sampling, statelessness, casper/consensus, staking economics, EIP and hard-fork coordination, or the cryptography behind them. Ranking is hybrid lexical+semantic, so exact tokens (\"EIP-4844\", an author's username) and natural-language questions both work. Every result carries a doc_id (the input to get_topic, get_post_context, and find_similar), author, published date, source tier, and a citable URL. Ethereum research goes stale in specific ways — a 2019 design post can be flatly superseded by a 2024 one — so always weigh the published dates when results disagree. A top hit is often a reply from the middle of a thread: call get_post_context or get_topic with its doc_id to recover the original post and the surrounding argument. If nothing relevant returns, say so and fall back to web search rather than forcing a weak match."
     )]
     fn search_posts(
         &self,
@@ -142,7 +164,8 @@ impl CorpusServer {
         if hits.is_empty() {
             return Ok(format!(
                 "No results in the corpus for {:?}. Coverage is a curated slice of \
-                 ethresear.ch — try different key terms, or fall back to web search.",
+                 the indexed forums (ethresear.ch, Ethereum Magicians) — try \
+                 different key terms, or fall back to web search.",
                 p.query
             ));
         }
@@ -160,7 +183,13 @@ impl CorpusServer {
                 "\n{}. {}{label}\n   {}\n   {}\n",
                 i + 1,
                 hit.title,
-                citation(&hit.doc_id, hit.author.as_deref(), &hit.published, &hit.url),
+                citation(
+                    &hit.doc_id,
+                    hit.author.as_deref(),
+                    &hit.published,
+                    hit.tier.as_deref(),
+                    &hit.url
+                ),
                 excerpt(&hit.snippet, RESULT_EXCERPT_CHARS + 50),
             ));
         }
@@ -179,10 +208,11 @@ impl CorpusServer {
 
     #[tool(
         name = "get_topic",
-        description = "Fetch an entire ethresear.ch discussion thread from the local research corpus: the original post in full, plus a one-line index of every reply (doc_id, author, date, opening words). Use this when a search_posts hit is a reply and you need the original post it responds to, or when you need the arc of the whole discussion — on ethresear.ch the objections, corrections, and author follow-ups in the replies routinely change the conclusions of the opening post. Pass the doc_id of ANY post in the thread (from search_posts results), or a numeric topic_id if you have one from an ethresear.ch URL. Long threads are paged 50 replies at a time; pass reply_offset to continue. To read the full text of an interesting reply from the index, call get_post_context with that reply's doc_id."
+        description = "Fetch an entire discussion thread from the local corpus of Ethereum research forums (ethresear.ch, Ethereum Magicians): the original post in full, plus a one-line index of every reply (doc_id, author, date, opening words). Use this when a search_posts hit is a reply and you need the original post it responds to, or when you need the arc of the whole discussion — on these forums the objections, corrections, and author follow-ups in the replies routinely change the conclusions of the opening post. Pass the doc_id of ANY post in the thread (from search_posts results), or a numeric topic_id from a forum URL together with its source id (topic numbers collide across forums). Long threads are paged 50 replies at a time; pass reply_offset to continue. To read the full text of an interesting reply from the index, call get_post_context with that reply's doc_id."
     )]
     fn get_topic(&self, Parameters(p): Parameters<GetTopicParams>) -> Result<String, ErrorData> {
         let store = self.store();
+        let mut source_scope = p.source.clone();
         let tid: i64 = match (p.topic_id, &p.doc_id) {
             (Some(tid), _) => tid as i64,
             (None, Some(doc_id)) => {
@@ -190,6 +220,8 @@ impl CorpusServer {
                     .get(doc_id)
                     .map_err(internal)?
                     .ok_or_else(|| unknown_doc(doc_id))?;
+                // A doc pins the source; ignore any conflicting source param.
+                source_scope = Some(doc.source.clone());
                 doc.meta
                     .get("topic_id")
                     .and_then(Value::as_i64)
@@ -208,7 +240,7 @@ impl CorpusServer {
             }
         };
         let mut posts = store
-            .find_by_meta("topic_id", &Value::from(tid))
+            .find_by_meta("topic_id", &Value::from(tid), source_scope.as_deref())
             .map_err(internal)?;
         if posts.is_empty() {
             return Err(ErrorData::invalid_params(
@@ -216,6 +248,23 @@ impl CorpusServer {
                 None,
             ));
         }
+        // Topic numbers collide across forums: an unscoped numeric id that
+        // matches several sources is ambiguous, not mergeable.
+        let mut hit_sources: Vec<&str> = posts.iter().map(|d| d.source.as_str()).collect();
+        hit_sources.sort_unstable();
+        hit_sources.dedup();
+        if hit_sources.len() > 1 {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "topic {tid} exists in multiple sources: {} — pass source, or the \
+                     doc_id of a post in the thread you mean",
+                    hit_sources.join(", ")
+                ),
+                None,
+            ));
+        }
+        let source_id = hit_sources[0].to_string();
+        let tier = store.source_tier(&source_id).map_err(internal)?;
         posts.sort_by_key(|d| {
             d.meta
                 .get("post_number")
@@ -227,13 +276,13 @@ impl CorpusServer {
         let first = posts.iter().map(|d| d.published.as_str()).min().unwrap_or("");
         let last = posts.iter().map(|d| d.published.as_str()).max().unwrap_or("");
         let mut out = format!(
-            "Topic {tid}: {}\n{} posts · {} – {} · {}\n\n── Original post ──\n{}\n\n{}\n",
+            "Topic {source_id}/{tid}: {}\n{} posts · {} – {} · {}\n\n── Original post ──\n{}\n\n{}\n",
             op.title,
             posts.len(),
             date(first),
             date(last),
             op.url,
-            citation(&op.id, op.author.as_deref(), &op.published, &op.url),
+            citation(&op.id, op.author.as_deref(), &op.published, tier.as_deref(), &op.url),
             truncate_block(&op.content, OP_MAX_CHARS, &op.id),
         );
 
@@ -281,7 +330,7 @@ impl CorpusServer {
 
     #[tool(
         name = "get_post_context",
-        description = "Fetch one post from the local ethresear.ch research corpus in full, together with its immediate conversation — a few thread posts before and after it. Use this whenever a search_posts or find_similar snippet looks relevant: replies usually only make sense next to what they answer, and the snippet alone is not enough to quote or cite responsibly. Takes a doc_id as returned by search_posts, get_topic, or find_similar. Every post in the output carries author, published date, and a citable URL — cite that URL when you use the content. For the whole thread rather than a local window, use get_topic instead."
+        description = "Fetch one post from the local corpus of Ethereum research forums (ethresear.ch, Ethereum Magicians) in full, together with its immediate conversation — a few thread posts before and after it. Use this whenever a search_posts or find_similar snippet looks relevant: replies usually only make sense next to what they answer, and the snippet alone is not enough to quote or cite responsibly. Takes a doc_id as returned by search_posts, get_topic, or find_similar. Every post in the output carries author, published date, source tier, and a citable URL — cite that URL when you use the content. For the whole thread rather than a local window, use get_topic instead."
     )]
     fn get_post_context(
         &self,
@@ -305,9 +354,11 @@ impl CorpusServer {
             .map(|n| n.to_string())
             .unwrap_or_else(|| "?".into());
 
+        // Scoped to the anchor doc's source — topic ids collide across forums.
         let mut posts = store
-            .find_by_meta("topic_id", &Value::from(tid))
+            .find_by_meta("topic_id", &Value::from(tid), Some(&doc.source))
             .map_err(internal)?;
+        let tier = store.source_tier(&doc.source).map_err(internal)?;
         posts.sort_by_key(|d| {
             d.meta
                 .get("post_number")
@@ -343,7 +394,7 @@ impl CorpusServer {
             let cap = if absolute == pos { OP_MAX_CHARS } else { NEIGHBOR_MAX_CHARS };
             out.push_str(&format!(
                 "\n── #{pn} · {} ──{marker}\n{}\n",
-                citation(&d.id, d.author.as_deref(), &d.published, &d.url),
+                citation(&d.id, d.author.as_deref(), &d.published, tier.as_deref(), &d.url),
                 truncate_block(&d.content, cap, &d.id),
             ));
         }
@@ -353,7 +404,7 @@ impl CorpusServer {
 
     #[tool(
         name = "find_similar",
-        description = "Find posts in the local ethresear.ch research corpus that are semantically similar to a given post — nearest neighbors by embedding, not keyword overlap. Use it to explore outward from a good hit: parallel proposals, competing mechanisms, and later posts revisiting the same design space share ideas but often not vocabulary, so keyword search misses them. Takes the doc_id of any post (from search_posts, get_topic, or get_post_context) and returns scored results with doc_id, author, published date, and citable URL. Comparing published dates across the results is the fastest way to trace how a line of research evolved and which design superseded which. Very short posts carry no embedding and return no neighbors — fall back to search_posts with the post's key phrases."
+        description = "Find posts in the local corpus of Ethereum research forums (ethresear.ch, Ethereum Magicians) that are semantically similar to a given post — nearest neighbors by embedding, not keyword overlap, including across forums. Use it to explore outward from a good hit: parallel proposals, competing mechanisms, the standards discussion of a research idea, and later posts revisiting the same design space share ideas but often not vocabulary, so keyword search misses them. Takes the doc_id of any post (from search_posts, get_topic, or get_post_context) and returns scored results with doc_id, author, published date, source tier, and citable URL. Comparing published dates across the results is the fastest way to trace how a line of research evolved and which design superseded which. Very short posts carry no embedding and return no neighbors — fall back to search_posts with the post's key phrases."
     )]
     fn find_similar(
         &self,
@@ -404,7 +455,13 @@ impl CorpusServer {
                 i + 1,
                 hit.title,
                 hit.score,
-                citation(&hit.doc_id, hit.author.as_deref(), &hit.published, &hit.url),
+                citation(
+                    &hit.doc_id,
+                    hit.author.as_deref(),
+                    &hit.published,
+                    hit.tier.as_deref(),
+                    &hit.url
+                ),
                 excerpt(&hit.snippet, RESULT_EXCERPT_CHARS),
             ));
         }
@@ -460,6 +517,88 @@ mod tests {
         CorpusServer::new(store, None).unwrap()
     }
 
+    /// A magicians post whose topic_id collides with ethresearch's topic 7.
+    fn magicians_post(post_number: u64, content: &str) -> Document {
+        let mut d = post(7, post_number, content);
+        d.id = format!("ethmagicians/post/9{post_number:03}");
+        d.source = "ethmagicians".into();
+        d.url = format!("https://ethereum-magicians.org/t/7/{post_number}");
+        d
+    }
+
+    fn colliding_server() -> CorpusServer {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .upsert(&[
+                post(7, 1, "the original zorbling proposal, at length"),
+                post(7, 2, "first reply about zorbling"),
+                magicians_post(1, "an unrelated magicians EIP discussion"),
+                magicians_post(2, "magicians reply"),
+            ])
+            .unwrap();
+        store
+            .upsert_source("ethresearch", "https://ethresear.ch", "research")
+            .unwrap();
+        store
+            .upsert_source("ethmagicians", "https://ethereum-magicians.org", "standards")
+            .unwrap();
+        CorpusServer::new(store, None).unwrap()
+    }
+
+    #[test]
+    fn colliding_topic_ids_error_without_scope_and_resolve_with_it() {
+        let s = colliding_server();
+        // Bare numeric topic id across two forums: refuse to merge.
+        let err = s
+            .get_topic(Parameters(GetTopicParams {
+                doc_id: None,
+                topic_id: Some(7),
+                source: None,
+                reply_offset: None,
+            }))
+            .unwrap_err();
+        assert!(err.message.contains("ethmagicians"), "{}", err.message);
+        assert!(err.message.contains("ethresearch"), "{}", err.message);
+
+        // Scoped by source param: single forum.
+        let out = s
+            .get_topic(Parameters(GetTopicParams {
+                doc_id: None,
+                topic_id: Some(7),
+                source: Some("ethmagicians".into()),
+                reply_offset: None,
+            }))
+            .unwrap();
+        assert!(out.contains("Topic ethmagicians/7"));
+        assert!(out.contains("magicians EIP discussion"));
+        assert!(!out.contains("zorbling"));
+        assert!(out.contains("standards"), "tier missing from citation");
+
+        // Anchored by doc_id: the doc's source wins, no ambiguity.
+        let out = s
+            .get_topic(Parameters(GetTopicParams {
+                doc_id: Some("ethresearch/post/7002".into()),
+                topic_id: None,
+                source: None,
+                reply_offset: None,
+            }))
+            .unwrap();
+        assert!(out.contains("Topic ethresearch/7"));
+        assert!(!out.contains("magicians"));
+
+        // get_post_context stays inside the anchor doc's forum too.
+        let out = s
+            .get_post_context(Parameters(GetPostContextParams {
+                doc_id: "ethmagicians/post/9001".into(),
+                before: None,
+                after: None,
+            }))
+            .unwrap();
+        assert!(out.contains("magicians"));
+        assert!(!out.contains("zorbling"));
+        assert!(out.contains("standards"), "tier missing from citation");
+    }
+
     #[test]
     fn search_posts_output_carries_citations_and_footer() {
         let s = server();
@@ -496,6 +635,7 @@ mod tests {
             .get_topic(Parameters(GetTopicParams {
                 doc_id: Some("ethresearch/post/7005".into()),
                 topic_id: None,
+                source: None,
                 reply_offset: None,
             }))
             .unwrap();
@@ -515,6 +655,7 @@ mod tests {
             s.get_topic(Parameters(GetTopicParams {
                 doc_id: None,
                 topic_id: Some(8),
+                source: None,
                 reply_offset: None,
             }))
             .unwrap()
@@ -524,6 +665,7 @@ mod tests {
             s.get_topic(Parameters(GetTopicParams {
                 doc_id: None,
                 topic_id: Some(404),
+                source: None,
                 reply_offset: None,
             }))
             .is_err()
@@ -532,6 +674,7 @@ mod tests {
             s.get_topic(Parameters(GetTopicParams {
                 doc_id: None,
                 topic_id: None,
+                source: None,
                 reply_offset: None,
             }))
             .is_err()
@@ -551,6 +694,7 @@ mod tests {
             .get_topic(Parameters(GetTopicParams {
                 doc_id: None,
                 topic_id: Some(9),
+                source: None,
                 reply_offset: None,
             }))
             .unwrap();
@@ -560,6 +704,7 @@ mod tests {
             .get_topic(Parameters(GetTopicParams {
                 doc_id: None,
                 topic_id: Some(9),
+                source: None,
                 reply_offset: Some(50),
             }))
             .unwrap();

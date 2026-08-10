@@ -13,10 +13,12 @@ use crate::error::CoreError;
 
 /// Bumped when the schema changes; stored in `PRAGMA user_version`.
 /// v2 added `chunks` and the FTS5 index; opening a v1 file backfills them.
-/// v3 added the `meta` table. The vector table `chunks_vec` is deliberately
-/// NOT part of the schema — its dimension belongs to the embedding model, so
+/// v3 added the `meta` table. v4 added `sources` (tier lookups) and the
+/// documents indexes — all IF NOT EXISTS, so v3→v4 migration is free.
+/// The vector table `chunks_vec` is deliberately NOT part of the schema —
+/// its dimension belongs to the embedding model, so
 /// [`Store::ensure_embedding_space`] creates it lazily.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -71,6 +73,16 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT NOT NULL PRIMARY KEY,
   value TEXT NOT NULL
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS sources (
+  id   TEXT NOT NULL PRIMARY KEY,
+  url  TEXT NOT NULL,
+  tier TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS documents_topic_id
+  ON documents (json_extract(meta, '$.topic_id'));
+CREATE INDEX IF NOT EXISTS documents_source ON documents (source);
 ";
 
 /// Per-column BM25 weights: title, author, tags, content. Title and author
@@ -80,8 +92,7 @@ CREATE TABLE IF NOT EXISTS meta (
 const BM25: &str = "bm25(chunks_fts, 5.0, 5.0, 3.0, 1.0)";
 
 /// One search result, deduplicated to the best-ranked chunk per document.
-/// Carries `url` and `published` per the retrieval invariants; `tier` joins
-/// when `sources.toml` arrives at M6.
+/// Carries `url`, `published`, and `tier` per the retrieval invariants.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchHit {
     pub doc_id: String,
@@ -90,11 +101,23 @@ pub struct SearchHit {
     pub title: String,
     pub author: Option<String>,
     pub published: String,
+    /// Source-quality label from the manifest (via the `sources` table);
+    /// None when the document's source has no manifest row.
+    pub tier: Option<String>,
     /// Matched terms bracketed, e.g. `… the [exit] game …`.
     pub snippet: String,
     /// Relevance, higher is better (negated BM25 from [`Store::search`],
     /// RRF score from [`Store::hybrid_search`]).
     pub score: f64,
+}
+
+/// One row of [`Store::source_stats`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceStats {
+    pub id: String,
+    pub url: Option<String>,
+    pub tier: Option<String>,
+    pub count: usize,
 }
 
 /// A chunk that still needs a vector, as handed to an `Embedder`.
@@ -158,12 +181,22 @@ impl Store {
         Ok(Self { conn, has_vec })
     }
 
-    /// Insert or overwrite by id, all in one transaction. Re-indexing the
-    /// same files is idempotent; a re-synced topic overwrites cleanly,
-    /// including its chunks and their FTS rows.
+    /// Insert or overwrite by id, all in one transaction; returns how many
+    /// documents were actually WRITTEN. A document identical to its stored
+    /// row is skipped entirely — its chunks, FTS rows, and (crucially)
+    /// vectors survive untouched, which is what keeps a routine re-index
+    /// from forcing a full re-embed. Meta is compared in serialized form;
+    /// if a parser change ever reorders keys, everything reads as changed
+    /// once — a one-time re-chunk and re-embed, not corruption.
     pub fn upsert(&mut self, docs: &[Document]) -> Result<usize, CoreError> {
+        use rusqlite::OptionalExtension;
         let tx = self.conn.transaction()?;
+        let mut written = 0;
         {
+            let mut existing = tx.prepare_cached(
+                "SELECT source, url, title, author, published, content, meta
+                 FROM documents WHERE id = ?1",
+            )?;
             let mut stmt = tx.prepare_cached(
                 "INSERT INTO documents (id, source, url, title, author, published, content, meta)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -177,6 +210,22 @@ impl Store {
                    meta = excluded.meta",
             )?;
             for doc in docs {
+                let meta_json = serde_json::to_string(&doc.meta)?;
+                let unchanged = existing
+                    .query_row([&doc.id], |row| {
+                        Ok(row.get::<_, String>(0)? == doc.source
+                            && row.get::<_, String>(1)? == doc.url
+                            && row.get::<_, String>(2)? == doc.title
+                            && row.get::<_, Option<String>>(3)? == doc.author
+                            && row.get::<_, String>(4)? == doc.published
+                            && row.get::<_, String>(5)? == doc.content
+                            && row.get::<_, String>(6)? == meta_json)
+                    })
+                    .optional()?
+                    .unwrap_or(false);
+                if unchanged {
+                    continue;
+                }
                 stmt.execute(params![
                     doc.id,
                     doc.source,
@@ -185,13 +234,14 @@ impl Store {
                     doc.author,
                     doc.published,
                     doc.content,
-                    serde_json::to_string(&doc.meta)?,
+                    meta_json,
                 ])?;
                 write_chunks(&tx, doc, self.has_vec)?;
+                written += 1;
             }
         }
         tx.commit()?;
-        Ok(docs.len())
+        Ok(written)
     }
 
     /// BM25-ranked lexical search, collapsed to the best chunk per document.
@@ -205,9 +255,11 @@ impl Store {
         }
         let sql = format!(
             "SELECT c.doc_id, c.chunk_id, c.url, c.title, c.author, c.published,
-                    snippet(chunks_fts, 3, '[', ']', ' … ', 20), {BM25}
+                    snippet(chunks_fts, 3, '[', ']', ' … ', 20), {BM25}, s.tier
              FROM chunks_fts
              JOIN chunks c ON c.id = chunks_fts.rowid
+             JOIN documents d ON d.id = c.doc_id
+             LEFT JOIN sources s ON s.id = d.source
              WHERE chunks_fts MATCH ?1
              ORDER BY {BM25}"
         );
@@ -229,6 +281,7 @@ impl Store {
                 title: row.get(3)?,
                 author: row.get(4)?,
                 published: row.get(5)?,
+                tier: row.get(8)?,
                 snippet: row.get(6)?,
                 score: -row.get::<_, f64>(7)?,
             });
@@ -268,16 +321,35 @@ impl Store {
     }
 
     /// Documents whose meta JSON field `key` equals `value` (integer or
-    /// string only — other JSON types are a Parse error). Full-scan
-    /// `json_extract`, ORDER BY id for determinism: fine at hundreds of
-    /// documents, index it if a source ever brings tens of thousands.
+    /// string only — other JSON types are a Parse error), optionally scoped
+    /// to one source (topic numbers collide across Discourse forums).
     /// Callers sort by their own semantics — corpus-core doesn't know what
     /// the key means.
-    pub fn find_by_meta(&self, key: &str, value: &Value) -> Result<Vec<Document>, CoreError> {
-        let sql = "SELECT id, source, url, title, author, published, content, meta
-                   FROM documents WHERE json_extract(meta, ?1) = ?2 ORDER BY id";
-        let path = format!("$.{key}");
-        let mut stmt = self.conn.prepare_cached(sql)?;
+    ///
+    /// The json path is inlined into the SQL, not bound: a bound path can
+    /// never match the `documents_topic_id` expression index, and at ~90k
+    /// documents that index is the difference between a lookup and a scan.
+    /// The key is validated to word characters, which also closes the
+    /// injection hole the inlining would otherwise open.
+    pub fn find_by_meta(
+        &self,
+        key: &str,
+        value: &Value,
+        source: Option<&str>,
+    ) -> Result<Vec<Document>, CoreError> {
+        if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(CoreError::Parse(format!(
+                "find_by_meta key must be a word, got {key:?}"
+            )));
+        }
+        let sql = format!(
+            "SELECT id, source, url, title, author, published, content, meta
+             FROM documents
+             WHERE json_extract(meta, '$.{key}') = ?1
+               AND (?2 IS NULL OR source = ?2)
+             ORDER BY id"
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
         let map = |row: &rusqlite::Row<'_>| {
             Ok(Document {
                 id: row.get(0)?,
@@ -291,10 +363,10 @@ impl Store {
             })
         };
         let docs = if let Some(n) = value.as_i64() {
-            stmt.query_map(params![path, n], map)?
+            stmt.query_map(params![n, source], map)?
                 .collect::<Result<_, _>>()?
         } else if let Some(s) = value.as_str() {
-            stmt.query_map(params![path, s], map)?
+            stmt.query_map(params![s, source], map)?
                 .collect::<Result<_, _>>()?
         } else {
             return Err(CoreError::Parse(format!(
@@ -302,6 +374,51 @@ impl Store {
             )));
         };
         Ok(docs)
+    }
+
+    /// Record (or refresh) a manifest source's url and tier.
+    pub fn upsert_source(&mut self, id: &str, url: &str, tier: &str) -> Result<(), CoreError> {
+        self.conn.execute(
+            "INSERT INTO sources (id, url, tier) VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET url = excluded.url, tier = excluded.tier",
+            params![id, url, tier],
+        )?;
+        Ok(())
+    }
+
+    /// The manifest tier for a source id, if recorded.
+    pub fn source_tier(&self, source: &str) -> Result<Option<String>, CoreError> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .conn
+            .query_row("SELECT tier FROM sources WHERE id = ?1", [source], |row| {
+                row.get(0)
+            })
+            .optional()?)
+    }
+
+    /// Per-source document counts joined with manifest url/tier, largest
+    /// first. `url`/`tier` are None for documents whose source has no
+    /// manifest row.
+    pub fn source_stats(&self) -> Result<Vec<SourceStats>, CoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT d.source, s.url, s.tier, COUNT(*)
+             FROM documents d
+             LEFT JOIN sources s ON s.id = d.source
+             GROUP BY d.source
+             ORDER BY COUNT(*) DESC, d.source",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SourceStats {
+                    id: row.get(0)?,
+                    url: row.get(1)?,
+                    tier: row.get(2)?,
+                    count: row.get::<_, i64>(3)? as usize,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
     }
 
     /// Documents nearest to `doc_id`'s first embedded chunk, excluding the
@@ -630,8 +747,12 @@ impl Store {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT id, doc_id, chunk_id, url, title, author, published, content
-             FROM chunks WHERE id IN ({ids})"
+            "SELECT c.id, c.doc_id, c.chunk_id, c.url, c.title, c.author, c.published,
+                    c.content, s.tier
+             FROM chunks c
+             JOIN documents d ON d.id = c.doc_id
+             LEFT JOIN sources s ON s.id = d.source
+             WHERE c.id IN ({ids})"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
@@ -650,6 +771,7 @@ impl Store {
                     title: row.get(4)?,
                     author: row.get(5)?,
                     published: row.get(6)?,
+                    tier: row.get(8)?,
                     snippet,
                     score: 0.0,
                 },
