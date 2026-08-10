@@ -20,7 +20,7 @@ or UI code. If a task seems to need them, stop and ask.
 ## Layout
 
 ```
-corpus-core/    documents, adapters, index, search   — no I/O beyond the DB
+corpus-core/    documents, parsing, index, search    — no I/O beyond the DB
 corpus-embed/   the fastembed Embedder impl — model cache and its one-time download
 corpus-fetch/   HTTP client, rate limiting, adapters — all crawl network lives here
 corpus-mcp/     MCP server (stdio + http transports)
@@ -34,8 +34,8 @@ sources.toml    the manifest — source of truth for what is in the corpus
 cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo run -p corpus-cli -- sync [--source <id>] [--limit N]
-cargo run -p corpus-cli -- index
+cargo run -p corpus-cli -- sync [--source <id>] [--limit N]    # no --source = all sources
+cargo run -p corpus-cli -- index [--source <id>]
 cargo run -p corpus-cli -- embed [--force]
 cargo run -p corpus-cli -- search "<query>"
 cargo run -p corpus-cli -- eval

@@ -28,7 +28,7 @@ fn fixture(name: &str) -> Value {
 
 #[test]
 fn mathjax_survives_intact() {
-    let docs = parse_topic(&fixture("topic_20660.json"), BASE).unwrap();
+    let docs = parse_topic(&fixture("topic_20660.json"), "ethresearch", BASE).unwrap();
     assert_eq!(docs.len(), 8);
     // Exact snippets from the original raw: display math with its $$
     // delimiters, and inline $…$.
@@ -39,7 +39,7 @@ fn mathjax_survives_intact() {
 
 #[test]
 fn long_thread_parses_completely() {
-    let docs = parse_topic(&fixture("topic_426.json"), BASE).unwrap();
+    let docs = parse_topic(&fixture("topic_426.json"), "ethresearch", BASE).unwrap();
     assert_eq!(docs.len(), 144);
 
     let mut ids: Vec<&str> = docs.iter().map(|d| d.id.as_str()).collect();
@@ -60,7 +60,7 @@ fn long_thread_parses_completely() {
 #[test]
 fn deleted_posts_leave_gaps_not_errors() {
     let topic = fixture("topic_24427.json");
-    let docs = parse_topic(&topic, BASE).unwrap();
+    let docs = parse_topic(&topic, "ethresearch", BASE).unwrap();
     assert_eq!(docs.len(), 18, "one document per still-existing post");
     // highest_post_number is 28: ten posts were deleted, so the surviving
     // post_numbers are non-contiguous.
@@ -84,7 +84,7 @@ fn quotes_are_stripped_everywhere() {
     assert!(had_quotes, "fixture must actually contain quote blocks");
 
     for name in FIXTURES {
-        for doc in parse_topic(&fixture(name), BASE).unwrap() {
+        for doc in parse_topic(&fixture(name), "ethresearch", BASE).unwrap() {
             assert!(
                 !doc.content.contains("[quote=") && !doc.content.contains("[/quote]"),
                 "{name}: quote block leaked into {}",
@@ -97,7 +97,7 @@ fn quotes_are_stripped_everywhere() {
 #[test]
 fn every_document_carries_the_retrieval_invariants() {
     for name in FIXTURES {
-        for doc in parse_topic(&fixture(name), BASE).unwrap() {
+        for doc in parse_topic(&fixture(name), "ethresearch", BASE).unwrap() {
             assert!(doc.url.starts_with("https://ethresear.ch/t/"), "{name}");
             assert!(!doc.title.is_empty(), "{name}");
             assert!(doc.published.ends_with('Z'), "{name}: {}", doc.published);
@@ -113,13 +113,13 @@ fn one_rawless_post_is_skipped_not_fatal() {
     // Live forum reality (post 11811 in topic 465): the server omits raw
     // for a few degenerate posts even with include_raw=1. One such post is
     // dropped; the rest of the topic survives.
-    let full = parse_topic(&fixture("topic_20660.json"), BASE).unwrap();
+    let full = parse_topic(&fixture("topic_20660.json"), "ethresearch", BASE).unwrap();
     let mut topic = fixture("topic_20660.json");
     topic["post_stream"]["posts"][0]
         .as_object_mut()
         .unwrap()
         .remove("raw");
-    let docs = parse_topic(&topic, BASE).unwrap();
+    let docs = parse_topic(&topic, "ethresearch", BASE).unwrap();
     assert_eq!(docs.len(), full.len() - 1);
     assert!(docs.iter().all(|d| d.id != full[0].id));
 }
@@ -134,11 +134,11 @@ fn a_rawless_post_is_skipped_but_a_rawless_topic_errors() {
               "created_at": "2020-01-02T00:00:00Z" }
         ]}
     });
-    let docs = parse_topic(&topic, "https://ethresear.ch").unwrap();
+    let docs = parse_topic(&topic, "ethresearch", "https://ethresear.ch").unwrap();
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0].id, "ethresearch/post/1");
 
     // Every post lacking raw means the fetch itself was wrong — still an error.
     topic["post_stream"]["posts"][0].as_object_mut().unwrap().remove("raw");
-    assert!(parse_topic(&topic, "https://ethresear.ch").is_err());
+    assert!(parse_topic(&topic, "ethresearch", "https://ethresear.ch").is_err());
 }

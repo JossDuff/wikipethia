@@ -74,25 +74,121 @@ fn find_by_meta_matches_integers_and_strings() {
         .unwrap();
 
     // Integer equality: exactly the topic's docs, ordered by id.
-    let hits = store.find_by_meta("topic_id", &json!(426)).unwrap();
+    let hits = store.find_by_meta("topic_id", &json!(426), None).unwrap();
     let ids: Vec<&str> = hits.iter().map(|d| d.id.as_str()).collect();
     assert_eq!(ids, ["a", "b"]);
 
     // String equality.
-    let hits = store.find_by_meta("kind", &json!("stub")).unwrap();
+    let hits = store.find_by_meta("kind", &json!("stub"), None).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].id, "other");
 
-    // Missing key matches nothing; unsupported value types are an error.
-    assert!(store.find_by_meta("nope", &json!(1)).unwrap().is_empty());
-    assert!(store.find_by_meta("topic_id", &json!(true)).is_err());
+    // Source scoping: same key/value, different source → filtered out.
+    let hits = store
+        .find_by_meta("topic_id", &json!(426), Some("ethresearch"))
+        .unwrap();
+    assert_eq!(hits.len(), 2);
+    let hits = store
+        .find_by_meta("topic_id", &json!(426), Some("ethmagicians"))
+        .unwrap();
+    assert!(hits.is_empty());
+
+    // Missing key matches nothing; unsupported value types are an error;
+    // non-word keys are rejected (they would be inlined into SQL).
+    assert!(store.find_by_meta("nope", &json!(1), None).unwrap().is_empty());
+    assert!(store.find_by_meta("topic_id", &json!(true), None).is_err());
+    assert!(store.find_by_meta("a'; DROP TABLE x--", &json!(1), None).is_err());
+}
+
+#[test]
+fn sources_table_round_trips_and_tags_hits_with_tier() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.upsert(&[doc("a")]).unwrap();
+
+    // No manifest row yet: search works, tier is None.
+    let hits = store.search("plasma", 10).unwrap();
+    assert!(!hits.is_empty());
+    assert_eq!(hits[0].tier, None);
+    assert_eq!(store.source_tier("ethresearch").unwrap(), None);
+
+    store
+        .upsert_source("ethresearch", "https://ethresear.ch", "research")
+        .unwrap();
+    assert_eq!(
+        store.source_tier("ethresearch").unwrap().as_deref(),
+        Some("research")
+    );
+    let hits = store.search("plasma", 10).unwrap();
+    assert_eq!(hits[0].tier.as_deref(), Some("research"));
+
+    // Re-upserting refreshes the tier.
+    store
+        .upsert_source("ethresearch", "https://ethresear.ch", "renamed")
+        .unwrap();
+    assert_eq!(
+        store.source_tier("ethresearch").unwrap().as_deref(),
+        Some("renamed")
+    );
+
+    let stats = store.source_stats().unwrap();
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].id, "ethresearch");
+    assert_eq!(stats[0].count, 1);
+    assert_eq!(stats[0].tier.as_deref(), Some("renamed"));
+}
+
+#[test]
+fn unchanged_documents_are_skipped_on_reupsert() {
+    // Content above the embed floor so chunks_missing_embedding (the only
+    // public chunk-rowid probe) can see the chunks.
+    let long_doc = |id: &str| {
+        let mut d = doc(id);
+        d.content = format!("{id} {}", "exit games and plasma things. ".repeat(10));
+        d
+    };
+    let doc = long_doc;
+
+    let mut store = Store::open_in_memory().unwrap();
+    let written = store.upsert(&[doc("a"), doc("b")]).unwrap();
+    assert_eq!(written, 2);
+
+    let chunk_ids = |store: &Store| -> Vec<i64> {
+        // chunks_missing_embedding without a vector table lists every chunk.
+        store
+            .chunks_missing_embedding(100)
+            .unwrap()
+            .iter()
+            .map(|c| c.rowid)
+            .collect()
+    };
+    let before = chunk_ids(&store);
+
+    // Identical re-upsert: nothing written, chunk rowids untouched.
+    let written = store.upsert(&[doc("a"), doc("b")]).unwrap();
+    assert_eq!(written, 0);
+    assert_eq!(chunk_ids(&store), before);
+
+    // A real change writes and re-chunks that doc only.
+    let mut changed = doc("a");
+    changed.content = "entirely new content about wexlurbs".into();
+    let written = store.upsert(&[changed, doc("b")]).unwrap();
+    assert_eq!(written, 1);
+    assert_ne!(chunk_ids(&store), before);
+    assert!(store.get("a").unwrap().unwrap().content.contains("wexlurb"));
+
+    // upsert_forced is the escape hatch: identical docs rewrite anyway
+    // (how a chunking-policy change reaches an existing database).
+    let ids_before_force = chunk_ids(&store);
+    let written = store.upsert_forced(&[doc("b")]).unwrap();
+    assert_eq!(written, 1);
+    assert_ne!(chunk_ids(&store), ids_before_force);
 }
 
 #[test]
 fn parsed_fixture_survives_store_and_reload() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/topic_20660.json");
     let topic: Value = serde_json::from_str(&fs::read_to_string(fixture).unwrap()).unwrap();
-    let docs = parse_topic(&topic, "https://ethresear.ch").unwrap();
+    let docs = parse_topic(&topic, "ethresearch", "https://ethresear.ch").unwrap();
 
     let mut store = Store::open_in_memory().unwrap();
     store.upsert(&docs).unwrap();

@@ -1,15 +1,18 @@
-//! CLI: sync, index, search, add, and eval subcommands.
+//! CLI: sync, index, search, embed, add, and eval subcommands.
 
 mod eval;
+mod manifest;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use corpus_core::{Embedder, Store, parse_topic};
+use corpus_core::{Embedder, Store};
 use corpus_embed::{DIM, FastEmbedder, MODEL_ID};
-use corpus_fetch::{HttpClient, SyncOptions, sync, sync_topic};
+use corpus_fetch::{Adapter, HttpClient};
+
+use manifest::{Kind, Manifest, adapter_for};
 
 #[derive(Parser)]
 #[command(name = "corpus", about = "Curated Ethereum research corpus")]
@@ -20,27 +23,32 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Walk the forum and write raw topic JSON to disk, resumably.
+    /// Fetch sources' raw material to disk, resumably.
     Sync {
-        /// Source to sync (only "ethresearch" exists until M6).
-        #[arg(long, default_value = "ethresearch")]
-        source: String,
-        /// Stop after this many topics (already-synced topics count).
+        /// One source id from sources.toml; omit to sync every source.
+        #[arg(long)]
+        source: Option<String>,
+        /// Stop after this many topics per source (already-synced count).
         #[arg(long)]
         limit: Option<usize>,
-        /// Fetch this one topic instead of walking /latest. Skips if already
-        /// on disk; delete the file first to force a refresh.
+        /// Fetch this one topic instead of walking the listing. Requires
+        /// --source (topic ids are source-relative). Skips if already on
+        /// disk; delete the file first to force a refresh.
         #[arg(long)]
         topic: Option<u64>,
     },
-    /// Parse raw topic JSON on disk into documents and persist to SQLite.
+    /// Parse raw files on disk into documents and persist to SQLite.
     Index {
-        /// Source to index (only "ethresearch" exists until M6).
-        #[arg(long, default_value = "ethresearch")]
-        source: String,
+        /// One source id from sources.toml; omit to index every source.
+        #[arg(long)]
+        source: Option<String>,
         /// Database file to write.
         #[arg(long, default_value = "corpus.sqlite")]
         db: PathBuf,
+        /// Rewrite documents even when unchanged, re-cutting their chunks
+        /// (and dropping their vectors). Required after a chunking change.
+        #[arg(long)]
+        force: bool,
     },
     /// Search the corpus lexically (BM25 over FTS5).
     Search {
@@ -86,32 +94,57 @@ fn main() -> anyhow::Result<()> {
             limit,
             topic,
         } => {
-            check_source(&source)?;
-            let opts = SyncOptions {
-                data_dir: PathBuf::from("data").join(&source),
-                limit,
-                ..SyncOptions::default()
-            };
-            let started = std::time::Instant::now();
-            let stats = match topic {
-                Some(id) => sync_topic(&mut HttpClient::new(), &opts, id)?,
-                None => sync(&mut HttpClient::new(), &opts)?,
-            };
-            let secs = started.elapsed().as_secs();
-            println!(
-                "sync done: {} fetched, {} already on disk, in {}m{:02}s → {}",
-                stats.fetched,
-                stats.skipped,
-                secs / 60,
-                secs % 60,
-                opts.data_dir.join("topics").display()
-            );
+            let manifest = Manifest::load()?;
+            if let Some(topic_id) = topic {
+                let Some(source) = source.as_deref() else {
+                    bail!("--topic needs --source: topic ids are source-relative");
+                };
+                let entry = manifest.select(Some(source))?[0];
+                // Exhaustive on purpose: a new kind at M7 must decide here
+                // whether "--topic" means anything for it.
+                let adapter = match entry.kind {
+                    Kind::Discourse => manifest::discourse_adapter(entry),
+                };
+                let stats = adapter.sync_topic(&mut HttpClient::new(), topic_id)?;
+                println!(
+                    "sync done: {} fetched, {} already on disk → data/{}/topics",
+                    stats.fetched, stats.skipped, entry.id
+                );
+                return Ok(());
+            }
+            // Per-source failures don't abort the rest of the run — an
+            // unattended multi-source sync must not let one flaky forum
+            // starve the others. Still exits non-zero if anything failed.
+            let mut failed = Vec::new();
+            for entry in manifest.select(source.as_deref())? {
+                let started = std::time::Instant::now();
+                // One fresh client per source, sources strictly sequential —
+                // this is what keeps "one request per second per host" true.
+                match adapter_for(entry).sync(&mut HttpClient::new(), limit) {
+                    Ok(stats) => {
+                        let secs = started.elapsed().as_secs();
+                        println!(
+                            "sync {}: {} fetched, {} already on disk, in {}m{:02}s → data/{}/topics",
+                            entry.id,
+                            stats.fetched,
+                            stats.skipped,
+                            secs / 60,
+                            secs % 60,
+                            entry.id
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("sync {} failed: {err:#}", entry.id);
+                        failed.push(entry.id.clone());
+                    }
+                }
+            }
+            if !failed.is_empty() {
+                bail!("sync failed for: {} (resume by re-running)", failed.join(", "));
+            }
             Ok(())
         }
-        Command::Index { source, db } => {
-            check_source(&source)?;
-            index(&source, &db)
-        }
+        Command::Index { source, db, force } => index(source.as_deref(), &db, force),
         Command::Search { query, db, limit } => search(&query, &db, limit),
         Command::Embed { db, force } => embed(&db, force),
         Command::Add { .. } => bail!("add is not implemented until M8"),
@@ -144,13 +177,6 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn check_source(source: &str) -> anyhow::Result<()> {
-    if source != "ethresearch" {
-        bail!("unknown source {source:?} — only \"ethresearch\" exists until M6");
-    }
-    Ok(())
-}
-
 fn search(query: &str, db: &Path, limit: usize) -> anyhow::Result<()> {
     let store = Store::open(db)?;
     if store.count()? == 0 {
@@ -166,8 +192,13 @@ fn search(query: &str, db: &Path, limit: usize) -> anyhow::Result<()> {
         let author = hit.author.as_deref().unwrap_or("unknown");
         // published is ISO-8601; the date is its first ten characters.
         let date = hit.published.get(..10).unwrap_or(&hit.published);
+        let tier = hit
+            .tier
+            .as_deref()
+            .map(|t| format!(" [{t}]"))
+            .unwrap_or_default();
         println!(
-            "{:2}. {:5.2}  {} — {author}, {date}",
+            "{:2}. {:5.2}  {} — {author}, {date}{tier}",
             rank + 1,
             hit.score,
             hit.title
@@ -237,38 +268,58 @@ fn embed(db: &Path, force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn index(source: &str, db: &Path) -> anyhow::Result<()> {
-    let topics_dir = PathBuf::from("data").join(source).join("topics");
-    let mut paths: Vec<PathBuf> = fs::read_dir(&topics_dir)
-        .with_context(|| format!("reading {} — run sync first?", topics_dir.display()))?
-        .filter_map(|entry| Some(entry.ok()?.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-        .collect();
-    paths.sort();
-
+fn index(source: Option<&str>, db: &Path, force: bool) -> anyhow::Result<()> {
+    let manifest = Manifest::load()?;
+    let selected = manifest.select(source)?;
     let mut store = Store::open(db)?;
-    let mut topics = 0usize;
-    let mut documents = 0usize;
+    // Record every manifest source's url/tier, not just the selected ones —
+    // a filtered index run must still keep tiers fresh.
+    for entry in &manifest.sources {
+        store.upsert_source(&entry.id, &entry.url, &entry.tier)?;
+    }
+
+    let mut files = 0usize;
+    let mut written = 0usize;
+    let mut unchanged = 0usize;
     let mut errors = 0usize;
-    for path in &paths {
-        // One bad file shouldn't sink the run; report it and keep indexing.
-        match index_topic_file(&mut store, path) {
-            Ok(count) => {
-                topics += 1;
-                documents += count;
+    for entry in selected {
+        let adapter = adapter_for(entry);
+        let paths = match adapter.raw_files() {
+            Ok(paths) => paths,
+            // An explicitly requested source with nothing on disk is an
+            // error — succeeding with "0 files" would let a scripted
+            // sync-then-index pipeline pass against an empty corpus. Only
+            // an index-everything run skips quietly past unsynced sources.
+            Err(err) if source.is_some() => {
+                return Err(err).context(format!("reading {}'s raw files — run sync first?", entry.id));
             }
             Err(err) => {
-                errors += 1;
-                eprintln!("error {}: {err:#}", path.display());
+                eprintln!("skipping {}: {err} — run sync first?", entry.id);
+                continue;
+            }
+        };
+        for path in &paths {
+            // One bad file shouldn't sink the run; report it and keep going.
+            match index_raw_file(&mut store, adapter.as_ref(), path, force) {
+                Ok((wrote, total)) => {
+                    files += 1;
+                    written += wrote;
+                    unchanged += total - wrote;
+                }
+                Err(err) => {
+                    errors += 1;
+                    eprintln!("error {}: {err:#}", path.display());
+                }
             }
         }
     }
     println!(
-        "index done: {topics} topics, {documents} documents, {errors} errors → {}",
+        "index done: {files} files, {written} documents written, {unchanged} unchanged, \
+         {errors} errors → {}",
         db.display()
     );
     if errors > 0 {
-        bail!("{errors} topic file(s) failed to index");
+        bail!("{errors} raw file(s) failed to index");
     }
     let missing = store.missing_embedding_count()?;
     if missing > 0 {
@@ -277,9 +328,20 @@ fn index(source: &str, db: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn index_topic_file(store: &mut Store, path: &Path) -> anyhow::Result<usize> {
+/// Returns (written, parsed) so the caller can report unchanged counts.
+fn index_raw_file(
+    store: &mut Store,
+    adapter: &dyn Adapter,
+    path: &Path,
+    force: bool,
+) -> anyhow::Result<(usize, usize)> {
     let text = fs::read_to_string(path)?;
-    let topic = serde_json::from_str(&text)?;
-    let docs = parse_topic(&topic, corpus_fetch::discourse::BASE_URL)?;
-    Ok(store.upsert(&docs)?)
+    let raw = serde_json::from_str(&text)?;
+    let docs = adapter.parse(&raw)?;
+    let written = if force {
+        store.upsert_forced(&docs)?
+    } else {
+        store.upsert(&docs)?
+    };
+    Ok((written, docs.len()))
 }

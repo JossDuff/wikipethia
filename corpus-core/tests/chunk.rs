@@ -125,7 +125,7 @@ fn pathological_block_hard_splits_with_overlap() {
 
 #[test]
 fn real_thread_chunks_cleanly() {
-    let docs = parse_topic(&fixture("topic_426.json"), "https://ethresear.ch").unwrap();
+    let docs = parse_topic(&fixture("topic_426.json"), "ethresearch", "https://ethresear.ch").unwrap();
     let mut multi = 0usize;
     for doc in &docs {
         let chunks = chunk(&doc.content);

@@ -10,8 +10,6 @@ use serde_json::Value;
 
 use crate::error::FetchError;
 
-pub const BASE_URL: &str = "https://ethresear.ch";
-
 /// Post IDs per `post_ids[]` batch request. The server cap is URL length
 /// (~8 KB → HTTP 414), not an ID count; 150 six-digit IDs is ~3 KB.
 pub const BATCH_SIZE: usize = 150;
@@ -142,7 +140,7 @@ mod tests {
     fn batch_url_stays_far_under_the_8kb_server_cap() {
         // Worst realistic case: a full batch of 7-digit post IDs.
         let ids: Vec<u64> = (0..BATCH_SIZE as u64).map(|i| 9_000_000 + i).collect();
-        let url = posts_batch_url(BASE_URL, 9_999_999, &ids);
+        let url = posts_batch_url("https://ethresear.ch", 9_999_999, &ids);
         assert!(url.len() < 4096, "batch URL is {} bytes", url.len());
         assert!(url.ends_with("include_raw=1"));
         assert_eq!(url.matches("post_ids%5B%5D=").count(), BATCH_SIZE);

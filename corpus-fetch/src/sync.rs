@@ -38,16 +38,6 @@ pub struct SyncOptions {
     pub limit: Option<usize>,
 }
 
-impl Default for SyncOptions {
-    fn default() -> Self {
-        Self {
-            base_url: discourse::BASE_URL.to_string(),
-            data_dir: PathBuf::from("data/ethresearch"),
-            limit: None,
-        }
-    }
-}
-
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SyncStats {
     pub fetched: usize,

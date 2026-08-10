@@ -242,6 +242,29 @@ fn short_chunks_stay_out_of_the_vector_space() {
 }
 
 #[test]
+fn unchanged_reupsert_preserves_vectors() {
+    let mut store = seeded_store();
+    embed_all(&mut store, &FakeEmbedder);
+    let vectors_before = store.embedding_count().unwrap();
+    assert!(vectors_before > 0);
+
+    // Re-upserting identical documents (a routine re-index) must not drop
+    // a single vector — this is what keeps `index` from forcing re-embeds.
+    store
+        .upsert(&[
+            doc(
+                "test/a",
+                "Mostly fruit",
+                &format!("car {}", "fruit apple banana ".repeat(12)),
+            ),
+            doc("test/c", "Cars", &"A car is a car. ".repeat(14)),
+        ])
+        .unwrap();
+    assert_eq!(store.embedding_count().unwrap(), vectors_before);
+    assert_eq!(store.missing_embedding_count().unwrap(), 0);
+}
+
+#[test]
 fn reupserting_a_document_invalidates_only_its_vectors() {
     let mut store = seeded_store();
     embed_all(&mut store, &FakeEmbedder);
@@ -335,11 +358,11 @@ fn similar_docs_is_none_outside_the_vector_space() {
 }
 
 #[test]
-fn opening_a_v2_database_migrates_to_v3() {
+fn opening_a_v2_database_migrates_to_current() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("v2.sqlite");
 
-    // Build a real store, then strip the v3 additions so the file is
+    // Build a real store, then strip the v3/v4 additions so the file is
     // byte-for-byte what an M3-era corpus looked like.
     {
         let mut store = Store::open(&path).unwrap();
@@ -353,8 +376,12 @@ fn opening_a_v2_database_migrates_to_v3() {
     }
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch("DROP TABLE meta; PRAGMA user_version = 2;")
-            .unwrap();
+        conn.execute_batch(
+            "DROP TABLE meta; DROP TABLE sources;
+             DROP INDEX documents_topic_id; DROP INDEX documents_source;
+             PRAGMA user_version = 2;",
+        )
+        .unwrap();
     }
 
     let mut store = Store::open(&path).unwrap();
@@ -363,8 +390,10 @@ fn opening_a_v2_database_migrates_to_v3() {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
     }
+    // v4 additions arrived.
+    assert_eq!(store.source_tier("anything").unwrap(), None);
     // The migrated file has no embedding space yet and reports so cleanly.
     assert_eq!(store.embedding_model().unwrap(), None);
     assert_eq!(store.embedding_count().unwrap(), 0);
