@@ -40,6 +40,13 @@ expect = ["ethresearch/post/45970"]
 
 [[questions]]
 question = "What are the services a validator participates in?"
+# AGENT-CLASS QUESTION (2026-08-10 diagnostics): the answer is a synthesis
+# across many posts that never use the word "services" — no single query can
+# carry the decomposition an agent does with multiple searches. Expect ~0.00
+# at recall@10 indefinitely; that is the measured floor, not a regression.
+# Decomposed queries find these expects at top ranks (view-merge #2, DAS
+# fork-choice #3, FOCIL #10). Belongs in a future agent-level answer eval —
+# ground truth already written in eval-questions.txt (A7).
 # Broad by design: proposer, FFG, FOCIL, LMD-GHOST, sync, execution, building.
 # 12 expects > K=10, so recall on this question caps at 0.83.
 # t/22004, t/19870, t/16054, t/16541, t/18046, t/17169,
@@ -107,6 +114,13 @@ expect = ["ethresearch/post/52648"]
 
 [[questions]]
 question = "What are all the different types of L2s and what are their tradeoffs?"
+# AGENT-CLASS QUESTION (2026-08-10 diagnostics): enumerative — no single post
+# surveys the taxonomy, so no single query can score here. Expect ~0.00 at
+# recall@10 indefinitely; that is the measured floor, not a regression.
+# Decomposed queries find every expect in the top-10 ("based rollups" #1,
+# "sidechains security model" #2, "native rollups" #4, "optimistic rollup
+# fast finality withdrawal" #4, "minimal viable plasma" #9). Belongs in a
+# future agent-level answer eval — ground truth in eval-questions.txt (A12).
 # TODO when EthMagicians lands (M6): https://ethereum-magicians.org/t/i-think-its-ok-to-allow-stage-1-rollups-shorter-withdrawal-windows-1-2-days-but-we-should-be-more-conservative-on-stage-2/26392
 # t/15016 based rollups, t/21517 native rollups, t/426 plasma,
 # t/8045 sidechains, t/18868 fast-finality optimistic rollups
