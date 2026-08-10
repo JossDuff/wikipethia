@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::rc::Rc;
 
-use corpus_fetch::discourse::{latest_url, posts_batch_url, topic_url};
+use corpus_fetch::discourse::{about_url, latest_url, posts_batch_url, topic_url};
 use corpus_fetch::{FetchError, Fetcher, SyncOptions, sync};
 use serde_json::Value;
 
@@ -31,6 +31,11 @@ struct FakeFetcher {
 impl FakeFetcher {
     fn for_forum() -> (Self, Rc<RefCell<Vec<String>>>) {
         let mut responses = HashMap::new();
+        // Progress display asks /about.json once at sync start.
+        responses.insert(
+            about_url(BASE),
+            serde_json::json!({"about": {"stats": {"topics_count": 3}}}),
+        );
         responses.insert(latest_url(BASE, 0), fixture("latest_page_0.json"));
         responses.insert(latest_url(BASE, 1), fixture("latest_page_1.json"));
         responses.insert(topic_url(BASE, 426), fixture("topic_426.json"));
@@ -140,8 +145,11 @@ fn resume_skips_topics_already_on_disk_without_any_request() {
     assert_eq!(stats.fetched, 0);
     assert_eq!(stats.skipped, 3);
     assert!(
-        requests.borrow().iter().all(|u| u.contains("/latest.json")),
-        "only listing pages may be fetched on resume, got {:?}",
+        requests
+            .borrow()
+            .iter()
+            .all(|u| u.contains("/latest.json") || u.contains("/about.json")),
+        "only listing pages (and the progress stat) may be fetched on resume, got {:?}",
         requests.borrow()
     );
 }

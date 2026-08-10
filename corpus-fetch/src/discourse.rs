@@ -20,6 +20,11 @@ pub fn latest_url(base: &str, page: u32) -> String {
     format!("{base}/latest.json?no_definitions=true&page={page}")
 }
 
+/// Instance stats — one request at sync start, only for progress display.
+pub fn about_url(base: &str) -> String {
+    format!("{base}/about.json")
+}
+
 /// `include_raw=1`: `raw` markdown is absent from every payload unless asked
 /// for. Costs no extra requests.
 pub fn topic_url(base: &str, topic_id: u64) -> String {

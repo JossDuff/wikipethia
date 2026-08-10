@@ -5,6 +5,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -60,6 +61,8 @@ pub fn sync(fetcher: &mut dyn Fetcher, opts: &SyncOptions) -> Result<SyncStats, 
         source,
     })?;
 
+    let total = topic_total(fetcher, &opts.base_url);
+    let started = Instant::now();
     let mut stats = SyncStats::default();
     let mut page = 0u32;
     'pages: loop {
@@ -78,15 +81,23 @@ pub fn sync(fetcher: &mut dyn Fetcher, opts: &SyncOptions) -> Result<SyncStats, 
             let path = topics_dir.join(format!("{}.json", topic.id));
             if path.exists() {
                 stats.skipped += 1;
-                eprintln!("skip  {:>6}  {} (already on disk)", topic.id, topic.title);
+                eprintln!(
+                    "skip  {:>6}  {} (already on disk){}",
+                    topic.id,
+                    topic.title,
+                    progress_note(total, &stats, started.elapsed()),
+                );
                 continue;
             }
             let full = fetch_full_topic(fetcher, &opts.base_url, topic.id)?;
             write_atomic(&path, &full)?;
             stats.fetched += 1;
             eprintln!(
-                "fetch {:>6}  {} ({} posts)",
-                topic.id, topic.title, topic.posts_count
+                "fetch {:>6}  {} ({} posts){}",
+                topic.id,
+                topic.title,
+                topic.posts_count,
+                progress_note(total, &stats, started.elapsed()),
             );
         }
         if listing.topic_list.more_topics_url.is_none() {
@@ -125,6 +136,44 @@ pub fn sync_topic(
     Ok(stats)
 }
 
+/// Total topics on the server, asked once at sync start purely for progress
+/// display. Any failure — offline test fakes, a changed API shape — just
+/// hides the denominator; it must never fail the sync.
+fn topic_total(fetcher: &mut dyn Fetcher, base: &str) -> Option<u64> {
+    let about = fetcher.get_json(&discourse::about_url(base)).ok()?;
+    about["about"]["stats"]["topics_count"].as_u64()
+}
+
+/// `  [812/3115, 26%, ~2h07m left]` — empty when the total is unknown.
+/// The estimate assumes every remaining topic needs a fetch, so on a resume
+/// (skips are instant) it starts as an upper bound and converges.
+fn progress_note(total: Option<u64>, stats: &SyncStats, elapsed: Duration) -> String {
+    let Some(total) = total else {
+        return String::new();
+    };
+    let processed = (stats.fetched + stats.skipped) as u64;
+    let pct = processed * 100 / total.max(1);
+    let eta = if stats.fetched > 0 && total > processed {
+        let per_fetch = elapsed.as_secs_f64() / stats.fetched as f64;
+        let left = human_duration(per_fetch * (total - processed) as f64);
+        format!(", ~{left} left")
+    } else {
+        String::new()
+    };
+    format!("  [{processed}/{total}, {pct}%{eta}]")
+}
+
+fn human_duration(secs: f64) -> String {
+    let secs = secs as u64;
+    if secs >= 3600 {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs >= 60 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{}s", secs.max(1))
+    }
+}
+
 /// Fetch a topic and complete its `post_stream.posts` against
 /// `post_stream.stream` with `post_ids[]` batch follow-ups. The returned
 /// value is self-contained: every still-existing post, with `raw`.
@@ -152,4 +201,41 @@ fn write_atomic(path: &Path, value: &Value) -> Result<(), FetchError> {
     };
     fs::write(&tmp, serde_json::to_vec(value)?).map_err(io_err)?;
     fs::rename(&tmp, path).map_err(io_err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stats(fetched: usize, skipped: usize) -> SyncStats {
+        SyncStats { fetched, skipped }
+    }
+
+    #[test]
+    fn progress_note_shows_counts_percent_and_eta() {
+        // 10 fetched in 20s, 90 to go → ~2s each → ~180s ≈ 3m.
+        let note = progress_note(Some(100), &stats(10, 0), Duration::from_secs(20));
+        assert_eq!(note, "  [10/100, 10%, ~3m left]");
+    }
+
+    #[test]
+    fn progress_note_is_empty_without_a_total() {
+        assert_eq!(progress_note(None, &stats(5, 5), Duration::from_secs(9)), "");
+    }
+
+    #[test]
+    fn progress_note_skips_eta_before_the_first_fetch_and_when_done() {
+        let note = progress_note(Some(100), &stats(0, 40), Duration::from_secs(1));
+        assert_eq!(note, "  [40/100, 40%]");
+        let note = progress_note(Some(100), &stats(60, 40), Duration::from_secs(120));
+        assert_eq!(note, "  [100/100, 100%]");
+    }
+
+    #[test]
+    fn human_durations() {
+        assert_eq!(human_duration(0.4), "1s");
+        assert_eq!(human_duration(59.0), "59s");
+        assert_eq!(human_duration(150.0), "2m");
+        assert_eq!(human_duration(7620.0), "2h07m");
+    }
 }
