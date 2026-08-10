@@ -16,16 +16,28 @@ use crate::discourse::{
 };
 use crate::error::FetchError;
 
-/// The one seam between the walk and the network, so the walk itself is
+/// The one seam between adapters and the network, so every adapter is
 /// testable offline (hard rule: no network in tests). Two implementors:
-/// [`HttpClient`] and the test fake.
+/// [`HttpClient`] and the test fakes.
 pub trait Fetcher {
     fn get_json(&mut self, url: &str) -> Result<Value, FetchError>;
+    /// RSS/atom XML and HTML pages.
+    fn get_text(&mut self, url: &str) -> Result<String, FetchError>;
+    /// Repo snapshot tarballs.
+    fn get_bytes(&mut self, url: &str) -> Result<Vec<u8>, FetchError>;
 }
 
 impl<C: Clock> Fetcher for HttpClient<C> {
     fn get_json(&mut self, url: &str) -> Result<Value, FetchError> {
         HttpClient::get_json(self, url)
+    }
+
+    fn get_text(&mut self, url: &str) -> Result<String, FetchError> {
+        HttpClient::get_text(self, url)
+    }
+
+    fn get_bytes(&mut self, url: &str) -> Result<Vec<u8>, FetchError> {
+        HttpClient::get_bytes(self, url)
     }
 }
 
@@ -137,7 +149,7 @@ fn topic_total(fetcher: &mut dyn Fetcher, base: &str) -> Option<u64> {
 /// `  [812/3115, 26%, ~2h07m left]` — empty when the total is unknown.
 /// The estimate assumes every remaining topic needs a fetch, so on a resume
 /// (skips are instant) it starts as an upper bound and converges.
-fn progress_note(total: Option<u64>, stats: &SyncStats, elapsed: Duration) -> String {
+pub(crate) fn progress_note(total: Option<u64>, stats: &SyncStats, elapsed: Duration) -> String {
     let Some(total) = total else {
         return String::new();
     };
@@ -153,7 +165,7 @@ fn progress_note(total: Option<u64>, stats: &SyncStats, elapsed: Duration) -> St
     format!("  [{processed}/{total}, {pct}%{eta}]")
 }
 
-fn human_duration(secs: f64) -> String {
+pub(crate) fn human_duration(secs: f64) -> String {
     let secs = secs as u64;
     if secs >= 3600 {
         format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
@@ -183,13 +195,25 @@ fn fetch_full_topic(
 
 /// Write via a `.tmp` sibling and rename, so a killed run never leaves a
 /// half-written file that a resume would then skip as complete.
-fn write_atomic(path: &Path, value: &Value) -> Result<(), FetchError> {
-    let tmp = path.with_extension("json.tmp");
+pub(crate) fn write_atomic(path: &Path, value: &Value) -> Result<(), FetchError> {
+    write_atomic_bytes(path, &serde_json::to_vec(value)?)
+}
+
+/// [`write_atomic`] for arbitrary bytes. The tmp sibling appends ".tmp" to
+/// the whole file name — `with_extension` would mangle names like
+/// `feed.xml` (→ `feed.tmp`) or multi-dot paths.
+pub(crate) fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<(), FetchError> {
+    let mut tmp_name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
     let io_err = |source| FetchError::Io {
         path: tmp.clone(),
         source,
     };
-    fs::write(&tmp, serde_json::to_vec(value)?).map_err(io_err)?;
+    fs::write(&tmp, bytes).map_err(io_err)?;
     fs::rename(&tmp, path).map_err(io_err)
 }
 

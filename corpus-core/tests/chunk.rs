@@ -136,3 +136,19 @@ fn real_thread_chunks_cleanly() {
     }
     assert!(multi > 0, "the long posts in topic 426 must multi-chunk");
 }
+
+#[test]
+fn a_fence_beyond_hard_max_splits_without_panicking() {
+    // consensus-specs files carry python fences far past HARD_MAX_CHARS;
+    // they hard-split mid-fence (acceptable) but must stay bounded.
+    let fence_body = "def f(x):\n    return x + 1\n".repeat(300); // ~7800 chars
+    let content = format!("Intro paragraph.\n\n```python\n{fence_body}```\n\nOutro.");
+    let chunks = corpus_core::chunk(&content);
+    assert!(chunks.len() > 2, "must split: got {}", chunks.len());
+    for c in &chunks {
+        assert!(c.chars().count() <= 3202, "chunk too big: {}", c.chars().count());
+    }
+    let total: String = chunks.concat();
+    assert!(total.contains("Intro paragraph."));
+    assert!(total.contains("Outro."));
+}

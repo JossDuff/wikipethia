@@ -38,6 +38,7 @@ cargo run -p corpus-cli -- sync [--source <id>] [--limit N]    # no --source = a
 cargo run -p corpus-cli -- index [--source <id>]
 cargo run -p corpus-cli -- embed [--force]
 cargo run -p corpus-cli -- search "<query>"
+cargo run -p corpus-cli -- dedup [--threshold 0.95] [--source <id>]
 cargo run -p corpus-cli -- eval
 ```
 

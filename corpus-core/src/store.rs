@@ -415,6 +415,17 @@ impl Store {
         Ok(docs)
     }
 
+    /// Every document id, optionally filtered to one source, sorted.
+    pub fn doc_ids(&self, source: Option<&str>) -> Result<Vec<String>, CoreError> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id FROM documents WHERE (?1 IS NULL OR source = ?1) ORDER BY id",
+        )?;
+        let ids = stmt
+            .query_map([source], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(ids)
+    }
+
     /// Record (or refresh) a manifest source's url and tier.
     pub fn upsert_source(&mut self, id: &str, url: &str, tier: &str) -> Result<(), CoreError> {
         self.conn.execute(

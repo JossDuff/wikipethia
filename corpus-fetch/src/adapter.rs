@@ -8,7 +8,7 @@
 //! match arm where the CLI builds adapters.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use corpus_core::{CoreError, Document};
 use serde_json::Value;
@@ -25,12 +25,22 @@ pub trait Adapter {
     fn sync(&self, fetcher: &mut dyn Fetcher, limit: Option<usize>)
     -> Result<SyncStats, FetchError>;
 
-    /// Parse one raw file's JSON into documents.
-    ///
-    /// JSON-shaped because both current kinds store JSON; M7 kinds that
-    /// don't will widen this to take a path instead — deliberately not
-    /// designed for until one exists.
-    fn parse(&self, raw: &Value) -> Result<Vec<Document>, CoreError>;
+    /// Parse one raw file into documents. The default reads the file as
+    /// JSON and delegates to [`Adapter::parse`]; kinds whose raw files are
+    /// not JSON (repo markdown) override this and leave `parse` alone.
+    fn parse_file(&self, path: &Path) -> Result<Vec<Document>, CoreError> {
+        let text = fs::read_to_string(path)
+            .map_err(|e| CoreError::Parse(format!("reading {}: {e}", path.display())))?;
+        let raw: Value = serde_json::from_str(&text)?;
+        self.parse(&raw)
+    }
+
+    /// Parse a JSON raw payload (Discourse topics, feed post wrappers).
+    fn parse(&self, _raw: &Value) -> Result<Vec<Document>, CoreError> {
+        Err(CoreError::Parse(
+            "this adapter parses whole files, not JSON payloads".into(),
+        ))
+    }
 }
 
 /// Any Discourse forum: `data/<id>/topics/{topic_id}.json` on disk,

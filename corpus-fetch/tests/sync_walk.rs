@@ -65,6 +65,16 @@ impl Fetcher for FakeFetcher {
             .cloned()
             .ok_or_else(|| FetchError::Shape(format!("test fake has no response for {url}")))
     }
+
+    // The Discourse walk never fetches text or bytes; repo/feed tests use
+    // their own fakes.
+    fn get_text(&mut self, url: &str) -> Result<String, FetchError> {
+        Err(FetchError::Shape(format!("unexpected get_text({url})")))
+    }
+
+    fn get_bytes(&mut self, url: &str) -> Result<Vec<u8>, FetchError> {
+        Err(FetchError::Shape(format!("unexpected get_bytes({url})")))
+    }
 }
 
 fn opts(dir: &Path, limit: Option<usize>) -> SyncOptions {

@@ -1,0 +1,24 @@
+<?xml version="1.0" ?>
+<rss version="2.0">
+<channel>
+  <title>Vitalik Buterin's website</title>
+  <link>https://vitalik.ca/</link>
+
+<item>
+<title>Obfuscation (Part II): Diamond iO</title>
+<link>https://vitalik.ca/general/2026/07/28/obfuscation_part_ii_diamond_io.html</link>
+<guid>https://vitalik.ca/general/2026/07/28/obfuscation_part_ii_diamond_io.html</guid>
+<pubDate>Tue, 28 Jul 2026 00:00:00 +0000</pubDate>
+<description></description>
+</item>
+
+<item>
+<title>A shallow dive into formal verification &amp; friends</title>
+<link>https://vitalik.ca/general/2026/05/18/fv.html</link>
+<guid>https://vitalik.ca/general/2026/05/18/fv.html</guid>
+<pubDate>Mon, 18 May 2026 00:00:00 +0000</pubDate>
+<description></description>
+</item>
+
+</channel>
+</rss>

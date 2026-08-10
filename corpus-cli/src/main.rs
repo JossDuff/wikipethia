@@ -76,6 +76,20 @@ enum Command {
         #[arg(long)]
         note: Option<String>,
     },
+    /// Report near-duplicate documents across sources (e.g. a blog post
+    /// cross-posted to a forum). Requires embeddings.
+    Dedup {
+        /// Database file to scan.
+        #[arg(long, default_value = "corpus.sqlite")]
+        db: PathBuf,
+        /// Cosine similarity at or above which a pair is flagged.
+        #[arg(long, default_value_t = 0.95)]
+        threshold: f64,
+        /// Anchor only on this source's documents (recommended: the newly
+        /// ingested one — a full-corpus scan is one KNN query per document).
+        #[arg(long)]
+        source: Option<String>,
+    },
     /// Run the retrieval eval set and report recall@10.
     Eval {
         /// Database file to search.
@@ -100,14 +114,20 @@ fn main() -> anyhow::Result<()> {
                     bail!("--topic needs --source: topic ids are source-relative");
                 };
                 let entry = manifest.select(Some(source))?[0];
-                // Exhaustive on purpose: a new kind at M7 must decide here
-                // whether "--topic" means anything for it.
+                // Exhaustive on purpose: every kind decides here whether
+                // "--topic" means anything for it.
                 let adapter = match entry.kind {
                     Kind::Discourse => manifest::discourse_adapter(entry),
+                    Kind::Repo | Kind::Feed => bail!(
+                        "--topic only applies to discourse sources; {:?} is kind {:?} \
+                         (repo/feed sources refresh wholesale — just run sync)",
+                        entry.id,
+                        entry.kind
+                    ),
                 };
                 let stats = adapter.sync_topic(&mut HttpClient::new(), topic_id)?;
                 println!(
-                    "sync done: {} fetched, {} already on disk → data/{}/topics",
+                    "sync done: {} fetched, {} already on disk → data/{}",
                     stats.fetched, stats.skipped, entry.id
                 );
                 return Ok(());
@@ -124,7 +144,7 @@ fn main() -> anyhow::Result<()> {
                     Ok(stats) => {
                         let secs = started.elapsed().as_secs();
                         println!(
-                            "sync {}: {} fetched, {} already on disk, in {}m{:02}s → data/{}/topics",
+                            "sync {}: {} fetched, {} already on disk, in {}m{:02}s → data/{}",
                             entry.id,
                             stats.fetched,
                             stats.skipped,
@@ -145,6 +165,11 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Index { source, db, force } => index(source.as_deref(), &db, force),
+        Command::Dedup {
+            db,
+            threshold,
+            source,
+        } => dedup(&db, threshold, source.as_deref()),
         Command::Search { query, db, limit } => search(&query, &db, limit),
         Command::Embed { db, force } => embed(&db, force),
         Command::Add { .. } => bail!("add is not implemented until M8"),
@@ -206,6 +231,52 @@ fn search(query: &str, db: &Path, limit: usize) -> anyhow::Result<()> {
         println!("           {}  {}", hit.doc_id, hit.url);
         println!("           {}", hit.snippet.replace('\n', " "));
     }
+    Ok(())
+}
+
+/// Walk `source`'s documents (or all) and flag cross-source near-duplicate
+/// pairs at or above `threshold` cosine similarity. Report-only: the gate
+/// asks for flagging, not deletion — which copy is canonical is editorial.
+fn dedup(db: &Path, threshold: f64, source: Option<&str>) -> anyhow::Result<()> {
+    let store = Store::open(db)?;
+    if store.embedding_count()? == 0 {
+        bail!("{} has no embeddings — run `corpus embed` first", db.display());
+    }
+    let ids = store.doc_ids(source)?;
+    if ids.is_empty() {
+        bail!("no documents{}", source.map(|s| format!(" for source {s:?}")).unwrap_or_default());
+    }
+    let mut pairs: Vec<(f64, String, String, String)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for id in &ids {
+        let Some(hits) = store.similar_docs(id, 5)? else {
+            continue; // below the embed floor — undedupable, fine
+        };
+        let anchor_source = id.split('/').next().unwrap_or_default();
+        for hit in hits {
+            let hit_source = hit.doc_id.split('/').next().unwrap_or_default();
+            if hit.score < threshold || hit_source == anchor_source {
+                continue;
+            }
+            let key = if *id < hit.doc_id {
+                (id.clone(), hit.doc_id.clone())
+            } else {
+                (hit.doc_id.clone(), id.clone())
+            };
+            if seen.insert(key) {
+                pairs.push((hit.score, id.clone(), hit.doc_id, hit.title));
+            }
+        }
+    }
+    pairs.sort_by(|a, b| b.0.total_cmp(&a.0));
+    for (score, a, b, title) in &pairs {
+        println!("{score:.3}  {a}  ↔  {b}  {title:?}");
+    }
+    println!(
+        "\n{} cross-source pair(s) ≥ {threshold} across {} document(s)",
+        pairs.len(),
+        ids.len()
+    );
     Ok(())
 }
 
@@ -335,9 +406,7 @@ fn index_raw_file(
     path: &Path,
     force: bool,
 ) -> anyhow::Result<(usize, usize)> {
-    let text = fs::read_to_string(path)?;
-    let raw = serde_json::from_str(&text)?;
-    let docs = adapter.parse(&raw)?;
+    let docs = adapter.parse_file(path)?;
     let written = if force {
         store.upsert_forced(&docs)?
     } else {

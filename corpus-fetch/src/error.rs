@@ -18,6 +18,9 @@ pub enum FetchError {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("archive error for {source_id}: {detail}")]
+    Archive { source_id: String, detail: String },
+
     #[error("I/O error on {path}: {source}")]
     Io {
         path: PathBuf,
