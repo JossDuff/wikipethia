@@ -95,6 +95,20 @@ proof that the abstraction holds.
 **Gate:** adding EthMagicians is a `sources.toml` edit and nothing else. No
 changes to `corpus-core`.
 
+### [ ] Continuous refresh (slots after M6, before or alongside M7)
+
+Two halves. **Incremental re-sync:** `sync` currently never revisits a topic
+already on disk, so active threads go stale. Fix per NOTES-discourse-api.md —
+walk `/latest` in activity order, refetch topics whose `last_posted_at` is
+newer than the previous run's checkpoint, stop at the first older one. A
+refresh pass then costs seconds, not an hour. **Scheduling:** a cron/systemd
+timer running `sync && index && embed` once (or a few times) a day, per
+source. All three stages are already incremental or idempotent, and the MCP
+server sees updates live through WAL — no restart.
+
+**Gate:** a reply posted to a known topic appears in search results after the
+next scheduled run, with no manual steps and no full re-crawl.
+
 ### [ ] M7 — More source types
 
 Git adapter (EIPs, consensus-specs) and a page/feed adapter for blogs. This is
