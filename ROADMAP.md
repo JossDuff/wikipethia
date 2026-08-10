@@ -64,7 +64,7 @@ over BM25 and vector similarity.
 fusion weighting is wrong — fix it before moving on rather than assuming
 embeddings will help later.
 
-### [ ] M5 — MCP server
+### [x] M5 — MCP server
 
 Wrap search in `rmcp`. Tools: `search_posts`, `get_topic`, `get_post_context`,
 `find_similar`. Every result carries url, published date, and tier.
