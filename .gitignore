@@ -4,3 +4,6 @@ corpus.sqlite
 corpus.sqlite-wal
 corpus.sqlite-shm
 *.fastembed_cache/
+claude-web-shot.txt
+ethereum-mcp-shot.txt
+wikipethia-shot.txt

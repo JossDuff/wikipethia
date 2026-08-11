@@ -141,6 +141,81 @@ knows in a way a timestamp doesn't.
 
 ---
 
+## v3 — research recall, spec lookups, and a public release
+
+Scope decision 2026-08-11: wikipethia serves **both** research-discourse
+recall and spec-engineering lookups, published for the community, not just
+this desk. The measured gaps, from the 20-question eval and an end-to-end
+client test:
+
+- Spec documents drown under forum volume — confirmed independently on the
+  Hardfork Meta EIPs, EIP-7251, and EIP-4844. Recall@10 fused is 0.375
+  against a 0.581 candidate-pool ceiling, so the loss is ordering, not
+  candidate recall.
+- No typed lookup for constants, spec functions, or fork-scoped spec
+  content, though the documents are already indexed.
+- The instructions and tool descriptions steer real client behavior but
+  have zero automated coverage — the client test caught a stale
+  forward-looking claim ("expected mid-2026", stated in August 2026)
+  repeated from the corpus without date-checking.
+- No install story, no health/diagnostics surface, no adopter docs.
+
+### [ ] M9 — Reranker
+
+Cross-encoder second stage over the union of both retrieval arms (~100
+docs), behind a trait in `corpus-embed` next to `Embedder`; fastembed ships
+bge-family rerankers through the already-approved ort stack. The old
+Deferred condition — "not until hybrid fusion has plateaued" — is now
+measured as met: recall@10 fused is 0.375 against a 0.581 candidate-pool
+ceiling over 20 questions. The gap is ordering, not candidate recall;
+that is exactly the problem class a reranker addresses (eip-4844 at
+lexical #27, the rollup-stages post at #46, eip-8184 at #31).
+
+**Gate:** `eval` recall@10 clearly beats the 0.375 baseline with no
+question regressing, and a hybrid+rerank query stays interactive (a few
+seconds, not tens).
+
+### [ ] M10 — Spec-engineering lookups
+
+Constants, spec function bodies, and fork-filtered spec content over the
+canonical spec repos already in policy (consensus-specs today;
+execution-specs and RIPs from the backlog). Constraint: this must
+fit the existing `Document`/meta model — typed information rides `meta`
+and chunk tags, lookups are MCP tools over the existing index. If it
+demands special cases in `corpus-core`, stop and redesign rather than
+thread them through.
+
+**Gate:** "MAX_EFFECTIVE_BALANCE for electra" returns the right constant
+with a citation, and a set of spec-engineering eval questions is added
+and passing.
+
+### [ ] M11 — Agent-level answer eval
+
+Promoted from Deferred, name unchanged. Headless client runs
+(`claude -p`) per eval question with wikipethia as the only server;
+judge citation-recall of expected URLs in the final answer. Web search
+disabled, or web-sourced claims flagged — the Aug 2026 client test
+showed a capable client routes around weak tool results via web
+search, so final-answer grading alone measures the client, not the
+server. Log the queries the model issues; failed ones feed the
+retrieval eval as new cases.
+
+**Gate:** the harness runs over questions.toml, emits a per-question
+report, and a baseline is recorded alongside the retrieval numbers.
+
+### [ ] M12 — Adoption kit
+
+What "published community tool" needs beyond M8's dataset publishing:
+an install story (prebuilt binaries or `cargo install`), corpus
+download-and-verify, a health/diagnostics surface (today a broken index
+surfaces as prose mid-conversation), an adopter-facing README, and
+versioned releases in CI.
+
+**Gate:** a stranger on a clean machine goes from nothing to a first
+cited answer in under ten minutes using only public docs.
+
+---
+
 ## Source backlog
 
 Vetted against the curation policy in the sources.toml header (Ethereum-
@@ -150,7 +225,10 @@ sync, index, embed, `eval` delta reported.
 **Manifest edits, ready when wanted (all `ethereum` GitHub org):**
 
 - `ethereum/pm` — AllCoreDevs agendas and notes; the canonical record of
-  what shipped and why.
+  what shipped and why. Priority evidence from the Aug 2026 client test:
+  the nuance that a third BPO fork is deliberately deprioritized until
+  blob usage catches up lives only in these notes — the corpus couldn't
+  answer it, web search could.
 - `ethereum/RIPs` — Rollup Improvement Proposals; same frontmatter as EIPs.
 - `ethereum/execution-specs` — EELS, the EL counterpart to consensus-specs.
 - `ethereum/annotated-spec` — the most explanatory spec prose anywhere.
@@ -175,9 +253,9 @@ sync, index, embed, `eval` delta reported.
   the notes half of ethresear.ch's stub posts (and the staking-cap
   question's secondary source).
 
-**Explicitly out** (training-corpus material or provenance policy): client
-code at scale, test suites, Sourcify verified contracts, empirical chain
-data, audit/exploit corpora, company research forums and blogs.
+**Explicitly out** (training-corpus material or provenance policy): test
+suites, Sourcify verified contracts, empirical chain data, audit/exploit
+corpora, company research forums and blogs.
 
 ---
 
@@ -187,13 +265,18 @@ Listed so they stay out of scope, not because they are unimportant.
 
 - **PDF adapter** — arXiv and IACR ePrint. Separate extraction path, worse
   chunking, math that does not survive cleanly. A day, not an afternoon.
-- **Reranking** — cross-encoder via `ort`. Probably the largest remaining quality
-  win, but do not attempt it until `eval` shows hybrid fusion has plateaued.
-- **Agent-level answer eval** — a second eval layer where a model answers each
-  question through the MCP tools and is judged on whether its answer cites the
-  expected posts. Covers the agent-class questions (annotated in
-  questions.toml) that single-query recall@10 structurally cannot measure;
-  ground-truth answers already exist in eval-questions.txt.
+- **Client source code** — reconsidered 2026-08-11; no longer excluded on
+  principle. The user value is real ("how does geth actually implement
+  this", spec-vs-implementation divergence), but the costs are concrete:
+  major clients are millions of lines against today's 55k-doc corpus, so
+  unscoped ingest balloons embed time and the published artifact, and code
+  chunks would flood research recall through the same volume pathology
+  spec documents already suffer. Prerequisites before any ingest: the
+  reranker shipped (M9), source/tier filtering on search so code can be
+  scoped out of research queries, and a path filter per client (core
+  protocol directories, not vendored dependencies). Note the backlog's
+  client issue/PR history likely delivers more design-why per megabyte
+  and should come first.
 - **Web frontend** — a weekend once retrieval is good, and a mistake before then.
   Deliberately not scoped here.
 - **Richer provenance metadata** — stamp repo docs' meta with the tarball
