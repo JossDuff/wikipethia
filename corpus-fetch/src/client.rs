@@ -91,7 +91,6 @@ impl<C: Clock> HttpClient<C> {
                 body.with_config()
                     .limit(BODY_LIMIT)
                     .read_json::<Value>()
-                    .map_err(|e| e.to_string())
             })
         })
     }
@@ -104,7 +103,6 @@ impl<C: Clock> HttpClient<C> {
                 body.with_config()
                     .limit(BODY_LIMIT)
                     .read_to_string()
-                    .map_err(|e| e.to_string())
             })
         })
     }
@@ -118,7 +116,6 @@ impl<C: Clock> HttpClient<C> {
                 body.with_config()
                     .limit(BODY_LIMIT)
                     .read_to_vec()
-                    .map_err(|e| e.to_string())
             })
         })
     }
@@ -172,7 +169,7 @@ impl<C: Clock> HttpClient<C> {
     fn attempt<T>(
         agent: &Agent,
         url: &str,
-        read_body: impl Fn(&mut ureq::Body) -> Result<T, String>,
+        read_body: impl Fn(&mut ureq::Body) -> Result<T, ureq::Error>,
     ) -> Attempt<T> {
         let mut response = match agent.get(url).call() {
             Ok(response) => response,
@@ -187,7 +184,15 @@ impl<C: Clock> HttpClient<C> {
         if status.is_success() {
             match read_body(response.body_mut()) {
                 Ok(value) => Attempt::Success(value),
-                // A bad body on a 200 is most likely truncation; retry.
+                // Over the limit is deterministic — retrying would download
+                // the same 64 MiB five times just to fail with a misleading
+                // "truncation" message.
+                Err(err @ ureq::Error::BodyExceedsLimit(_)) => {
+                    Attempt::Fatal(FetchError::Shape(format!(
+                        "{url}: response body over the {BODY_LIMIT}-byte limit ({err})"
+                    )))
+                }
+                // Any other bad body on a 200 is most likely truncation; retry.
                 Err(err) => Attempt::Retry {
                     retry_after: None,
                     reason: format!("bad body: {err}"),

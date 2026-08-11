@@ -75,20 +75,40 @@ fn rfc2822_to_iso(s: &str) -> Option<String> {
         )
     };
     let zone = match parts.next() {
-        None | Some("GMT") | Some("UT") | Some("Z") | Some("+0000") => "Z".to_string(),
-        Some(offset) => offset.to_string(),
+        None | Some("GMT") | Some("UT") | Some("UTC") | Some("Z") | Some("+0000") => {
+            "Z".to_string()
+        }
+        Some("EST") => "-05:00".into(),
+        Some("EDT") => "-04:00".into(),
+        Some("CST") => "-06:00".into(),
+        Some("CDT") => "-05:00".into(),
+        Some("MST") => "-07:00".into(),
+        Some("MDT") => "-06:00".into(),
+        Some("PST") => "-08:00".into(),
+        Some("PDT") => "-07:00".into(),
+        // Numeric offsets keep ISO shape; anything else would produce a
+        // malformed timestamp — better no date than a corrupt one.
+        Some(offset) if offset.starts_with('+') || offset.starts_with('-') => {
+            offset.to_string()
+        }
+        Some(_) => return None,
     };
     Some(format!(
         "{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{sec:02}{zone}"
     ))
 }
 
-/// File-name-safe slug from the post's URL path.
-fn slug(link: &str) -> String {
+/// The path component of a URL, without scheme/host, ".html" stripped.
+fn url_path(link: &str) -> &str {
     let path = link
         .split_once("://")
         .map_or(link, |(_, rest)| rest.split_once('/').map_or("", |(_, p)| p));
-    let path = path.strip_suffix(".html").unwrap_or(path);
+    path.strip_suffix(".html").unwrap_or(path)
+}
+
+/// File-name-safe slug from the post's URL path.
+fn slug(link: &str) -> String {
+    let path = url_path(link);
     let slug: String = path
         .chars()
         .map(|c| {
@@ -104,11 +124,7 @@ fn slug(link: &str) -> String {
 
 /// Doc id: source id + the URL path, ".html" stripped.
 fn doc_id(source_id: &str, link: &str) -> String {
-    let path = link
-        .split_once("://")
-        .map_or(link, |(_, rest)| rest.split_once('/').map_or("", |(_, p)| p));
-    let path = path.strip_suffix(".html").unwrap_or(path);
-    format!("{source_id}/{}", path.trim_matches('/'))
+    format!("{source_id}/{}", url_path(link).trim_matches('/'))
 }
 
 /// A description that is the article itself, not a teaser: block-level
@@ -168,6 +184,7 @@ impl crate::Adapter for FeedAdapter {
         let total = items.len() as u64;
         let started = Instant::now();
         let mut stats = SyncStats::default();
+        let mut failed = 0usize;
         for item in items {
             if limit.is_some_and(|l| stats.fetched + stats.skipped >= l) {
                 break;
@@ -185,25 +202,58 @@ impl crate::Adapter for FeedAdapter {
             }
             // Full-content descriptions (EF-blog style) save a fetch; teaser
             // or empty descriptions (vitalik style) need the page itself.
-            let html = match &item.description {
-                Some(d) if is_full_content(d) => d.clone(),
-                _ => fetcher.get_text(&link)?,
+            // The rebased URL is tried first (feeds outlive their domains);
+            // the feed's original link is the fallback for items that
+            // genuinely live elsewhere. A page that is dead under both is
+            // warned and skipped — one 404 must not starve the rest of the
+            // feed, and the missing file retries next sync.
+            let fetched = match &item.description {
+                Some(d) if is_full_content(d) => Some((d.clone(), link.clone())),
+                _ => match fetcher.get_text(&link) {
+                    Ok(html) => Some((html, link.clone())),
+                    Err(rebased_err) if item.link != link => {
+                        match fetcher.get_text(&item.link) {
+                            Ok(html) => Some((html, item.link.clone())),
+                            Err(_) => {
+                                eprintln!("warn: skipping {slug}: {rebased_err}");
+                                failed += 1;
+                                None
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("warn: skipping {slug}: {err}");
+                        failed += 1;
+                        None
+                    }
+                },
+            };
+            let Some((html, final_url)) = fetched else {
+                continue;
             };
             write_atomic(
                 &dest,
                 &json!({
                     "title": item.title,
-                    "url": link,
+                    "url": final_url,
                     "published": item.published.clone().unwrap_or_default(),
                     "author": item.author,
                     "html": html,
                 }),
             )?;
+            if item.published.is_none() {
+                // Empty published silently breaks the "weigh the dates"
+                // retrieval invariant — make it visible at sync time.
+                eprintln!("warn: {slug} has no usable pubDate — published will be empty");
+            }
             stats.fetched += 1;
             eprintln!(
                 "fetch {slug}{}",
                 progress_note(Some(total), &stats, started.elapsed())
             );
+        }
+        if failed > 0 {
+            eprintln!("warn: {failed} item(s) skipped on dead links — they retry next sync");
         }
         Ok(stats)
     }

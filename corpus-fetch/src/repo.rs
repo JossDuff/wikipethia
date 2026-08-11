@@ -32,6 +32,10 @@ pub struct RepoAdapter {
     pub doc_url: String,
     /// data/<source_id>.
     pub data_dir: PathBuf,
+    /// Lazy dates.json cache — parse_file runs once per file in the index
+    /// loop and must not re-read the JSON each time. Fresh per process, so
+    /// a sync in the same run is still observed by a later first read.
+    pub dates: std::sync::OnceLock<HashMap<String, String>>,
 }
 
 /// "https://codeload.github.com/{owner}/{repo}/tar.gz/refs/heads/{branch}"
@@ -119,9 +123,10 @@ impl crate::Adapter for RepoAdapter {
         Ok(paths)
     }
 
-    /// One tarball request; atom-feed requests only for changed files that
-    /// carry no frontmatter date. Interruptible: dates.json persists after
-    /// every fetch, and unchanged files are skipped byte-identically.
+    /// One tarball request; commit-feed requests only for files that need a
+    /// date (no frontmatter `created:`, no fresh dates.json entry). The
+    /// dates pass is driven from disk state, so an interrupted run resumes
+    /// where it stopped — dates.json persists after every fetch.
     fn sync(
         &self,
         fetcher: &mut dyn Fetcher,
@@ -194,11 +199,22 @@ impl crate::Adapter for RepoAdapter {
             self.save_dates(&dates)?;
         }
 
-        // Dates pass: only changed files with no frontmatter `created:`
-        // need a commit-feed lookup (EIPs/ERCs never do; consensus-specs
-        // always do, once per changed file).
-        for relpath in dirty {
-            let content = fs::read_to_string(self.files_dir().join(&relpath)).unwrap_or_default();
+        // Dates pass: every file on disk that has neither a frontmatter
+        // `created:` nor a dates.json entry (EIPs/ERCs never need one;
+        // consensus-specs need one each). Driven from disk state, not this
+        // run's dirty set, so an interrupted first sync resumes exactly
+        // where it stopped instead of permanently losing the tail. Files
+        // whose content changed this run get their entry invalidated first —
+        // their last-commit date moved.
+        for relpath in &dirty {
+            dates.remove(relpath);
+        }
+        for path in self.raw_files().unwrap_or_default() {
+            let relpath = self.relpath_of(&path);
+            if dates.contains_key(&relpath) {
+                continue;
+            }
+            let content = fs::read_to_string(&path).unwrap_or_default();
             if frontmatter(&content).is_some_and(|fm| fm.contains_key("created")) {
                 continue;
             }
@@ -228,8 +244,12 @@ impl crate::Adapter for RepoAdapter {
 
         let doc = if let Some(fm) = frontmatter(&content) {
             // EIP/ERC style: everything worth knowing is in the frontmatter.
+            // Both repos use the `eip:` frontmatter key (the ERCs repo kept
+            // it after the 2023 split); the designator lives in the FILE
+            // NAME: erc-1046.md vs eip-4844.md. Titles must carry the exact
+            // token users search ("ERC-4337").
             let number = fm.get("eip").or_else(|| fm.get("erc"));
-            let designator = if fm.contains_key("erc") { "ERC" } else { "EIP" };
+            let designator = if stem.starts_with("erc") { "ERC" } else { "EIP" };
             let title = match (number, fm.get("title")) {
                 (Some(n), Some(t)) => format!("{designator}-{n}: {t}"),
                 (_, Some(t)) => t.clone(),
@@ -257,10 +277,7 @@ impl crate::Adapter for RepoAdapter {
             Document {
                 id: format!("{}/{stem}", self.source_id),
                 source: self.source_id.clone(),
-                url: self.doc_url.replace("{stem}", &stem).replace(
-                    "{path}",
-                    relpath.strip_suffix(".md").unwrap_or(&relpath),
-                ),
+                url: render_url(&self.doc_url, &stem, &relpath),
                 title,
                 author: fm.get("author").cloned(),
                 published: fm
@@ -280,17 +297,19 @@ impl crate::Adapter for RepoAdapter {
                 .filter(|t| !t.is_empty())
                 .unwrap_or(id_path)
                 .to_string();
-            let published = self.load_dates().get(&relpath).cloned().unwrap_or_default();
+            let published = self
+                .dates
+                .get_or_init(|| self.load_dates())
+                .get(&relpath)
+                .cloned()
+                .unwrap_or_default();
             if published.is_empty() {
                 eprintln!("warn: {relpath} has no recorded date — run sync to fill dates.json");
             }
             Document {
                 id: format!("{}/{id_path}", self.source_id),
                 source: self.source_id.clone(),
-                url: self
-                    .doc_url
-                    .replace("{stem}", &stem)
-                    .replace("{path}", &relpath),
+                url: render_url(&self.doc_url, &stem, &relpath),
                 title,
                 author: None,
                 published,
@@ -300,6 +319,13 @@ impl crate::Adapter for RepoAdapter {
         };
         Ok(vec![doc])
     }
+}
+
+/// `{stem}` = filename sans .md; `{path}` = the FULL repo-relative path,
+/// extension included — a GitHub blob URL without .md 404s, and both parse
+/// branches must agree or one class of repo gets dead citations.
+fn render_url(template: &str, stem: &str, relpath: &str) -> String {
+    template.replace("{stem}", stem).replace("{path}", relpath)
 }
 
 /// Flat `key: value` frontmatter between `---` lines; None when the file

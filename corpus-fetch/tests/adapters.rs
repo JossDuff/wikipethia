@@ -65,6 +65,7 @@ fn repo_adapter(data_dir: &Path, paths: &[&str]) -> RepoAdapter {
         paths: paths.iter().map(|s| s.to_string()).collect(),
         doc_url: "https://example.org/{path}".into(),
         data_dir: data_dir.to_path_buf(),
+        dates: Default::default(),
     }
 }
 
@@ -137,7 +138,7 @@ fn repo_parse_frontmatter_and_spec_paths() {
     assert_eq!(eip.title, "EIP-1: EIP Purpose and Guidelines");
     assert_eq!(eip.author.as_deref(), Some("Martin Becze <mb@ethereum.org>"));
     assert_eq!(eip.published, "2015-10-27T00:00:00Z");
-    assert_eq!(eip.url, "https://example.org/EIPS/eip-1");
+    assert_eq!(eip.url, "https://example.org/EIPS/eip-1.md");
     assert!(eip.content.contains("EIP stands for"));
     assert!(!eip.content.contains("created:"), "frontmatter must not leak");
     let tags = eip.meta["tags"].as_array().unwrap();
@@ -263,4 +264,77 @@ fn feed_parse_extracts_article_text_from_fetched_html() {
     assert!(doc.content.contains("- Provers are slow"));
     assert!(!doc.content.contains("Home"), "nav chrome must be dropped");
     assert!(doc.content.contains("positive & accelerating"), "entities unescaped");
+}
+
+#[test]
+fn erc_files_use_the_eip_key_but_title_as_erc() {
+    // Real ethereum/ERCs files carry `eip:` frontmatter (kept after the
+    // 2023 split); the designator comes from the file name.
+    let dir = tempfile::tempdir().unwrap();
+    let erc_dir = dir.path().join("files/ERCS");
+    fs::create_dir_all(&erc_dir).unwrap();
+    fs::write(
+        erc_dir.join("erc-1046.md"),
+        "---\neip: 1046\ntitle: tokenURI Interoperability\nauthor: someone\n\
+         created: 2018-04-13\nstatus: Final\n---\n\nBody.",
+    )
+    .unwrap();
+    let adapter = RepoAdapter {
+        source_id: "ercs".into(),
+        repo_url: "https://github.com/ethereum/ERCs".into(),
+        branch: "master".into(),
+        paths: vec!["ERCS".into()],
+        doc_url: "https://ercs.ethereum.org/ERCS/{stem}".into(),
+        data_dir: dir.path().to_path_buf(),
+        dates: Default::default(),
+    };
+    let docs = adapter
+        .parse_file(&erc_dir.join("erc-1046.md"))
+        .unwrap();
+    assert_eq!(docs[0].title, "ERC-1046: tokenURI Interoperability");
+    assert_eq!(docs[0].id, "ercs/erc-1046");
+}
+
+#[test]
+fn interrupted_dates_pass_resumes_from_disk_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = repo_adapter(dir.path(), &["EIPS", "specs"]);
+    let (mut web, _) = repo_web();
+    adapter.sync(&mut web, None).unwrap();
+
+    // Simulate an interruption having lost the dates file: files exist and
+    // are byte-identical, but the date is gone.
+    fs::remove_file(dir.path().join("dates.json")).unwrap();
+    let (mut web2, requests2) = repo_web();
+    let stats = adapter.sync(&mut web2, None).unwrap();
+    assert_eq!(stats.fetched, 0, "files unchanged");
+    let atom_hits = requests2.borrow().iter().filter(|u| u.ends_with(".atom")).count();
+    assert_eq!(atom_hits, 1, "the dateless spec file must be re-dated");
+    assert!(fs::read_to_string(dir.path().join("dates.json"))
+        .unwrap()
+        .contains("2026-03-14"));
+}
+
+#[test]
+fn a_dead_article_link_is_skipped_not_fatal() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = feed_adapter(dir.path(), "vitalik", "https://vitalik.eth.limo/feed.xml");
+    let mut web = FakeWeb::default();
+    web.texts.insert(
+        "https://vitalik.eth.limo/feed.xml".into(),
+        fixture_text("feed_vitalik.xml"),
+    );
+    // Only the SECOND item's page exists; the first (and its un-rebased
+    // fallback) is dead.
+    web.texts.insert(
+        "https://vitalik.eth.limo/general/2026/05/18/fv.html".into(),
+        fixture_text("post_vitalik.html"),
+    );
+    let stats = adapter.sync(&mut web, None).unwrap();
+    assert_eq!(stats.fetched, 1, "the live item must not be starved");
+    assert!(dir.path().join("posts/general-2026-05-18-fv.json").exists());
+    assert!(!dir
+        .path()
+        .join("posts/general-2026-07-28-obfuscation_part_ii_diamond_io.json")
+        .exists());
 }

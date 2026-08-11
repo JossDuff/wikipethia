@@ -190,6 +190,17 @@ fn validate(raw: RawSource) -> anyhow::Result<Source> {
                 .ok_or_else(|| {
                     anyhow::anyhow!("sources.toml: repo {:?} needs non-empty `paths`", raw.id)
                 })?;
+            // A trailing slash would make the tarball filter match nothing
+            // and the deletion pass then wipe the whole local mirror.
+            for path in &paths {
+                if path.is_empty() || path.starts_with('/') || path.ends_with('/') {
+                    bail!(
+                        "sources.toml: paths entry {path:?} for {:?} must be a bare \
+                         repo-relative directory (no leading or trailing slash)",
+                        raw.id
+                    );
+                }
+            }
             let doc_url = raw.doc_url.clone().ok_or_else(|| {
                 anyhow::anyhow!("sources.toml: repo {:?} needs `doc_url`", raw.id)
             })?;
@@ -262,6 +273,7 @@ pub fn adapter_for(source: &Source) -> Box<dyn Adapter> {
             paths: paths.clone(),
             doc_url: doc_url.clone(),
             data_dir,
+            dates: Default::default(),
         }),
         SourceSpec::Feed => Box::new(FeedAdapter {
             source_id: source.id.clone(),

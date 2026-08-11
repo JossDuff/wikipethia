@@ -249,7 +249,10 @@ fn dedup(db: &Path, threshold: f64, source: Option<&str>) -> anyhow::Result<()> 
     let mut pairs: Vec<(f64, String, String, String)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for id in &ids {
-        let Some(hits) = store.similar_docs(id, 5)? else {
+        // Deep enough that a cross-source duplicate can't hide behind a
+        // cluster of same-source near-neighbors (series parts, revisions) —
+        // the same-source filter below runs AFTER this cut.
+        let Some(hits) = store.similar_docs(id, 25)? else {
             continue; // below the embed floor — undedupable, fine
         };
         let anchor_source = id.split('/').next().unwrap_or_default();
@@ -353,6 +356,7 @@ fn index(source: Option<&str>, db: &Path, force: bool) -> anyhow::Result<()> {
     let mut written = 0usize;
     let mut unchanged = 0usize;
     let mut errors = 0usize;
+    let mut pruned = 0usize;
     for entry in selected {
         let adapter = adapter_for(entry);
         let paths = match adapter.raw_files() {
@@ -369,24 +373,40 @@ fn index(source: Option<&str>, db: &Path, force: bool) -> anyhow::Result<()> {
                 continue;
             }
         };
+        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut source_errors = 0usize;
         for path in &paths {
             // One bad file shouldn't sink the run; report it and keep going.
-            match index_raw_file(&mut store, adapter.as_ref(), path, force) {
+            match index_raw_file(&mut store, adapter.as_ref(), path, force, &mut seen_ids) {
                 Ok((wrote, total)) => {
                     files += 1;
                     written += wrote;
                     unchanged += total - wrote;
                 }
                 Err(err) => {
-                    errors += 1;
+                    source_errors += 1;
                     eprintln!("error {}: {err:#}", path.display());
+                }
+            }
+        }
+        errors += source_errors;
+        // Prune index entries whose raw files disappeared (upstream
+        // deletions/renames — sync already pruned the raw files). Only when
+        // this source parsed cleanly: a failed file's documents are absent
+        // from seen_ids and must not read as deletions.
+        if source_errors == 0 {
+            for id in store.doc_ids(Some(&entry.id))? {
+                if !seen_ids.contains(&id) {
+                    store.delete_document(&id)?;
+                    pruned += 1;
+                    eprintln!("prune {id} (raw file gone)");
                 }
             }
         }
     }
     println!(
         "index done: {files} files, {written} documents written, {unchanged} unchanged, \
-         {errors} errors → {}",
+         {pruned} pruned, {errors} errors → {}",
         db.display()
     );
     if errors > 0 {
@@ -399,14 +419,17 @@ fn index(source: Option<&str>, db: &Path, force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Returns (written, parsed) so the caller can report unchanged counts.
+/// Returns (written, parsed) so the caller can report unchanged counts;
+/// records every parsed doc id in `seen_ids` for the stale-doc prune.
 fn index_raw_file(
     store: &mut Store,
     adapter: &dyn Adapter,
     path: &Path,
     force: bool,
+    seen_ids: &mut std::collections::HashSet<String>,
 ) -> anyhow::Result<(usize, usize)> {
     let docs = adapter.parse_file(path)?;
+    seen_ids.extend(docs.iter().map(|d| d.id.clone()));
     let written = if force {
         store.upsert_forced(&docs)?
     } else {
