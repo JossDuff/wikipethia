@@ -139,6 +139,22 @@ expect = [
 ]
 
 [[questions]]
+question = "As of mid-2026, what is the next Ethereum hardfork and what are its proposed EIPs?"
+# ADVERSARIAL TEMPORAL CASE (2026-08-11): the corpus actively misleads here —
+# Hegotá (the fork AFTER next) has the newest, loudest planning threads, and
+# its meta thread postdates Glamsterdam's. Recency and discussion volume both
+# point at the wrong fork; the discriminator is Meta-EIP status, not date.
+# This question beat the naive multi-hop approach in live testing. Date-pinned
+# so the answer key never rots; expects are the Glamsterdam Meta EIP and
+# timbeiko's meta thread.
+# https://eips.ethereum.org/EIPS/eip-7773
+# https://ethereum-magicians.org/t/eip-7773-glamsterdam-network-upgrade-meta-thread/21195
+expect = [
+    "eips/eip-7773",
+    "ethmagicians/post/51376",
+]
+
+[[questions]]
 question = "What is the Vitalik blog about stages of rollups?"
 # https://vitalik.eth.limo/general/2025/05/06/stages.html
 expect = ["vitalik/general/2025/05/06/stages"]
