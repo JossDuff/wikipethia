@@ -133,9 +133,51 @@ Publish `corpus.sqlite` on merge — primary channel: a Hugging Face dataset
 repo (versioned, good bandwidth for a ~500 MB file, discoverable by exactly
 the RAG-builder audience; a parquet export of the documents gets the hub's
 browsable table viewer for free). GitHub release assets as a mirror; pin
-snapshots to IPFS if you want content-addressed builds.
+snapshots to IPFS if you want content-addressed builds. Peg release versions
+to hard forks rather than dates — "the Fusaka corpus" says what a snapshot
+knows in a way a timestamp doesn't.
 
 **Gate:** adding a blog post you just read takes under a minute end to end.
+
+---
+
+## Source backlog
+
+Vetted against the curation policy in the sources.toml header (Ethereum-
+canonical only). Each batch ends with the standing ritual: README table,
+sync, index, embed, `eval` delta reported.
+
+**Manifest edits, ready when wanted (all `ethereum` GitHub org):**
+
+- `ethereum/pm` — AllCoreDevs agendas and notes; the canonical record of
+  what shipped and why.
+- `ethereum/RIPs` — Rollup Improvement Proposals; same frontmatter as EIPs.
+- `ethereum/execution-specs` — EELS, the EL counterpart to consensus-specs.
+- `ethereum/annotated-spec` — the most explanatory spec prose anywhere.
+- `ethereum/devp2p` — networking-layer specs (discv5, RLPx, gossip).
+- `ethereum/execution-apis` + `ethereum/beacon-APIs` — engine/JSON-RPC and
+  beacon interface specs. Verify markdown-to-YAML ratio before adding.
+- `ethereum/solidity` (docs/ only via the paths filter) — in-org, so within
+  policy; moderate value for protocol research.
+- ethereum.org docs and EPF/Protocol Studies — canonical but explanatory
+  rather than research; add only if breadth beats research-density.
+
+**Needs new adapter work (future milestones):**
+
+- Devcon/Devconnect talk transcripts — EF-canonical; needs a transcript
+  source and adapter.
+- Client issue/PR history — the best "why does Ethereum look this way"
+  material anywhere (bugs, rejected approaches, design fights); needs a
+  GitHub-issues adapter with API auth and rate limits. Real scope.
+- Ethereum Stack Exchange dump — CC-licensed Q&A; shape suits training more
+  than retrieval, revisit if the use case appears.
+- HackMD page adapter — `/{id}/download` serves raw markdown; would capture
+  the notes half of ethresear.ch's stub posts (and the staking-cap
+  question's secondary source).
+
+**Explicitly out** (training-corpus material or provenance policy): client
+code at scale, test suites, Sourcify verified contracts, empirical chain
+data, audit/exploit corpora, company research forums and blogs.
 
 ---
 
@@ -154,3 +196,11 @@ Listed so they stay out of scope, not because they are unimportant.
   ground-truth answers already exist in eval-questions.txt.
 - **Web frontend** — a weekend once retrieval is good, and a mistake before then.
   Deliberately not scoped here.
+- **Richer provenance metadata** — stamp repo docs' meta with the tarball
+  commit ref and a retrieval date. Nearly free at ingest; future-proofs any
+  published dataset.
+- **Relationship links, starting cheap** — EIP frontmatter's
+  `discussions-to` is already in doc meta and points at Magicians threads we
+  index; an MCP hop ("show the discussion for this EIP") would be the first
+  real spec→discussion edge. The full version — supersedes / implements /
+  fixed-by edges across sources — is a curation project of its own.
