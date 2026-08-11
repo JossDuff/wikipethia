@@ -149,10 +149,7 @@ question = "As of mid-2026, what is the next Ethereum hardfork and what are its 
 # timbeiko's meta thread.
 # https://eips.ethereum.org/EIPS/eip-7773
 # https://ethereum-magicians.org/t/eip-7773-glamsterdam-network-upgrade-meta-thread/21195
-expect = [
-    "eips/eip-7773",
-    "ethmagicians/post/51376",
-]
+expect = ["eips/eip-7773", "ethmagicians/post/51376"]
 
 [[questions]]
 question = "What is the Vitalik blog about stages of rollups?"
@@ -169,3 +166,26 @@ expect = [
     "eips/eip-8184",
     "ethmagicians/post/68086",
 ]
+
+# The next three questions share one expected doc on purpose: the same
+# target at three query distances — exact identifier, definitional phrase,
+# and broad topical paraphrase. Note the metric consequence: 3 of the
+# questions now ride on eip-4844 surfacing.
+
+[[questions]]
+# Lexical probe — also exercises the unhyphenated form ("EIP 4844").
+question = "What is EIP 4844?"
+# https://eips.ethereum.org/EIPS/eip-4844
+expect = ["eips/eip-4844"]
+
+[[questions]]
+# Definitional/semantic probe; 4844 is the document that defines blobs.
+question = "What are blobs?"
+# https://eips.ethereum.org/EIPS/eip-4844
+expect = ["eips/eip-4844"]
+
+[[questions]]
+# Broad paraphrase — no shared vocabulary with the target beyond "rollups".
+question = "What did Ethereum do to scale rollups?"
+# https://eips.ethereum.org/EIPS/eip-4844
+expect = ["eips/eip-4844"]
