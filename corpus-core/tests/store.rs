@@ -197,3 +197,19 @@ fn parsed_fixture_survives_store_and_reload() {
         assert_eq!(store.get(&doc.id).unwrap().as_ref(), Some(doc));
     }
 }
+
+#[test]
+fn delete_document_removes_docs_chunks_and_search_hits() {
+    let mut store = Store::open_in_memory().unwrap();
+    let mut a = doc("a");
+    a.content = format!("wexlurb {}", "exit games and things. ".repeat(10));
+    store.upsert(&[a, doc("b")]).unwrap();
+    assert!(!store.search("wexlurb", 10).unwrap().is_empty());
+
+    assert!(store.delete_document("a").unwrap());
+    assert!(store.get("a").unwrap().is_none());
+    assert!(store.search("wexlurb", 10).unwrap().is_empty());
+    // The other document is untouched; deleting again reports absence.
+    assert!(store.get("b").unwrap().is_some());
+    assert!(!store.delete_document("a").unwrap());
+}

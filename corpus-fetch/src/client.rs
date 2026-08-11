@@ -40,8 +40,10 @@ impl Clock for RealClock {
 }
 
 /// Outcome of a single request attempt, before retry policy is applied.
-enum Attempt {
-    Success(Value),
+/// Generic over the body type so JSON, text, and byte fetches share one
+/// throttle/backoff/429 policy.
+enum Attempt<T> {
+    Success(T),
     Retry {
         retry_after: Option<Duration>,
         reason: String,
@@ -84,7 +86,38 @@ impl<C: Clock> HttpClient<C> {
     /// GET `url` and parse the body as JSON, throttled and with retries.
     pub fn get_json(&mut self, url: &str) -> Result<Value, FetchError> {
         let agent = self.agent.clone();
-        self.run_with_retries(url, move |u| Self::attempt(&agent, u))
+        self.run_with_retries(url, move |u| {
+            Self::attempt(&agent, u, |body| {
+                body.with_config()
+                    .limit(BODY_LIMIT)
+                    .read_json::<Value>()
+            })
+        })
+    }
+
+    /// GET `url` as text (RSS/atom XML, HTML pages), throttled and retried.
+    pub fn get_text(&mut self, url: &str) -> Result<String, FetchError> {
+        let agent = self.agent.clone();
+        self.run_with_retries(url, move |u| {
+            Self::attempt(&agent, u, |body| {
+                body.with_config()
+                    .limit(BODY_LIMIT)
+                    .read_to_string()
+            })
+        })
+    }
+
+    /// GET `url` as raw bytes (repo tarballs), throttled and retried.
+    /// Bodies are bounded by [`BODY_LIMIT`]; snapshot tarballs run 10–30 MB.
+    pub fn get_bytes(&mut self, url: &str) -> Result<Vec<u8>, FetchError> {
+        let agent = self.agent.clone();
+        self.run_with_retries(url, move |u| {
+            Self::attempt(&agent, u, |body| {
+                body.with_config()
+                    .limit(BODY_LIMIT)
+                    .read_to_vec()
+            })
+        })
     }
 
     /// Sleep however long is needed so consecutive requests are at least
@@ -100,11 +133,11 @@ impl<C: Clock> HttpClient<C> {
         self.last_request = Some(self.clock.now());
     }
 
-    fn run_with_retries(
+    fn run_with_retries<T>(
         &mut self,
         url: &str,
-        mut attempt_fn: impl FnMut(&str) -> Attempt,
-    ) -> Result<Value, FetchError> {
+        mut attempt_fn: impl FnMut(&str) -> Attempt<T>,
+    ) -> Result<T, FetchError> {
         let mut backoff = INITIAL_BACKOFF;
         let mut last_error = String::new();
         for attempt in 1..=MAX_ATTEMPTS {
@@ -133,7 +166,11 @@ impl<C: Clock> HttpClient<C> {
         })
     }
 
-    fn attempt(agent: &Agent, url: &str) -> Attempt {
+    fn attempt<T>(
+        agent: &Agent,
+        url: &str,
+        read_body: impl Fn(&mut ureq::Body) -> Result<T, ureq::Error>,
+    ) -> Attempt<T> {
         let mut response = match agent.get(url).call() {
             Ok(response) => response,
             Err(err) => {
@@ -145,14 +182,17 @@ impl<C: Clock> HttpClient<C> {
         };
         let status = response.status();
         if status.is_success() {
-            match response
-                .body_mut()
-                .with_config()
-                .limit(BODY_LIMIT)
-                .read_json::<Value>()
-            {
+            match read_body(response.body_mut()) {
                 Ok(value) => Attempt::Success(value),
-                // A bad body on a 200 is most likely truncation; retry.
+                // Over the limit is deterministic — retrying would download
+                // the same 64 MiB five times just to fail with a misleading
+                // "truncation" message.
+                Err(err @ ureq::Error::BodyExceedsLimit(_)) => {
+                    Attempt::Fatal(FetchError::Shape(format!(
+                        "{url}: response body over the {BODY_LIMIT}-byte limit ({err})"
+                    )))
+                }
+                // Any other bad body on a 200 is most likely truncation; retry.
                 Err(err) => Attempt::Retry {
                     retry_after: None,
                     reason: format!("bad body: {err}"),
@@ -227,7 +267,7 @@ mod tests {
         }
     }
 
-    fn success() -> Attempt {
+    fn success() -> Attempt<Value> {
         Attempt::Success(Value::Null)
     }
 
@@ -276,7 +316,7 @@ mod tests {
 
         let mut calls = 0;
         let err = client
-            .run_with_retries("u", |_| {
+            .run_with_retries("u", |_| -> Attempt<Value> {
                 calls += 1;
                 Attempt::Retry {
                     retry_after: None,
@@ -307,7 +347,7 @@ mod tests {
 
         let mut calls = 0;
         let err = client
-            .run_with_retries("u", |_| {
+            .run_with_retries("u", |_| -> Attempt<Value> {
                 calls += 1;
                 Attempt::Fatal(FetchError::Status {
                     url: "u".into(),

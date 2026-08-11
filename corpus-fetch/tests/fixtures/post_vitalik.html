@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head><title>A shallow dive into formal verification</title>
+<script>window.dataLayer = [];</script>
+<style>body { font: serif }</style>
+</head>
+<body>
+<nav><a href="/">Home</a> | <a href="/categories">Categories</a></nav>
+<header>Vitalik Buterin's website</header>
+<article>
+<h1>A shallow dive into formal verification</h1>
+<p>Formal verification is the practice of mathematically proving that a program
+satisfies a specification. In the context of Ethereum, the highest-value
+target is the consensus client: a bug there is a chain split.</p>
+<h2>Why it is hard</h2>
+<p>Specifications themselves can be wrong, and the gap between the spec
+language and the implementation language is where bugs hide.</p>
+<pre>def verify(proof, statement):
+    assert pairing_check(proof.a, proof.b)
+    return hash(statement) == proof.commitment</pre>
+<ul>
+<li>Provers are slow</li>
+<li>Specs drift</li>
+</ul>
+<p>Still, the trend is positive &amp; accelerating.</p>
+</article>
+<footer>© 2026 · <a href="/rss">RSS</a></footer>
+</body>
+</html>

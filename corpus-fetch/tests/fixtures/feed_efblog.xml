@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0">
+    <channel>
+        <title>Ethereum Foundation Blog</title>
+        <link>https://blog.ethereum.org</link>
+        <item>
+            <title><![CDATA[Announcing the Lean Ethereum roadmap]]></title>
+            <link>https://blog.ethereum.org/2025/07/31/lean-ethereum</link>
+            <guid>https://blog.ethereum.org/2025/07/31/lean-ethereum</guid>
+            <pubDate>Thu, 31 Jul 2025 00:00:00 GMT</pubDate>
+            <author>Ethereum Foundation</author>
+            <description><![CDATA[<p>Today we outline a long-horizon initiative to simplify the consensus layer and prepare Ethereum for the post-quantum era. The plan has three pillars: lean consensus, lean data, and lean execution. Each pillar keeps the protocol verifiable on minimal hardware while raising throughput. This paragraph is intentionally long enough, together with its siblings, to cross the one-kilobyte threshold that marks a feed description as carrying the full article rather than a teaser, because the Ethereum Foundation blog ships complete post bodies inside its RSS description elements.</p><p>Lean consensus replaces BLS aggregation with hash-based signatures aggregated by succinct proofs. Lean data continues the danksharding line of work with data availability sampling as the scaling primitive. Lean execution explores proving the EVM with minimal zkVMs over a RISC-V target, so that verifying Ethereum requires only commodity hardware and an internet connection, which preserves the network's credible neutrality for decades.</p>]]></description>
+        </item>
+    </channel>
+</rss>

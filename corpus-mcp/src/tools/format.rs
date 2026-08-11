@@ -20,7 +20,8 @@ pub const MAX_CONTEXT: usize = 10;
 
 /// The one citation shape every citable unit carries:
 /// `doc_id · author · date · tier · url`. The tier segment is omitted when
-/// the document's source has no manifest row.
+/// the document's source has no manifest row; the date segment is omitted
+/// when the source supplied none (a blank " ·  · " reads like corruption).
 pub fn citation(
     doc_id: &str,
     author: Option<&str>,
@@ -29,10 +30,13 @@ pub fn citation(
     url: &str,
 ) -> String {
     let tier = tier.map(|t| format!("{t} · ")).unwrap_or_default();
+    let date = match date(published) {
+        "" => String::new(),
+        d => format!("{d} · "),
+    };
     format!(
-        "{doc_id} · {} · {} · {tier}{url}",
+        "{doc_id} · {} · {date}{tier}{url}",
         author.unwrap_or("unknown"),
-        date(published)
     )
 }
 
@@ -96,6 +100,11 @@ mod tests {
             "ethresearch/post/1 · vb · 2018-01-03 · https://x"
         );
         assert!(citation("id", None, "2018-01-03", None, "u").contains("unknown"));
+        // A dateless source omits the segment instead of rendering "·  ·".
+        assert_eq!(
+            citation("id", Some("a"), "", Some("blog"), "u"),
+            "id · a · blog · u"
+        );
     }
 
     #[test]

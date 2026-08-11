@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en-US">
+  <id>tag:github.com,2008:/ethereum/testrepo/commits/master/specs/phase0/beacon-chain.md</id>
+  <title>Recent Commits to testrepo:master</title>
+  <updated>2026-03-14T09:30:00Z</updated>
+  <entry>
+    <id>tag:github.com,2008:Grit::Commit/abc123</id>
+    <title>Update beacon chain spec for heze</title>
+    <updated>2026-03-14T09:30:00Z</updated>
+    <author><name>somedev</name></author>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Grit::Commit/def456</id>
+    <title>Earlier edit</title>
+    <updated>2025-11-02T17:12:44Z</updated>
+    <author><name>otherdev</name></author>
+  </entry>
+</feed>

@@ -415,6 +415,30 @@ impl Store {
         Ok(docs)
     }
 
+    /// Remove one document and everything derived from it — chunks, FTS
+    /// rows (via triggers), and vectors. Returns whether it existed. The
+    /// index step uses this to drop documents whose raw files disappeared
+    /// upstream; without it, deleted/renamed sources haunt search forever
+    /// with 404 canonical URLs.
+    pub fn delete_document(&mut self, id: &str) -> Result<bool, CoreError> {
+        let tx = self.conn.transaction()?;
+        delete_chunks(&tx, id, self.has_vec)?;
+        let removed = tx.execute("DELETE FROM documents WHERE id = ?1", [id])? > 0;
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    /// Every document id, optionally filtered to one source, sorted.
+    pub fn doc_ids(&self, source: Option<&str>) -> Result<Vec<String>, CoreError> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id FROM documents WHERE (?1 IS NULL OR source = ?1) ORDER BY id",
+        )?;
+        let ids = stmt
+            .query_map([source], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(ids)
+    }
+
     /// Record (or refresh) a manifest source's url and tier.
     pub fn upsert_source(&mut self, id: &str, url: &str, tier: &str) -> Result<(), CoreError> {
         self.conn.execute(
@@ -908,18 +932,7 @@ fn fts_query(user: &str) -> Option<String> {
 /// deletes by rowid, the only delete shape vec0 guarantees. The replacement
 /// chunks then read as missing embeddings until the next embed pass.
 fn write_chunks(conn: &Connection, doc: &Document, has_vec: bool) -> Result<(), CoreError> {
-    if has_vec {
-        let rowids: Vec<i64> = conn
-            .prepare_cached("SELECT id FROM chunks WHERE doc_id = ?1")?
-            .query_map([&doc.id], |row| row.get(0))?
-            .collect::<Result<_, _>>()?;
-        let mut del = conn.prepare_cached("DELETE FROM chunks_vec WHERE rowid = ?1")?;
-        for rowid in rowids {
-            del.execute([rowid])?;
-        }
-    }
-    conn.prepare_cached("DELETE FROM chunks WHERE doc_id = ?1")?
-        .execute([&doc.id])?;
+    delete_chunks(conn, &doc.id, has_vec)?;
     let mut stmt = conn.prepare_cached(
         "INSERT INTO chunks (chunk_id, doc_id, seq, title, author, tags, category, published, url, content)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -954,6 +967,25 @@ fn write_chunks(conn: &Connection, doc: &Document, has_vec: bool) -> Result<(), 
             text,
         ])?;
     }
+    Ok(())
+}
+
+/// Remove a document's chunk rows and (when the vector table exists) their
+/// vec rows — point deletes by rowid, the only delete shape vec0
+/// guarantees. Must run inside the caller's transaction.
+fn delete_chunks(conn: &Connection, doc_id: &str, has_vec: bool) -> Result<(), CoreError> {
+    if has_vec {
+        let rowids: Vec<i64> = conn
+            .prepare_cached("SELECT id FROM chunks WHERE doc_id = ?1")?
+            .query_map([doc_id], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        let mut del = conn.prepare_cached("DELETE FROM chunks_vec WHERE rowid = ?1")?;
+        for rowid in rowids {
+            del.execute([rowid])?;
+        }
+    }
+    conn.prepare_cached("DELETE FROM chunks WHERE doc_id = ?1")?
+        .execute([doc_id])?;
     Ok(())
 }
 

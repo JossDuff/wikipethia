@@ -1,13 +1,22 @@
 # The manifest — source of truth for what is in the corpus (see CLAUDE.md).
-# Adding a Discourse forum is an edit here and nothing else:
+# Adding a source of an existing kind is an edit here and nothing else:
 #   corpus sync && corpus index && corpus embed
 #
-# id:   directory under data/ and the doc-id prefix ("<id>/post/<n>").
-#       [a-z0-9_-] only, and stable forever — doc_ids embed it.
-# kind: which adapter fetches and parses it ("discourse" today;
-#       git/feed/page arrive at M7).
-# url:  base URL of the instance, no trailing slash.
+# id:   directory under data/ and the doc-id prefix — [a-z0-9_-], stable
+#       forever (doc ids embed it).
+# kind: which adapter fetches and parses it. "discourse" walks a forum;
+#       "repo" snapshots a GitHub repository (tarball over HTTPS — the
+#       ROADMAP's "git adapter", no git involved); "feed" walks an RSS feed
+#       and fetches each article.
+# url:  the forum/repo/feed URL, no trailing slash.
 # tier: opaque source-quality label carried on every search result.
+#
+# repo kinds only:
+#   branch:  branch to snapshot (also the commit-feed ref for file dates).
+#   paths:   repo-relative directories whose .md files are indexed.
+#   doc_url: canonical-URL template. {stem} = filename sans .md (doc ids
+#            become "<id>/<stem>"); {path} = repo-relative path (doc ids
+#            "<id>/<path sans .md>").
 
 [[sources]]
 id = "ethresearch"
@@ -20,3 +29,42 @@ id = "ethmagicians"
 kind = "discourse"
 url = "https://ethereum-magicians.org"
 tier = "standards"
+
+[[sources]]
+id = "eips"
+kind = "repo"
+url = "https://github.com/ethereum/EIPs"
+branch = "master"
+paths = ["EIPS"]
+doc_url = "https://eips.ethereum.org/EIPS/{stem}"
+tier = "spec"
+
+[[sources]]
+id = "ercs"
+kind = "repo"
+url = "https://github.com/ethereum/ERCs"
+branch = "master"
+paths = ["ERCS"]
+doc_url = "https://ercs.ethereum.org/ERCS/{stem}"
+tier = "spec"
+
+[[sources]]
+id = "consensusspecs"
+kind = "repo"
+url = "https://github.com/ethereum/consensus-specs"
+branch = "master"
+paths = ["specs"]
+doc_url = "https://github.com/ethereum/consensus-specs/blob/master/{path}"
+tier = "spec"
+
+[[sources]]
+id = "vitalik"
+kind = "feed"
+url = "https://vitalik.eth.limo/feed.xml"
+tier = "blog"
+
+[[sources]]
+id = "efblog"
+kind = "feed"
+url = "https://blog.ethereum.org/en/feed.xml"
+tier = "blog"
