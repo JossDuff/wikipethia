@@ -1,6 +1,7 @@
 # The manifest — source of truth for what is in the corpus (see CLAUDE.md).
 # Adding a source of an existing kind is an edit here and nothing else:
 #   corpus sync && corpus index && corpus embed
+# …plus one documentation duty: update the Sources table in README.md.
 #
 # id:   directory under data/ and the doc-id prefix — [a-z0-9_-], stable
 #       forever (doc ids embed it).
