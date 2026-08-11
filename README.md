@@ -1,8 +1,6 @@
 # wikipethia
 
-Ethereum research corpus for LLMs.
-
-Nine years of ethresear.ch, searchable locally and exposed over MCP, so a frontier model answers protocol questions from the actual literature.
+Ethereum research corpus for LLMs. Searchable locally and exposed over MCP, so a frontier model answers protocol questions from the actual literature.
 
 ## Sources
 
