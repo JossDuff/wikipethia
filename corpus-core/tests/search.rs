@@ -85,6 +85,54 @@ fn results_are_one_per_document() {
 }
 
 #[test]
+fn reply_floods_collapse_to_two_docs_per_thread() {
+    let store = store();
+    // Topic 426 has 144 posts, every one titled "Minimal Viable Plasma".
+    // Without the per-thread cap they occupy the whole ranking.
+    let hits = store.search("plasma", 10).unwrap();
+    let from_426 = hits
+        .iter()
+        .filter(|h| h.title.contains("Minimal Viable Plasma"))
+        .count();
+    assert!(from_426 > 0, "the thread must still surface");
+    assert!(from_426 <= 2, "one thread flooded the ranking: {from_426} hits");
+}
+
+#[test]
+fn distinct_titles_within_one_source_are_not_capped() {
+    let mut store = Store::open_in_memory().unwrap();
+    // Three distinct-title docs from ONE source: a cap keyed on source alone
+    // (rather than source + title) would silently drop the third, and a
+    // `limit` cut must still land between distinct titles.
+    let docs: Vec<Document> = (1..=3)
+        .map(|n| {
+            let mut d = doc(&format!("test/{n}"), "the shared frobnak subject");
+            d.title = format!("Frobnak proposal {n}");
+            d
+        })
+        .collect();
+    store.upsert(&docs).unwrap();
+    assert_eq!(store.search("frobnak", 10).unwrap().len(), 3);
+    assert_eq!(store.search("frobnak", 2).unwrap().len(), 2);
+}
+
+#[test]
+fn same_title_across_sources_is_not_collapsed() {
+    let mut store = Store::open_in_memory().unwrap();
+    // An EIP and its forum discussion legitimately share a title; the
+    // per-thread cap keys on source so both must survive.
+    let mut spec = doc("eips/eip-9999", "zorquat spec text");
+    spec.title = "EIP-9999: Zorquat".to_string();
+    spec.source = "eips".to_string();
+    let mut thread = doc("ethmagicians/post/1", "zorquat discussion text");
+    thread.title = "EIP-9999: Zorquat".to_string();
+    thread.source = "ethmagicians".to_string();
+    store.upsert(&[spec, thread]).unwrap();
+    let hits = store.search("zorquat", 10).unwrap();
+    assert_eq!(hits.len(), 2, "cross-source same-title pair was collapsed");
+}
+
+#[test]
 fn hostile_queries_never_error() {
     let store = store();
     for query in [
@@ -167,6 +215,8 @@ fn opening_a_v1_database_backfills_the_index() {
 #[test]
 fn limit_caps_distinct_documents() {
     let store = store();
-    assert_eq!(store.search("plasma", 3).unwrap().len(), 3);
+    // "plasma" yields two docs after per-thread collapsing; limit must cut
+    // below that and 0 must short-circuit.
+    assert_eq!(store.search("plasma", 1).unwrap().len(), 1);
     assert!(store.search("plasma", 0).unwrap().is_empty());
 }

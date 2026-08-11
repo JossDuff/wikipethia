@@ -68,13 +68,26 @@ pub fn truncate_block(text: &str, max_chars: usize, doc_id: &str) -> String {
     )
 }
 
-/// "original post" for post_number 1, "reply #N" otherwise; a document with
-/// no thread position (non-Discourse sources, later) gets an empty label.
+/// The spec status a repo-adapter document carries from its frontmatter
+/// (Draft, Final, …). The one place that owns the meta key — every rendering
+/// of the status goes through here so the key can't drift between surfaces.
+pub fn spec_status(meta: &Map<String, Value>) -> Option<&str> {
+    meta.get("status").and_then(Value::as_str)
+}
+
+/// "original post" for post_number 1, "reply #N" otherwise. A document with
+/// no thread position falls back to its spec status ("status: Draft") — for
+/// EIP/ERC documents that field decides questions recency cannot (which
+/// hardfork is actually next), so it must be visible where models read
+/// results. Empty when neither is present.
 pub fn post_label(meta: &Map<String, Value>) -> String {
     match meta.get("post_number").and_then(Value::as_u64) {
         Some(1) => "original post".to_string(),
         Some(n) => format!("reply #{n}"),
-        None => String::new(),
+        None => match spec_status(meta) {
+            Some(s) => format!("status: {s}"),
+            None => String::new(),
+        },
     }
 }
 
@@ -139,5 +152,12 @@ mod tests {
         meta.insert("post_number".into(), json!(7));
         assert_eq!(post_label(&meta), "reply #7");
         assert_eq!(post_label(&serde_json::Map::new()), "");
+        // Threadless documents surface their spec status instead.
+        let mut spec = serde_json::Map::new();
+        spec.insert("status".into(), json!("Draft"));
+        assert_eq!(post_label(&spec), "status: Draft");
+        // A thread position wins over a stray status field.
+        meta.insert("status".into(), json!("Draft"));
+        assert_eq!(post_label(&meta), "reply #7");
     }
 }

@@ -88,8 +88,21 @@ CREATE INDEX IF NOT EXISTS documents_source ON documents (source);
 /// Per-column BM25 weights: title, author, tags, content. Title and author
 /// hits must decisively outrank an incidental body mention — exact matches
 /// on author names and topic titles are half the point of lexical search.
+/// Tags sit level with title because for spec documents they carry the
+/// frontmatter (status, type) that plain text lost. Content stays at 1.0:
+/// damping it to 0.5 was measured to cost fused recall on body-answered
+/// questions (0.435 → 0.324) without moving the spec-retrieval cases.
 /// One const because the expression appears in both SELECT and ORDER BY.
-const BM25: &str = "bm25(chunks_fts, 5.0, 5.0, 3.0, 1.0)";
+const BM25: &str = "bm25(chunks_fts, 5.0, 5.0, 5.0, 1.0)";
+
+/// Max documents per (source, title) pair in the lexical ranking. Forum
+/// replies inherit their thread's title, so one popular thread floods the
+/// ranking: before this cap, all 27 documents ahead of the Glamsterdam
+/// Hardfork Meta EIP on the query "Hardfork Meta" were replies from two
+/// Istanbul/Berlin-era threads. Two per thread keeps the OP-plus-best-reply
+/// shape; keying on source keeps a spec and its same-titled forum thread
+/// distinct.
+const THREAD_CAP: usize = 2;
 
 /// One search result, deduplicated to the best-ranked chunk per document.
 /// Carries `url`, `published`, and `tier` per the retrieval invariants.
@@ -204,6 +217,18 @@ impl Store {
 
     fn upsert_with(&mut self, docs: &[Document], force: bool) -> Result<usize, CoreError> {
         use rusqlite::OptionalExtension;
+        // Ranking derives a document's source from its id prefix (see the
+        // per-thread cap in `search`), so the "{source}/..." naming scheme
+        // is an invariant, not a convention — reject violations at the door
+        // rather than letting them silently miskey the cap.
+        for doc in docs {
+            if doc.id.split_once('/').map(|(prefix, _)| prefix) != Some(&doc.source) {
+                return Err(CoreError::Parse(format!(
+                    "document id {:?} is not prefixed by its source {:?}",
+                    doc.id, doc.source
+                )));
+            }
+        }
         let tx = self.conn.transaction()?;
         let mut written = 0;
         {
@@ -282,19 +307,31 @@ impl Store {
         let mut stmt = self.conn.prepare_cached(&sql)?;
         let mut rows = stmt.query([&fts])?;
         // Rows stream lazily in rank order; keep the first (best) chunk per
-        // document and stop once `limit` distinct documents are collected.
+        // document — and at most THREAD_CAP documents per (source, title),
+        // which collapses same-thread reply floods — stopping once `limit`
+        // distinct documents are collected.
         let mut seen = HashSet::new();
+        let mut per_thread: HashMap<(String, String), usize> = HashMap::new();
         let mut hits = Vec::new();
         while let Some(row) = rows.next()? {
             let doc_id: String = row.get(0)?;
             if !seen.insert(doc_id.clone()) {
                 continue;
             }
+            let title: String = row.get(3)?;
+            // The "{source}/..." id shape is enforced by upsert_with, so the
+            // prefix is the document's source without a join.
+            let source = doc_id.split_once('/').map_or("", |(prefix, _)| prefix).to_string();
+            let thread_count = per_thread.entry((source, title.clone())).or_insert(0);
+            if *thread_count >= THREAD_CAP {
+                continue;
+            }
+            *thread_count += 1;
             hits.push(SearchHit {
                 doc_id,
                 chunk_id: row.get(1)?,
                 url: row.get(2)?,
-                title: row.get(3)?,
+                title,
                 author: row.get(4)?,
                 published: row.get(5)?,
                 tier: None,

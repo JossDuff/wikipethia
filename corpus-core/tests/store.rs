@@ -11,7 +11,8 @@ fn doc(id: &str) -> Document {
     meta.insert("topic_id".into(), json!(426));
     meta.insert("tags".into(), json!(["plasma"]));
     Document {
-        id: id.into(),
+        // Ids must be prefixed by their source — upsert enforces it.
+        id: format!("ethresearch/{id}"),
         source: "ethresearch".into(),
         url: format!("https://ethresear.ch/t/mvp/426/{id}"),
         title: "Minimal Viable Plasma".into(),
@@ -33,7 +34,7 @@ fn upsert_is_idempotent_and_overwrites() {
     updated.content = "edited".into();
     store.upsert(&[updated.clone()]).unwrap();
     assert_eq!(store.count().unwrap(), 2);
-    assert_eq!(store.get("a").unwrap().unwrap(), updated);
+    assert_eq!(store.get("ethresearch/a").unwrap().unwrap(), updated);
 }
 
 #[test]
@@ -41,7 +42,7 @@ fn documents_roundtrip_exactly() {
     let mut store = Store::open_in_memory().unwrap();
     let original = doc("roundtrip");
     store.upsert(std::slice::from_ref(&original)).unwrap();
-    assert_eq!(store.get("roundtrip").unwrap().unwrap(), original);
+    assert_eq!(store.get("ethresearch/roundtrip").unwrap().unwrap(), original);
     assert!(store.get("missing").unwrap().is_none());
 }
 
@@ -76,12 +77,12 @@ fn find_by_meta_matches_integers_and_strings() {
     // Integer equality: exactly the topic's docs, ordered by id.
     let hits = store.find_by_meta("topic_id", &json!(426), None).unwrap();
     let ids: Vec<&str> = hits.iter().map(|d| d.id.as_str()).collect();
-    assert_eq!(ids, ["a", "b"]);
+    assert_eq!(ids, ["ethresearch/a", "ethresearch/b"]);
 
     // String equality.
     let hits = store.find_by_meta("kind", &json!("stub"), None).unwrap();
     assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].id, "other");
+    assert_eq!(hits[0].id, "ethresearch/other");
 
     // Source scoping: same key/value, different source → filtered out.
     let hits = store
@@ -174,7 +175,7 @@ fn unchanged_documents_are_skipped_on_reupsert() {
     let written = store.upsert(&[changed, doc("b")]).unwrap();
     assert_eq!(written, 1);
     assert_ne!(chunk_ids(&store), before);
-    assert!(store.get("a").unwrap().unwrap().content.contains("wexlurb"));
+    assert!(store.get("ethresearch/a").unwrap().unwrap().content.contains("wexlurb"));
 
     // upsert_forced is the escape hatch: identical docs rewrite anyway
     // (how a chunking-policy change reaches an existing database).
@@ -206,10 +207,10 @@ fn delete_document_removes_docs_chunks_and_search_hits() {
     store.upsert(&[a, doc("b")]).unwrap();
     assert!(!store.search("wexlurb", 10).unwrap().is_empty());
 
-    assert!(store.delete_document("a").unwrap());
-    assert!(store.get("a").unwrap().is_none());
+    assert!(store.delete_document("ethresearch/a").unwrap());
+    assert!(store.get("ethresearch/a").unwrap().is_none());
     assert!(store.search("wexlurb", 10).unwrap().is_empty());
     // The other document is untouched; deleting again reports absence.
-    assert!(store.get("b").unwrap().is_some());
-    assert!(!store.delete_document("a").unwrap());
+    assert!(store.get("ethresearch/b").unwrap().is_some());
+    assert!(!store.delete_document("ethresearch/a").unwrap());
 }
