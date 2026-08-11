@@ -68,6 +68,13 @@ pub fn truncate_block(text: &str, max_chars: usize, doc_id: &str) -> String {
     )
 }
 
+/// The spec status a repo-adapter document carries from its frontmatter
+/// (Draft, Final, …). The one place that owns the meta key — every rendering
+/// of the status goes through here so the key can't drift between surfaces.
+pub fn spec_status(meta: &Map<String, Value>) -> Option<&str> {
+    meta.get("status").and_then(Value::as_str)
+}
+
 /// "original post" for post_number 1, "reply #N" otherwise. A document with
 /// no thread position falls back to its spec status ("status: Draft") — for
 /// EIP/ERC documents that field decides questions recency cannot (which
@@ -77,7 +84,7 @@ pub fn post_label(meta: &Map<String, Value>) -> String {
     match meta.get("post_number").and_then(Value::as_u64) {
         Some(1) => "original post".to_string(),
         Some(n) => format!("reply #{n}"),
-        None => match meta.get("status").and_then(Value::as_str) {
+        None => match spec_status(meta) {
             Some(s) => format!("status: {s}"),
             None => String::new(),
         },

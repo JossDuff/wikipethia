@@ -99,6 +99,24 @@ fn reply_floods_collapse_to_two_docs_per_thread() {
 }
 
 #[test]
+fn distinct_titles_within_one_source_are_not_capped() {
+    let mut store = Store::open_in_memory().unwrap();
+    // Three distinct-title docs from ONE source: a cap keyed on source alone
+    // (rather than source + title) would silently drop the third, and a
+    // `limit` cut must still land between distinct titles.
+    let docs: Vec<Document> = (1..=3)
+        .map(|n| {
+            let mut d = doc(&format!("test/{n}"), "the shared frobnak subject");
+            d.title = format!("Frobnak proposal {n}");
+            d
+        })
+        .collect();
+    store.upsert(&docs).unwrap();
+    assert_eq!(store.search("frobnak", 10).unwrap().len(), 3);
+    assert_eq!(store.search("frobnak", 2).unwrap().len(), 2);
+}
+
+#[test]
 fn same_title_across_sources_is_not_collapsed() {
     let mut store = Store::open_in_memory().unwrap();
     // An EIP and its forum discussion legitimately share a title; the

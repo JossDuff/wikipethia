@@ -21,7 +21,7 @@ use serde_json::Value;
 
 use format::{
     INDEX_EXCERPT_CHARS, MAX_CONTEXT, MAX_LIMIT, NEIGHBOR_MAX_CHARS, OP_MAX_CHARS, REPLY_PAGE,
-    RESULT_EXCERPT_CHARS, citation, date, excerpt, post_label, truncate_block,
+    RESULT_EXCERPT_CHARS, citation, date, excerpt, post_label, spec_status, truncate_block,
 };
 
 pub struct CorpusServer {
@@ -379,10 +379,7 @@ impl CorpusServer {
             // Spec status comes from EIP frontmatter, which ingest strips
             // out of `content` — without this line a model reading the full
             // text can never learn whether the spec is Draft or Final.
-            let status = doc
-                .meta
-                .get("status")
-                .and_then(Value::as_str)
+            let status = spec_status(&doc.meta)
                 .map(|s| format!("\nStatus: {s}"))
                 .unwrap_or_default();
             return Ok(format!(

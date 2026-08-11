@@ -217,6 +217,18 @@ impl Store {
 
     fn upsert_with(&mut self, docs: &[Document], force: bool) -> Result<usize, CoreError> {
         use rusqlite::OptionalExtension;
+        // Ranking derives a document's source from its id prefix (see the
+        // per-thread cap in `search`), so the "{source}/..." naming scheme
+        // is an invariant, not a convention — reject violations at the door
+        // rather than letting them silently miskey the cap.
+        for doc in docs {
+            if doc.id.split_once('/').map(|(prefix, _)| prefix) != Some(&doc.source) {
+                return Err(CoreError::Parse(format!(
+                    "document id {:?} is not prefixed by its source {:?}",
+                    doc.id, doc.source
+                )));
+            }
+        }
         let tx = self.conn.transaction()?;
         let mut written = 0;
         {
@@ -307,7 +319,9 @@ impl Store {
                 continue;
             }
             let title: String = row.get(3)?;
-            let source = doc_id.split('/').next().unwrap_or_default().to_string();
+            // The "{source}/..." id shape is enforced by upsert_with, so the
+            // prefix is the document's source without a join.
+            let source = doc_id.split_once('/').map_or("", |(prefix, _)| prefix).to_string();
             let thread_count = per_thread.entry((source, title.clone())).or_insert(0);
             if *thread_count >= THREAD_CAP {
                 continue;
