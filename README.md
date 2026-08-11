@@ -9,15 +9,15 @@ Nine years of ethresear.ch, searchable locally and exposed over MCP, so a fronti
 Everything in the corpus, as declared in [`sources.toml`](sources.toml)
 (keep this list in sync when adding a source):
 
-| Source | Kind | Tier | What it is |
-|---|---|---|---|
-| [ethresear.ch](https://ethresear.ch) | forum | `research` | Protocol R&D discussion, 2017–present |
-| [Ethereum Magicians](https://ethereum-magicians.org) | forum | `standards` | EIP process and hard-fork coordination |
-| [ethereum/EIPs](https://github.com/ethereum/EIPs) | repo | `spec` | Core-protocol EIP specifications |
-| [ethereum/ERCs](https://github.com/ethereum/ERCs) | repo | `spec` | Application-level ERC standards |
-| [consensus-specs](https://github.com/ethereum/consensus-specs) | repo | `spec` | Consensus-layer specifications, per fork |
-| [vitalik.eth.limo](https://vitalik.eth.limo) | blog | `blog` | Vitalik's writing |
-| [EF blog](https://blog.ethereum.org) | blog | `blog` | Ethereum Foundation announcements and research |
+| Source | What it is |
+|---|---|
+| [ethresear.ch](https://ethresear.ch) | Protocol R&D discussion, 2017–present |
+| [Ethereum Magicians](https://ethereum-magicians.org) | EIP process and hard-fork coordination |
+| [ethereum/EIPs](https://github.com/ethereum/EIPs) | Core-protocol EIP specifications |
+| [ethereum/ERCs](https://github.com/ethereum/ERCs) | Application-level ERC standards |
+| [consensus-specs](https://github.com/ethereum/consensus-specs) | Consensus-layer specifications, per fork |
+| [vitalik.eth.limo](https://vitalik.eth.limo) | Vitalik's writing |
+| [EF blog](https://blog.ethereum.org) | Ethereum Foundation announcements and research |
 
 ## Why not just grep the text?
 
