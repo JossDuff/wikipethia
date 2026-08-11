@@ -137,3 +137,19 @@ expect = [
     "ethresearch/post/22765",
     "ethresearch/post/46287",
 ]
+
+[[questions]]
+question = "What is the Vitalik blog about stages of rollups?"
+# https://vitalik.eth.limo/general/2025/05/06/stages.html
+expect = ["vitalik/general/2025/05/06/stages"]
+
+[[questions]]
+question = "What are the two encrypted mempool EIPs?"
+# EIP-8105 (universal enshrined encrypted mempool) + its magicians thread
+# t/27448, and EIP-8184 (lucid encrypted mempool) + its thread t/28017.
+expect = [
+    "eips/eip-8105",
+    "ethmagicians/post/66405",
+    "eips/eip-8184",
+    "ethmagicians/post/68086",
+]
