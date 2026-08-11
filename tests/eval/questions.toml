@@ -1,8 +1,14 @@
 # ids resolved mechanically from the cited URLs (each
 # expect is the topic OP's document id).
 #
-# Held back until EIPs / blogs / HackMD are ingestible (M7):
-#   Q3 staking cap raise         (eips.ethereum.org + HackMD only)
+# Still held back: nothing — the last question (staking cap) joined at M7.
+# Its HackMD secondary (notes.ethereum.org fradamt consolidation FAQ) stays
+# out until HackMD is ever ingestible.
+
+[[questions]]
+question = "Why did Ethereum raise the staking cap for validators?"
+# https://eips.ethereum.org/EIPS/eip-7251 (MAX_EFFECTIVE_BALANCE increase)
+expect = ["eips/eip-7251"]
 
 [[questions]]
 question = "What is the current account abstraction flow on Ethereum?"

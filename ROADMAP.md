@@ -109,7 +109,7 @@ server sees updates live through WAL — no restart.
 **Gate:** a reply posted to a known topic appears in search results after the
 next scheduled run, with no manual steps and no full re-crawl.
 
-### [ ] M7 — More source types
+### [x] M7 — More source types
 
 Git adapter (EIPs, consensus-specs) and a page/feed adapter for blogs. This is
 where `Document` gets tested — if it needs a new required field, the M2 design

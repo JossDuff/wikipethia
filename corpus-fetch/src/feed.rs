@@ -268,7 +268,10 @@ impl crate::Adapter for FeedAdapter {
         };
         let content = html_to_text(&html);
         if content.trim().is_empty() {
-            return Err(CoreError::Parse(format!("no article text in {url}")));
+            // A page with no extractable article (video-only posts on the
+            // early EF blog) has nothing to index — skip, don't fail.
+            eprintln!("warn: no article text in {url} — skipping");
+            return Ok(Vec::new());
         }
         Ok(vec![Document {
             id: doc_id(&self.source_id, &url),

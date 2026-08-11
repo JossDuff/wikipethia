@@ -243,6 +243,12 @@ impl crate::Adapter for RepoAdapter {
             .unwrap_or_else(|| relpath.clone());
 
         let doc = if let Some(fm) = frontmatter(&content) {
+            // "Moved" tombstones (EIPs relocated to the ERCs repo) are
+            // one-line redirects with no research content; their targets
+            // are indexed by the other source. Skip.
+            if fm.get("status").is_some_and(|s| s == "Moved") {
+                return Ok(Vec::new());
+            }
             // EIP/ERC style: everything worth knowing is in the frontmatter.
             // Both repos use the `eip:` frontmatter key (the ERCs repo kept
             // it after the 2023 split); the designator lives in the FILE
