@@ -123,7 +123,13 @@ impl CorpusServer {
              doc_id for the full text (and surrounding thread, for forum posts), \
              get_topic for a whole discussion; find_similar to explore related \
              work. Ethereum research supersedes \
-             itself — always weigh published dates when posts disagree. Coverage is \
+             itself — always weigh published dates when posts disagree. One caution \
+             for questions about the current or upcoming state of the protocol (the \
+             next hardfork, what ships in it): do NOT trust discussion recency or \
+             volume — fork planning pipelines overlap, so the fork after next always \
+             has the newest and loudest threads. The reliable discriminator is the \
+             \"Hardfork Meta\" EIPs: search for them and compare their status \
+             fields to establish which fork is actually next. Coverage is \
              limited to the indexed sources: when the corpus has nothing relevant, \
              say so and fall back to web search."
         );
@@ -147,7 +153,7 @@ impl CorpusServer {
 
     #[tool(
         name = "search_posts",
-        description = "Search a local, curated corpus of Ethereum protocol research and standards: tens of thousands of posts from the ethresear.ch and Ethereum Magicians (ethereum-magicians.org) forums, 2017 to present, plus the full EIP and ERC specifications, the consensus-layer specs, and articles from vitalik.eth.limo and blog.ethereum.org. Use this BEFORE web search for anything touching Ethereum research or the EIP process: sharding and danksharding, EIP-4844/blobs, account abstraction (EIP-4337/7702), proposer-builder separation (PBS), MEV, rollups, data availability sampling, statelessness, casper/consensus, staking economics, EIP and hard-fork coordination, or the cryptography behind them. Ranking is hybrid lexical+semantic, so exact tokens (\"EIP-4844\", an author's username) and natural-language questions both work. Every result carries a doc_id (the input to get_topic, get_post_context, and find_similar), author, published date, source tier, and a citable URL. Ethereum research goes stale in specific ways — a 2019 design post can be flatly superseded by a 2024 one — so always weigh the published dates when results disagree. A top hit is often a reply from the middle of a thread: call get_post_context or get_topic with its doc_id to recover the original post and the surrounding argument; EIPs, specs, and blog articles are standalone documents, and get_post_context returns them whole. If nothing relevant returns, say so and fall back to web search rather than forcing a weak match."
+        description = "Search a local, curated corpus of Ethereum protocol research and standards: tens of thousands of posts from the ethresear.ch and Ethereum Magicians (ethereum-magicians.org) forums, 2017 to present, plus the full EIP and ERC specifications, the consensus-layer specs, and articles from vitalik.eth.limo and blog.ethereum.org. Use this BEFORE web search for anything touching Ethereum research or the EIP process: sharding and danksharding, EIP-4844/blobs, account abstraction (EIP-4337/7702), proposer-builder separation (PBS), MEV, rollups, data availability sampling, statelessness, casper/consensus, staking economics, EIP and hard-fork coordination, or the cryptography behind them. Ranking is hybrid lexical+semantic, so exact tokens (\"EIP-4844\", an author's username) and natural-language questions both work. Every result carries a doc_id (the input to get_topic, get_post_context, and find_similar), author, published date, source tier, and a citable URL. Ethereum research goes stale in specific ways — a 2019 design post can be flatly superseded by a 2024 one — so always weigh the published dates when results disagree. But for questions about the current or upcoming state of the protocol (e.g. which hardfork is next), recency and thread volume mislead: fork planning pipelines overlap, so the fork after next has the newest, loudest discussion — resolve such questions from the status fields of the \"Hardfork Meta\" EIPs, not from what was posted most recently. A top hit is often a reply from the middle of a thread: call get_post_context or get_topic with its doc_id to recover the original post and the surrounding argument; EIPs, specs, and blog articles are standalone documents, and get_post_context returns them whole. If nothing relevant returns, say so and fall back to web search rather than forcing a weak match."
     )]
     fn search_posts(
         &self,
