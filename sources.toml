@@ -3,6 +3,11 @@
 #   corpus sync && corpus index && corpus embed
 # …plus one documentation duty: update the Sources table in README.md.
 #
+# Curation policy (Joss, 2026-08-10): Ethereum-canonical sources only —
+# the forums, the ethereum GitHub org, EF and vitalik's own writing.
+# Research published by independent companies (however good) stays out;
+# their incentives aren't the protocol's.
+#
 # id:   directory under data/ and the doc-id prefix — [a-z0-9_-], stable
 #       forever (doc ids embed it).
 # kind: which adapter fetches and parses it. "discourse" walks a forum;

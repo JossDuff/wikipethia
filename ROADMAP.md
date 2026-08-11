@@ -133,10 +133,7 @@ Publish `corpus.sqlite` on merge — primary channel: a Hugging Face dataset
 repo (versioned, good bandwidth for a ~500 MB file, discoverable by exactly
 the RAG-builder audience; a parquet export of the documents gets the hub's
 browsable table viewer for free). GitHub release assets as a mirror; pin
-snapshots to IPFS if you want content-addressed builds. **Settle licensing
-before any repo goes public:** EIPs/ERCs are CC0, but forum posts and blog
-articles are their authors' copyright with no redistribution license — start
-private, or publish only derived artifacts (embeddings + ids + URLs).
+snapshots to IPFS if you want content-addressed builds.
 
 **Gate:** adding a blog post you just read takes under a minute end to end.
 
