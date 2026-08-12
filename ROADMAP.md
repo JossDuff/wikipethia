@@ -188,7 +188,7 @@ or OP canonicalization — so revisit after M11 gives the eval suite a way
 to price thread-level relevance. Untried latency levers: shorter pair
 text, 256-token max_length, smaller candidate pool.
 
-### [ ] M10 — Spec-engineering lookups
+### [x] M10 — Spec-engineering lookups
 
 Constants, spec function bodies, and fork-filtered spec content over the
 canonical spec repos already in policy (consensus-specs today;
