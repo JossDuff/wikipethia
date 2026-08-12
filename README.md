@@ -124,6 +124,7 @@ claude mcp add --transport http wikipethia http://myserver.tailnet.ts.net:8642/m
 ```
 
 Deployment notes:
+
 - Copy the corpus WAL-safely: `sqlite3 corpus.sqlite ".backup snap.sqlite"`
   then rsync the snapshot — never rsync a live database.
 - The embedding model downloads to the fastembed cache on the server's
