@@ -17,6 +17,50 @@ Everything in the corpus, as declared in [`sources.toml`](sources.toml)
 | [vitalik.eth.limo](https://vitalik.eth.limo) | Vitalik's writing |
 | [EF blog](https://blog.ethereum.org) | Ethereum Foundation announcements and research |
 
+## Running it
+
+You need Rust (stable, 2024 edition) and ~1.5GB of disk (raw fetches +
+index + embedding model). Build:
+
+```bash
+git clone https://github.com/JossDuff/wikipethia && cd wikipethia
+cargo build --release
+```
+
+Build the corpus — three stages, each resumable and incremental:
+
+```bash
+# 1. Fetch the sources. The full forum crawl takes many hours: it holds to
+#    one request per second per host on purpose (these forums are public
+#    goods). Interrupting is safe — it resumes where it stopped.
+#    For a quick taste first: --source ethresearch --limit 50
+cargo run --release -p corpus-cli -- sync
+
+# 2. Parse into the search index (corpus.sqlite)
+cargo run --release -p corpus-cli -- index
+
+# 3. Compute embeddings — downloads a small local model (~130MB) on first
+#    run, then embeds on CPU. Interruptible: re-running embeds only what's
+#    missing.
+cargo run --release -p corpus-cli -- embed
+```
+
+Try it:
+
+```bash
+cargo run --release -p corpus-cli -- search "why enshrine PBS"
+```
+
+Connect it to Claude Code (run from the repo root, or pass `--db`):
+
+```bash
+claude mcp add wikipethia -- $(pwd)/target/release/corpus-mcp --db $(pwd)/corpus.sqlite
+```
+
+Then ask Ethereum questions — the model cites forum posts, EIPs, and specs
+with URLs and dates. To serve it over the network instead of stdio, see
+"Hosting it remotely" below.
+
 ## Why not just grep the text?
 
 Search here is more than keyword matching, in three layers:
