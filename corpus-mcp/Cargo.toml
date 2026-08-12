@@ -5,10 +5,20 @@ edition.workspace = true
 
 [dependencies]
 anyhow = "1"
+# Serves rmcp's tower Service in --http mode; deliberately minimal features
+# (the same shape rmcp's own test suite uses). This is a transport, not the
+# out-of-scope web frontend — no handlers or auth of our own.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 corpus-core = { version = "0.1.0", path = "../corpus-core" }
 corpus-embed = { version = "0.1.0", path = "../corpus-embed" }
-rmcp = { version = "3.0.0", features = ["server", "transport-io"] }
+rmcp = { version = "3.0.0", features = [
+  "server",
+  "transport-io",
+  "transport-streamable-http-server",
+] }
 schemars = "1.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-tokio = { version = "1.53.1", features = ["rt", "macros"] }
+tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros", "signal", "net"] }
+# CancellationToken, wiring session shutdown and axum drain to one ctrl-c.
+tokio-util = "0.7"
