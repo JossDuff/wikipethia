@@ -45,6 +45,46 @@ in phase0 can't be drowned out by forum posts that mention it more often.
 Search can also be scoped to one source or fork
 (`scope: "consensusspecs/specs/electra"`).
 
+## Hosting it remotely
+
+The MCP server speaks stdio by default and streamable HTTP with `--http`:
+
+```bash
+corpus-mcp --db /srv/wikipethia/corpus.sqlite --http 127.0.0.1:8642
+# clients:
+claude mcp add --transport http wikipethia http://yourserver:8642/mcp
+```
+
+**There is no authentication.** Bind to loopback or a private interface
+(Tailscale/WireGuard) only — never a public address. For a non-loopback
+bind, allow the hostname clients will use (rmcp rejects unknown Host
+headers as DNS-rebind protection):
+
+```bash
+corpus-mcp --db corpus.sqlite --http 100.64.0.7:8642 --allow-host myserver.tailnet.ts.net
+```
+
+Deployment notes:
+- Copy the corpus WAL-safely: `sqlite3 corpus.sqlite ".backup snap.sqlite"`
+  then rsync the snapshot — never rsync a live database.
+- The embedding model downloads to the fastembed cache on the server's
+  first query; pre-warm with one `corpus-cli search`.
+- A minimal systemd unit:
+
+  ```ini
+  [Unit]
+  Description=wikipethia MCP server
+  After=network.target
+
+  [Service]
+  ExecStart=/srv/wikipethia/corpus-mcp --db /srv/wikipethia/corpus.sqlite --http 127.0.0.1:8642
+  WorkingDirectory=/srv/wikipethia
+  Restart=on-failure
+
+  [Install]
+  WantedBy=multi-user.target
+  ```
+
 ## Help improve wikipethia by asking questions
 
 A hand-written eval set of questions and answers (`tests/eval/questions.toml`)

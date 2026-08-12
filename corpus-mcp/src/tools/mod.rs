@@ -5,7 +5,7 @@
 
 pub mod format;
 
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use corpus_core::{CoreError, Embedder, Store, spec};
 use corpus_embed::FastEmbedder;
@@ -25,12 +25,18 @@ use format::{
     post_label, spec_status, truncate_block,
 };
 
+/// Clone is cheap by design — Arc bumps plus the instructions string. The
+/// HTTP transport's handler factory clones one shared server per session
+/// (and, for new-protocol clients, per request), so nothing expensive may
+/// live directly in these fields.
+#[derive(Clone)]
 pub struct CorpusServer {
     /// rusqlite's Connection is Send but not Sync; tools are sync fns that
-    /// hold the guard for the duration of one query — no awaits.
-    store: Mutex<Store>,
+    /// hold the guard for the duration of one query — no awaits. One shared
+    /// connection serialized by this mutex, same semantics as stdio.
+    store: Arc<Mutex<Store>>,
     /// None ⇒ the corpus has no vector index; ranking degrades to BM25.
-    embedder: Option<FastEmbedder>,
+    embedder: Option<Arc<FastEmbedder>>,
     instructions: String,
     tool_router: ToolRouter<Self>,
 }
@@ -165,8 +171,8 @@ impl CorpusServer {
             );
         }
         Ok(Self {
-            store: Mutex::new(store),
-            embedder,
+            store: Arc::new(Mutex::new(store)),
+            embedder: embedder.map(Arc::new),
             instructions,
             tool_router: Self::tool_router(),
         })
