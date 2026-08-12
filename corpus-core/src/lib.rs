@@ -6,6 +6,7 @@ pub mod discourse;
 pub mod document;
 pub mod embed;
 pub mod error;
+pub mod spec;
 pub mod store;
 
 pub use chunk::chunk;

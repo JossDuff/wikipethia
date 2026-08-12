@@ -188,19 +188,27 @@ or OP canonicalization — so revisit after M11 gives the eval suite a way
 to price thread-level relevance. Untried latency levers: shorter pair
 text, 256-token max_length, smaller candidate pool.
 
-### [ ] M10 — Spec-engineering lookups
+### [x] M10 — Spec-engineering lookups
 
 Constants, spec function bodies, and fork-filtered spec content over the
 canonical spec repos already in policy (consensus-specs today;
-execution-specs and RIPs from the backlog). Constraint: this must
-fit the existing `Document`/meta model — typed information rides `meta`
-and chunk tags, lookups are MCP tools over the existing index. If it
-demands special cases in `corpus-core`, stop and redesign rather than
-thread them through.
+execution-specs and RIPs from the backlog). Shipped design —
+**parse-on-demand, not ingest-time extraction**: `corpus-core/src/spec.rs`
+parses constant tables and python fences out of spec documents at query
+time (spec-tier content is ~30MB; the scan is milliseconds), found via a
+verbatim tier-bounded content match. No `meta` keys, no chunk tags, no
+re-index — typed mini-documents were rejected because thousands of
+near-identical per-fork entries would re-create the reply-flood pathology
+in free-text search. Follow-on sources (execution-specs, RIPs) extend the
+same parser, not new plumbing. Deliberately absent: fork-inheritance
+resolution — it needs a hardcoded fork order, which rots; the tool returns
+every fork's definitions and the model reasons.
 
 **Gate:** "MAX_EFFECTIVE_BALANCE for electra" returns the right constant
-with a citation, and a set of spec-engineering eval questions is added
-and passing.
+with a citation via lookup_spec (probed over JSON-RPC), and
+spec-engineering eval questions are added with their free-text recall
+recorded honestly — they measure the gap the tool bypasses, and the
+flagship question scores fused 0.00 at the time the box was checked.
 
 ### [ ] M11 — Agent-level answer eval
 

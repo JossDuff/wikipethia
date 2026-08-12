@@ -189,3 +189,27 @@ expect = ["eips/eip-4844"]
 question = "What did Ethereum do to scale rollups?"
 # https://eips.ethereum.org/EIPS/eip-4844
 expect = ["eips/eip-4844"]
+
+# Spec-engineering questions (M10). These measure whether free-text search
+# can reach the consensus-specs documents; the lookup_spec tool answers the
+# identifier-shaped versions directly, so low scores here document the
+# free-text gap that tool bypasses, not a product failure.
+
+[[questions]]
+# The value lives in electra/beacon-chain's constants table as
+# MAX_EFFECTIVE_BALANCE_ELECTRA — the fork-suffix trap.
+question = "What is the maximum effective balance for a compounding validator?"
+# https://github.com/ethereum/consensus-specs/blob/master/specs/electra/beacon-chain.md
+expect = ["consensusspecs/specs/electra/beacon-chain"]
+
+[[questions]]
+# Function-shaped: the Modified process_deposit / apply_deposit chain.
+question = "How did Electra change deposit processing on the beacon chain?"
+# https://github.com/ethereum/consensus-specs/blob/master/specs/electra/beacon-chain.md
+expect = ["consensusspecs/specs/electra/beacon-chain"]
+
+[[questions]]
+# A spec document that is the sole authority on its topic.
+question = "What is the weak subjectivity period and how is it computed?"
+# https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/weak-subjectivity.md
+expect = ["consensusspecs/specs/phase0/weak-subjectivity"]

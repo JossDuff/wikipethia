@@ -37,6 +37,14 @@ Every result carries a stable doc id, author, published date, and URL.  The
 date matters because Ethereum research supersedes itself and a 2019 design
 post can flatly contradict a 2024 one.
 
+Beyond ranked search, the MCP server answers exact spec identifiers
+directly: `lookup_spec` reads the indexed consensus-specs/EIP documents
+themselves and returns a constant's value or a spec function's Python body,
+per fork, with citations — no ranking involved, so a constant defined once
+in phase0 can't be drowned out by forum posts that mention it more often.
+Search can also be scoped to one source or fork
+(`scope: "consensusspecs/specs/electra"`).
+
 ## Help improve wikipethia by asking questions
 
 A hand-written eval set of questions and answers (`tests/eval/questions.toml`)
