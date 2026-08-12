@@ -287,6 +287,21 @@ impl Store {
     /// BM25-ranked lexical search, collapsed to the best chunk per document.
     /// `query` is free text — anything FTS5 would choke on is neutralized.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>, CoreError> {
+        self.search_scoped(query, None, limit)
+    }
+
+    /// [`Store::search`] restricted to documents whose id starts with
+    /// `scope` — a source id ("ethresearch") or any deeper path prefix
+    /// ("consensusspecs/specs/electra"). Ids are "{source}/…" by the
+    /// upsert invariant, so prefix filtering is exact, needs no join, and
+    /// composes with the per-thread cap (scoped-out docs don't consume
+    /// cap slots).
+    pub fn search_scoped(
+        &self,
+        query: &str,
+        scope: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>, CoreError> {
         let Some(fts) = fts_query(query) else {
             return Ok(Vec::new());
         };
@@ -315,6 +330,11 @@ impl Store {
         let mut hits = Vec::new();
         while let Some(row) = rows.next()? {
             let doc_id: String = row.get(0)?;
+            if let Some(scope) = scope
+                && !doc_id.starts_with(scope)
+            {
+                continue;
+            }
             if !seen.insert(doc_id.clone()) {
                 continue;
             }
@@ -436,6 +456,52 @@ impl Store {
         // Manual loop so a corrupt meta blob propagates as an error, same as
         // `get` — swallowing it here once misidentified a thread's OP
         // (missing post_number sorts to the end).
+        let mut docs = Vec::new();
+        while let Some(row) = rows.next()? {
+            docs.push(Document {
+                id: row.get(0)?,
+                source: row.get(1)?,
+                url: row.get(2)?,
+                title: row.get(3)?,
+                author: row.get(4)?,
+                published: row.get(5)?,
+                content: row.get(6)?,
+                meta: serde_json::from_str(&row.get::<_, String>(7)?)?,
+            });
+        }
+        Ok(docs)
+    }
+
+    /// Documents from the given sources whose content contains `needle`
+    /// verbatim (case-sensitive), ordered by id. Structured-lookup support:
+    /// callers narrow to a source set first (e.g. every tier="spec" source
+    /// from [`Store::source_stats`]) so the scan touches a few thousand
+    /// rows, then parse the survivors — the corpus-wide FTS index is the
+    /// wrong tool for exact identifiers, which porter-stemming splits.
+    pub fn docs_containing(
+        &self,
+        needle: &str,
+        sources: &[String],
+    ) -> Result<Vec<Document>, CoreError> {
+        if needle.is_empty() || sources.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Placeholders are generated, values bound — sources never touch
+        // the SQL text.
+        let marks = vec!["?"; sources.len()].join(",");
+        let sql = format!(
+            "SELECT id, source, url, title, author, published, content, meta
+             FROM documents
+             WHERE source IN ({marks}) AND instr(content, ?) > 0
+             ORDER BY id"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> = sources
+            .iter()
+            .map(|s| s as &dyn rusqlite::ToSql)
+            .chain(std::iter::once(&needle as &dyn rusqlite::ToSql))
+            .collect();
+        let mut rows = stmt.query(params.as_slice())?;
         let mut docs = Vec::new();
         while let Some(row) = rows.next()? {
             docs.push(Document {
@@ -723,13 +789,25 @@ impl Store {
         query_vec: Option<&[f32]>,
         limit: usize,
     ) -> Result<Vec<SearchHit>, CoreError> {
+        self.hybrid_search_scoped(query, query_vec, None, limit)
+    }
+
+    /// [`Store::hybrid_search`] restricted to a doc-id prefix, applied to
+    /// both arms (see [`Store::search_scoped`] for scope semantics).
+    pub fn hybrid_search_scoped(
+        &self,
+        query: &str,
+        query_vec: Option<&[f32]>,
+        scope: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>, CoreError> {
         if limit == 0 {
             return Ok(Vec::new());
         }
 
         // Lexical side: the existing doc-level ranking, which streams the
         // full match set so a document's rank is never truncated mid-dedup.
-        let lex_docs = self.search(query, CANDIDATES)?;
+        let lex_docs = self.search_scoped(query, scope, CANDIDATES)?;
 
         // Vector side: KNN over chunks, deduplicated to documents in
         // distance order. Fetch extra chunks so multi-chunk documents don't
@@ -755,6 +833,11 @@ impl Store {
                     .collect::<Result<_, _>>()?;
                 let mut seen = HashSet::new();
                 for (rowid, doc_id) in rows {
+                    if let Some(scope) = scope
+                        && !doc_id.starts_with(scope)
+                    {
+                        continue;
+                    }
                     if seen.insert(doc_id.clone()) {
                         vec_docs.push((doc_id, rowid));
                         if vec_docs.len() == CANDIDATES {

@@ -17,6 +17,10 @@ pub const REPLY_PAGE: usize = 50;
 pub const MAX_LIMIT: usize = 50;
 /// Hard cap on get_post_context before/after.
 pub const MAX_CONTEXT: usize = 10;
+/// Definitions rendered per lookup_spec call before asking to narrow.
+pub const MAX_DEFINITIONS: usize = 20;
+/// One spec function's code before truncation points at the full document.
+pub const FUNCTION_MAX_CHARS: usize = 2_500;
 
 /// The one citation shape every citable unit carries:
 /// `doc_id · author · date · tier · url`. The tier segment is omitted when

@@ -7,7 +7,7 @@ pub mod format;
 
 use std::sync::{Mutex, MutexGuard};
 
-use corpus_core::{CoreError, Embedder, Store};
+use corpus_core::{CoreError, Embedder, Store, spec};
 use corpus_embed::FastEmbedder;
 use rmcp::{
     ErrorData, ServerHandler,
@@ -20,8 +20,9 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use format::{
-    INDEX_EXCERPT_CHARS, MAX_CONTEXT, MAX_LIMIT, NEIGHBOR_MAX_CHARS, OP_MAX_CHARS, REPLY_PAGE,
-    RESULT_EXCERPT_CHARS, citation, date, excerpt, post_label, spec_status, truncate_block,
+    FUNCTION_MAX_CHARS, INDEX_EXCERPT_CHARS, MAX_CONTEXT, MAX_DEFINITIONS, MAX_LIMIT,
+    NEIGHBOR_MAX_CHARS, OP_MAX_CHARS, REPLY_PAGE, RESULT_EXCERPT_CHARS, citation, date, excerpt,
+    post_label, spec_status, truncate_block,
 };
 
 pub struct CorpusServer {
@@ -55,6 +56,24 @@ pub struct SearchPostsParams {
     pub query: String,
     /// Maximum documents returned. Default 10, max 50.
     pub limit: Option<usize>,
+    /// Restrict results to documents whose id starts with this prefix: a
+    /// source id ("eips", "ethresearch") or a deeper path
+    /// ("consensusspecs/specs/electra" for one fork's spec documents).
+    /// Omit to search the whole corpus.
+    pub scope: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct LookupSpecParams {
+    /// The identifier exactly as the specs write it — a constant like
+    /// "MAX_EFFECTIVE_BALANCE" or a spec function like "process_deposit".
+    /// Case-sensitive; longer names containing this one also match
+    /// (MAX_EFFECTIVE_BALANCE also surfaces MAX_EFFECTIVE_BALANCE_ELECTRA).
+    pub name: String,
+    /// Consensus fork to prefer, as a spec directory name: "phase0",
+    /// "altair", "electra", "fulu", … Definitions from other forks and
+    /// documents are still reported after the fork's own.
+    pub fork: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -122,7 +141,9 @@ impl CorpusServer {
              label. Workflow: search_posts first; then get_post_context on a promising \
              doc_id for the full text (and surrounding thread, for forum posts), \
              get_topic for a whole discussion; find_similar to explore related \
-             work. Ethereum research supersedes \
+             work; lookup_spec when the question names an exact spec identifier \
+             (a constant's value or a spec function's body, optionally per fork). \
+             Ethereum research supersedes \
              itself — always weigh published dates when posts disagree. One caution \
              for questions about the current or upcoming state of the protocol (the \
              next hardfork, what ships in it): do NOT trust discussion recency or \
@@ -170,7 +191,7 @@ impl CorpusServer {
         };
         let store = self.store();
         let hits = store
-            .hybrid_search(&p.query, query_vec.as_deref(), limit)
+            .hybrid_search_scoped(&p.query, query_vec.as_deref(), p.scope.as_deref(), limit)
             .map_err(internal)?;
         if hits.is_empty() {
             return Ok(format!(
@@ -516,6 +537,107 @@ impl CorpusServer {
         }
         Ok(out)
     }
+
+    #[tool(
+        name = "lookup_spec",
+        description = "Look up an exact identifier in the canonical Ethereum specifications held in the local corpus: a constant's value (MAX_EFFECTIVE_BALANCE, MIN_SLASHING_PENALTY_QUOTIENT) or a spec function's Python body (process_deposit, get_validator_churn_limit). Use this INSTEAD of search_posts whenever the question names a specific spec identifier — free-text search stems identifiers apart and ranks forum discussion above the defining document; this tool reads the spec documents themselves and returns every definition with a citable URL. Matching is case-sensitive and substring-based on the identifier, which matters: forks often introduce suffixed variants rather than redefining a name (MAX_EFFECTIVE_BALANCE_ELECTRA), so a base-name query intentionally returns the variants too — compare the fork labels in the citations to pick the right one, and don't assume the newest fork redefines every constant. Pass fork (a spec directory name like \"electra\" or \"phase0\") to put that fork's definitions first; other forks' definitions still follow, because the value a fork actually uses is often inherited from an earlier one or lives under a suffixed name. Returns nothing for concepts or prose — for those use search_posts."
+    )]
+    fn lookup_spec(&self, Parameters(p): Parameters<LookupSpecParams>) -> Result<String, ErrorData> {
+        let name = p.name.trim();
+        if name.is_empty() {
+            return Err(ErrorData::invalid_params("name must be a spec identifier", None));
+        }
+        let store = self.store();
+        // Spec-tier sources by manifest tier — never a hardcoded source list.
+        let stats = store.source_stats().map_err(internal)?;
+        let spec_sources: Vec<String> = stats
+            .iter()
+            .filter(|s| s.tier.as_deref() == Some("spec"))
+            .map(|s| s.id.clone())
+            .collect();
+        if spec_sources.is_empty() {
+            return Ok("No spec-tier sources are indexed in this corpus — lookup_spec \
+                       has nothing to read. Use search_posts instead."
+                .to_string());
+        }
+        let docs = store.docs_containing(name, &spec_sources).map_err(internal)?;
+
+        // (in_fork, kind_is_function, exact, doc index, rendered block)
+        let fork_needle = p.fork.as_deref().map(|f| format!("/{f}/"));
+        let mut blocks: Vec<(bool, bool, bool, String)> = Vec::new();
+        for doc in &docs {
+            let tier = store.source_tier(&doc.source).map_err(internal)?;
+            let cite = citation(&doc.id, doc.author.as_deref(), &doc.published, tier.as_deref(), &doc.url);
+            let in_fork = fork_needle.as_deref().is_some_and(|f| doc.id.contains(f));
+            for c in spec::constants(&doc.content) {
+                if !c.name.contains(name) {
+                    continue;
+                }
+                let desc = c.description.map(|d| format!(" — {d}")).unwrap_or_default();
+                blocks.push((
+                    in_fork,
+                    false,
+                    c.name == name,
+                    format!("{} = {}{desc}\n   {cite}", c.name, c.value),
+                ));
+            }
+            for f in spec::functions(&doc.content) {
+                if !f.name.contains(name) {
+                    continue;
+                }
+                let label = f.heading.map(|h| format!(" [{h}]")).unwrap_or_default();
+                blocks.push((
+                    in_fork,
+                    true,
+                    f.name == name,
+                    format!(
+                        "{}{label}\n```python\n{}\n```\n   {cite}",
+                        f.name,
+                        truncate_block(&f.code, FUNCTION_MAX_CHARS, &doc.id),
+                    ),
+                ));
+            }
+        }
+
+        if blocks.is_empty() {
+            return Ok(format!(
+                "No spec definition matches {name:?}. Identifiers are case-sensitive \
+                 and matched verbatim (constants LIKE_THIS, functions like_this) — \
+                 check the spelling, or use search_posts for concept-level questions."
+            ));
+        }
+
+        // Fork-preferred first, then exact-name before variants, constants
+        // before functions; stable within groups (docs arrive id-ordered).
+        blocks.sort_by_key(|(in_fork, is_fn, exact, _)| (!in_fork, *is_fn, !exact));
+        let total = blocks.len();
+        let shown = total.min(MAX_DEFINITIONS);
+        let mut out = match (&p.fork, blocks.first()) {
+            (Some(fork), Some((false, ..))) => format!(
+                "No definition matching {name:?} inside fork {fork:?} — fork \
+                 directories only carry what they change, so the governing \
+                 definition is usually inherited or suffixed. Definitions found \
+                 elsewhere:\n"
+            ),
+            (Some(fork), _) => format!(
+                "Definitions matching {name:?} — fork {fork:?} first, then other \
+                 documents (inherited/suffixed definitions often govern):\n"
+            ),
+            (None, _) => format!("Definitions matching {name:?} across the spec corpus:\n"),
+        };
+        for (_, _, _, block) in blocks.iter().take(shown) {
+            out.push('\n');
+            out.push_str(block);
+            out.push('\n');
+        }
+        if shown < total {
+            out.push_str(&format!(
+                "\n({} more definitions matched — narrow the name to see them.)",
+                total - shown
+            ));
+        }
+        Ok(out)
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -672,6 +794,115 @@ mod tests {
         assert!(out.contains("standards"), "tier missing from citation");
     }
 
+    /// Two forks of a spec doc plus an EIP, all tier "spec", and one forum
+    /// post that mentions the constant but must never surface in lookups.
+    fn spec_server() -> CorpusServer {
+        let phase0 = "# Phase0 -- The Beacon Chain\n\n\
+            | Name | Value |\n| - | - |\n\
+            | `MAX_WIDGET_BALANCE` | `Gwei(2**5 * 10**9)` (= 32,000,000,000) |\n\n\
+            ###### `process_widget`\n\n\
+            ```python\ndef process_widget(state: BeaconState) -> None:\n    pass\n```\n";
+        let electra = "# Electra -- The Beacon Chain\n\n\
+            | Name | Value | Description |\n| - | - | - |\n\
+            | `MAX_WIDGET_BALANCE_ELECTRA` | `Gwei(2**11 * 10**9)` | Compounding widgets |\n\n\
+            ###### Modified `process_widget`\n\n\
+            ```python\ndef process_widget(state: BeaconState) -> None:\n    return None\n```\n";
+        let mut store = Store::open_in_memory().unwrap();
+        let doc = |id: &str, source: &str, content: &str| Document {
+            id: id.into(),
+            source: source.into(),
+            url: format!("https://example.com/{id}"),
+            title: "spec doc".into(),
+            author: None,
+            published: "2026-01-01T00:00:00Z".into(),
+            content: content.into(),
+            meta: Map::new(),
+        };
+        store
+            .upsert(&[
+                doc("specs/specs/phase0/beacon-chain", "specs", phase0),
+                doc("specs/specs/electra/beacon-chain", "specs", electra),
+                doc("eips/eip-9999", "eips", "prose mentioning MAX_WIDGET_BALANCE only"),
+                doc("ethresearch/post/1", "ethresearch", "forum chatter on MAX_WIDGET_BALANCE"),
+            ])
+            .unwrap();
+        store.upsert_source("specs", "https://example.com/specs", "spec").unwrap();
+        store.upsert_source("eips", "https://example.com/eips", "spec").unwrap();
+        store
+            .upsert_source("ethresearch", "https://ethresear.ch", "research")
+            .unwrap();
+        CorpusServer::new(store, None).unwrap()
+    }
+
+    #[test]
+    fn lookup_spec_returns_fork_first_with_variants_and_citations() {
+        let s = spec_server();
+        let out = s
+            .lookup_spec(Parameters(LookupSpecParams {
+                name: "MAX_WIDGET_BALANCE".into(),
+                fork: Some("electra".into()),
+            }))
+            .unwrap();
+        // Electra's suffixed variant leads; phase0's base value follows.
+        let electra_pos = out.find("MAX_WIDGET_BALANCE_ELECTRA").expect("variant present");
+        let phase0_pos = out.find("(= 32,000,000,000)").expect("base value present");
+        assert!(electra_pos < phase0_pos, "fork-preferred ordering:\n{out}");
+        assert!(out.contains("Compounding widgets"), "description kept");
+        assert!(out.contains("https://example.com/specs/specs/phase0/beacon-chain"));
+        // Research-tier mentions never masquerade as definitions.
+        assert!(!out.contains("ethresear.ch"), "forum leaked into spec lookup:\n{out}");
+    }
+
+    #[test]
+    fn lookup_spec_finds_functions_with_their_spec_labels() {
+        let s = spec_server();
+        let out = s
+            .lookup_spec(Parameters(LookupSpecParams {
+                name: "process_widget".into(),
+                fork: None,
+            }))
+            .unwrap();
+        assert!(out.contains("```python"), "{out}");
+        assert!(out.contains("def process_widget"));
+        assert!(out.contains("Modified `process_widget`"), "spec label kept:\n{out}");
+    }
+
+    #[test]
+    fn lookup_spec_miss_is_instructional_not_an_error() {
+        let s = spec_server();
+        let out = s
+            .lookup_spec(Parameters(LookupSpecParams {
+                name: "NO_SUCH_NAME".into(),
+                fork: None,
+            }))
+            .unwrap();
+        assert!(out.contains("case-sensitive"), "{out}");
+        // A fork with no in-fork match still reports elsewhere-definitions.
+        let out = s
+            .lookup_spec(Parameters(LookupSpecParams {
+                name: "MAX_WIDGET_BALANCE".into(),
+                fork: Some("fulu".into()),
+            }))
+            .unwrap();
+        assert!(out.contains("No definition matching"), "{out}");
+        assert!(out.contains("inherited"), "explains fork inheritance:\n{out}");
+        assert!(out.contains("MAX_WIDGET_BALANCE"), "still shows definitions");
+    }
+
+    #[test]
+    fn search_posts_scope_narrows_results() {
+        let s = spec_server();
+        let out = s
+            .search_posts(Parameters(SearchPostsParams {
+                query: "MAX_WIDGET_BALANCE".into(),
+                limit: None,
+                scope: Some("ethresearch".into()),
+            }))
+            .unwrap();
+        assert!(out.contains("ethresearch/post/1"), "{out}");
+        assert!(!out.contains("eips/eip-9999"), "scope leaked:\n{out}");
+    }
+
     #[test]
     fn search_posts_output_carries_citations_and_footer() {
         let s = server();
@@ -679,6 +910,7 @@ mod tests {
             .search_posts(Parameters(SearchPostsParams {
                 query: "zorbling".into(),
                 limit: Some(2),
+                scope: None,
             }))
             .unwrap();
         assert!(out.contains("ethresearch/post/7001"));
@@ -696,6 +928,7 @@ mod tests {
             .search_posts(Parameters(SearchPostsParams {
                 query: "wexlurb".into(),
                 limit: None,
+                scope: None,
             }))
             .unwrap();
         assert!(out.contains("fall back to web search"));

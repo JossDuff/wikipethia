@@ -133,6 +133,52 @@ fn same_title_across_sources_is_not_collapsed() {
 }
 
 #[test]
+fn scope_restricts_to_an_id_prefix_without_consuming_slots() {
+    let mut store = Store::open_in_memory().unwrap();
+    let mut eip = doc("eips/eip-1", "the zorquat spec text");
+    eip.title = "Zorquat".to_string();
+    eip.source = "eips".to_string();
+    let mut post = doc("ethmagicians/post/1", "zorquat forum chatter");
+    post.title = "Zorquat thread".to_string();
+    post.source = "ethmagicians".to_string();
+    store.upsert(&[eip, post]).unwrap();
+
+    // Unscoped sees both; a source scope sees one; a deeper prefix works;
+    // a prefix matching nothing is empty, not an error.
+    assert_eq!(store.search("zorquat", 10).unwrap().len(), 2);
+    let hits = store.search_scoped("zorquat", Some("eips"), 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].doc_id, "eips/eip-1");
+    let hits = store.search_scoped("zorquat", Some("ethmagicians/post/"), 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert!(store.search_scoped("zorquat", Some("ethresearch"), 10).unwrap().is_empty());
+}
+
+#[test]
+fn docs_containing_is_exact_and_source_bounded() {
+    let mut store = Store::open_in_memory().unwrap();
+    let mut spec = doc("eips/eip-1", "| `MAX_WIDGET_BALANCE` | `Gwei(7)` |");
+    spec.source = "eips".to_string();
+    let mut chatter = doc("test/1", "someone said max_widget_balance in lowercase");
+    chatter.source = "test".to_string();
+    store.upsert(&[spec, chatter]).unwrap();
+
+    let sources = vec!["eips".to_string(), "test".to_string()];
+    // Case-sensitive verbatim match — the lowercase mention doesn't count.
+    let docs = store.docs_containing("MAX_WIDGET_BALANCE", &sources).unwrap();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].id, "eips/eip-1");
+    // Source-bounded: the same needle outside the source set is invisible.
+    assert!(store
+        .docs_containing("MAX_WIDGET_BALANCE", &["test".to_string()])
+        .unwrap()
+        .is_empty());
+    // Degenerate inputs are empty, not errors.
+    assert!(store.docs_containing("", &sources).unwrap().is_empty());
+    assert!(store.docs_containing("MAX_WIDGET_BALANCE", &[]).unwrap().is_empty());
+}
+
+#[test]
 fn hostile_queries_never_error() {
     let store = store();
     for query in [

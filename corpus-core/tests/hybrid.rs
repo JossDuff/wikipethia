@@ -358,6 +358,31 @@ fn similar_docs_is_none_outside_the_vector_space() {
 }
 
 #[test]
+fn hybrid_scope_binds_both_arms() {
+    let mut store = seeded_store();
+    embed_all(&mut store, &FakeEmbedder);
+    let query_vec = FakeEmbedder.embed_query("car").unwrap();
+
+    // test/b is reachable only through the vector arm for "car"; a scope
+    // to it must still find it (vector arm respects scope) and nothing else.
+    let hits = store
+        .hybrid_search_scoped("car", Some(&query_vec), Some("test/b"), 10)
+        .unwrap();
+    let ids: Vec<&str> = hits.iter().map(|h| h.doc_id.as_str()).collect();
+    assert_eq!(ids, ["test/b"], "got {ids:?}");
+
+    // A scope matching nothing is empty, not an error.
+    assert!(store
+        .hybrid_search_scoped("car", Some(&query_vec), Some("nosuch"), 10)
+        .unwrap()
+        .is_empty());
+
+    // Unscoped behavior is unchanged by the plumbing.
+    let unscoped = store.hybrid_search("car", Some(&query_vec), 10).unwrap();
+    assert_eq!(unscoped[0].doc_id, "test/c");
+}
+
+#[test]
 fn opening_a_v2_database_migrates_to_current() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("v2.sqlite");
