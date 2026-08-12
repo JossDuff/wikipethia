@@ -80,14 +80,11 @@ async fn serve_http(
     // protection). A non-loopback bind is unreachable without its own
     // name in the list, so allow the bind address and any --allow-host
     // names (e.g. a Tailscale hostname) on top of the loopback defaults.
+    // Port-less entries match any port in rmcp's matcher, so bare names
+    // are all that is needed (Args::parse rejects host:port values).
     let mut hosts = vec!["localhost".to_string(), "127.0.0.1".to_string(), "::1".to_string()];
     hosts.push(bind.ip().to_string());
-    // Host headers carry the port for non-default ports.
-    hosts.push(bind.to_string());
-    for host in extra_hosts {
-        hosts.push(format!("{host}:{}", bind.port()));
-        hosts.push(host);
-    }
+    hosts.extend(extra_hosts);
 
     let ct = CancellationToken::new();
     let service: StreamableHttpService<CorpusServer, LocalSessionManager> =
@@ -110,7 +107,7 @@ async fn serve_http(
     // terminate and axum stops accepting, then drains.
     let shutdown = ct.clone();
     tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
+        wait_for_shutdown_signal().await;
         eprintln!("corpus-mcp: shutting down");
         shutdown.cancel();
     });
@@ -121,6 +118,39 @@ async fn serve_http(
         })
         .await?;
     Ok(())
+}
+
+/// SIGINT or (on unix) SIGTERM — systemd's default stop signal, so
+/// `systemctl stop` gets the same graceful drain as ctrl-c. A failed
+/// handler registration parks forever rather than resolving: resolving
+/// would shut a freshly started daemon down cleanly (exit 0), invisible
+/// to Restart=on-failure.
+async fn wait_for_shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            eprintln!("corpus-mcp: cannot listen for ctrl-c: {e}");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                term.recv().await;
+            }
+            Err(e) => {
+                eprintln!("corpus-mcp: cannot listen for SIGTERM: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
 }
 
 /// Hand-rolled to stay dependency-free: `--db <path>`, `--http <addr>`,
@@ -135,12 +165,18 @@ struct Args {
 
 impl Args {
     fn parse() -> anyhow::Result<Self> {
+        const USAGE: &str =
+            "corpus-mcp [--db <path>] [--http <addr> [--allow-host <name>]...]";
         let mut db = None;
         let mut http = None;
         let mut allow_hosts = Vec::new();
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
+                "--help" | "-h" => {
+                    println!("{USAGE}");
+                    std::process::exit(0);
+                }
                 "--db" => db = Some(PathBuf::from(next_value(&mut args, "--db")?)),
                 "--http" => {
                     let addr = next_value(&mut args, "--http")?;
@@ -148,11 +184,20 @@ impl Args {
                         anyhow::anyhow!("--http needs a bind address like 127.0.0.1:8642: {e}")
                     })?);
                 }
-                "--allow-host" => allow_hosts.push(next_value(&mut args, "--allow-host")?),
-                other => anyhow::bail!(
-                    "unknown argument {other:?} — corpus-mcp [--db <path>] \
-                     [--http <addr> [--allow-host <name>]...]"
-                ),
+                "--allow-host" => {
+                    let host = next_value(&mut args, "--allow-host")?;
+                    // rmcp matches port-less entries against any port; a
+                    // host:port value would build an entry that matches
+                    // nothing and every client would 403 with no output.
+                    if host.contains(':') || host.contains('/') {
+                        anyhow::bail!(
+                            "--allow-host takes a bare hostname (got {host:?}) — \
+                             no port, no scheme; it matches any port"
+                        );
+                    }
+                    allow_hosts.push(host);
+                }
+                other => anyhow::bail!("unknown argument {other:?} — {USAGE}"),
             }
         }
         if http.is_none() && !allow_hosts.is_empty() {
@@ -170,6 +215,14 @@ impl Args {
 }
 
 fn next_value(args: &mut impl Iterator<Item = String>, flag: &str) -> anyhow::Result<String> {
-    args.next()
-        .ok_or_else(|| anyhow::anyhow!("{flag} needs a value"))
+    match args.next() {
+        // A following flag means the value was forgotten; consuming it
+        // would misparse (`--db --http …` once created a schema-initialized
+        // sqlite file literally named "--http").
+        Some(v) if v.starts_with("--") => {
+            anyhow::bail!("{flag} needs a value, got flag {v:?}")
+        }
+        Some(v) => Ok(v),
+        None => anyhow::bail!("{flag} needs a value"),
+    }
 }

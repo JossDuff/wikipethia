@@ -94,18 +94,21 @@ Search can also be scoped to one source or fork
 The MCP server speaks stdio by default and streamable HTTP with `--http`:
 
 ```bash
+# same-machine (or through an ssh -L tunnel):
 corpus-mcp --db /srv/wikipethia/corpus.sqlite --http 127.0.0.1:8642
-# clients:
-claude mcp add --transport http wikipethia http://yourserver:8642/mcp
+claude mcp add --transport http wikipethia http://127.0.0.1:8642/mcp
 ```
 
 **There is no authentication.** Bind to loopback or a private interface
 (Tailscale/WireGuard) only — never a public address. For a non-loopback
-bind, allow the hostname clients will use (rmcp rejects unknown Host
-headers as DNS-rebind protection):
+bind, allow the bare hostname clients will use (rmcp rejects unknown Host
+headers as DNS-rebind protection; port-less names match any port):
 
 ```bash
+# on the server:
 corpus-mcp --db corpus.sqlite --http 100.64.0.7:8642 --allow-host myserver.tailnet.ts.net
+# on each client machine:
+claude mcp add --transport http wikipethia http://myserver.tailnet.ts.net:8642/mcp
 ```
 
 Deployment notes:

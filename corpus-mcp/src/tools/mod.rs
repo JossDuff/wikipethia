@@ -31,18 +31,25 @@ use format::{
 /// live directly in these fields.
 #[derive(Clone)]
 pub struct CorpusServer {
-    /// rusqlite's Connection is Send but not Sync; tools are sync fns that
-    /// hold the guard for the duration of one query — no awaits. One shared
-    /// connection serialized by this mutex, same semantics as stdio.
+    /// rusqlite's Connection is Send but not Sync; tool bodies are sync
+    /// `_impl` fns on spawn_blocking threads that hold the guard for one
+    /// query — the guard never crosses an await. One shared connection
+    /// serialized by this mutex, same semantics as stdio.
     store: Arc<Mutex<Store>>,
     /// None ⇒ the corpus has no vector index; ranking degrades to BM25.
     embedder: Option<Arc<FastEmbedder>>,
-    instructions: String,
+    /// Arc<str> so the per-request handler clones the HTTP transport
+    /// performs are refcount bumps, not ~1.7KB heap copies.
+    instructions: Arc<str>,
     tool_router: ToolRouter<Self>,
 }
 
 fn internal(e: CoreError) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
+}
+
+fn join_error(e: tokio::task::JoinError) -> ErrorData {
+    ErrorData::internal_error(format!("blocking task failed: {e}"), None)
 }
 
 fn unknown_doc(doc_id: &str) -> ErrorData {
@@ -173,23 +180,43 @@ impl CorpusServer {
         Ok(Self {
             store: Arc::new(Mutex::new(store)),
             embedder: embedder.map(Arc::new),
-            instructions,
+            instructions: instructions.into(),
             tool_router: Self::tool_router(),
         })
     }
 
     fn store(&self) -> MutexGuard<'_, Store> {
-        self.store.lock().expect("store mutex poisoned")
+        // A poisoned mutex means some tool body panicked mid-query. The
+        // store is a read-only sqlite connection with no cross-call state
+        // to corrupt, so recover and keep serving: under stdio a panic
+        // killed one client's process, but the HTTP daemon must outlive
+        // one bad query — a sticky panic here would brick every session
+        // while the process stays alive, exactly where systemd's
+        // Restart=on-failure cannot see it.
+        self.store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[tool(
         name = "search_posts",
         description = "Search a local, curated corpus of Ethereum protocol research and standards: tens of thousands of posts from the ethresear.ch and Ethereum Magicians (ethereum-magicians.org) forums, 2017 to present, plus the full EIP and ERC specifications, the consensus-layer specs, and articles from vitalik.eth.limo and blog.ethereum.org. Use this BEFORE web search for anything touching Ethereum research or the EIP process: sharding and danksharding, EIP-4844/blobs, account abstraction (EIP-4337/7702), proposer-builder separation (PBS), MEV, rollups, data availability sampling, statelessness, casper/consensus, staking economics, EIP and hard-fork coordination, or the cryptography behind them. Ranking is hybrid lexical+semantic, so exact tokens (\"EIP-4844\", an author's username) and natural-language questions both work. Every result carries a doc_id (the input to get_topic, get_post_context, and find_similar), author, published date, source tier, and a citable URL. Ethereum research goes stale in specific ways — a 2019 design post can be flatly superseded by a 2024 one — so always weigh the published dates when results disagree. But for questions about the current or upcoming state of the protocol (e.g. which hardfork is next), recency and thread volume mislead: fork planning pipelines overlap, so the fork after next has the newest, loudest discussion — resolve such questions from the status fields of the \"Hardfork Meta\" EIPs, not from what was posted most recently. Likewise, treat forward-looking dates in results (\"expected mid-2025\") as projections from that post's published date, not current facts — check them against today's date before repeating them. A top hit is often a reply from the middle of a thread: call get_post_context or get_topic with its doc_id to recover the original post and the surrounding argument; EIPs, specs, and blog articles are standalone documents, and get_post_context returns them whole. If nothing relevant returns, say so and fall back to web search rather than forcing a weak match."
     )]
-    fn search_posts(
+    async fn search_posts(
         &self,
         Parameters(p): Parameters<SearchPostsParams>,
     ) -> Result<String, ErrorData> {
+        // Tool bodies run SQL and (for search) ONNX inference while holding
+        // the store guard — CPU-bound, blocking work that must not occupy
+        // an async worker: under HTTP, concurrent sessions would starve the
+        // runtime of workers for SSE keep-alives and shutdown.
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.search_posts_impl(p))
+            .await
+            .map_err(join_error)?
+    }
+
+    fn search_posts_impl(&self, p: SearchPostsParams) -> Result<String, ErrorData> {
         let limit = p.limit.unwrap_or(10).clamp(1, MAX_LIMIT);
         // scope: "" would silently behave as unscoped ("" prefixes every
         // id) — a blank almost always means an unset template variable.
@@ -278,7 +305,21 @@ impl CorpusServer {
         name = "get_topic",
         description = "Fetch an entire discussion thread from the local corpus's forum sources (ethresear.ch, Ethereum Magicians): the original post in full, plus a one-line index of every reply (doc_id, author, date, opening words). Use this when a search_posts hit is a reply and you need the original post it responds to, or when you need the arc of the whole discussion — on these forums the objections, corrections, and author follow-ups in the replies routinely change the conclusions of the opening post. Pass the doc_id of ANY post in the thread (from search_posts results), or a numeric topic_id from a forum URL together with its source id (topic numbers collide across forums). Long threads are paged 50 replies at a time; pass reply_offset to continue. To read the full text of an interesting reply from the index, call get_post_context with that reply's doc_id. Forum threads only: EIPs, specs, and blog articles are standalone documents — get_post_context returns those in full."
     )]
-    fn get_topic(&self, Parameters(p): Parameters<GetTopicParams>) -> Result<String, ErrorData> {
+    async fn get_topic(
+        &self,
+        Parameters(p): Parameters<GetTopicParams>,
+    ) -> Result<String, ErrorData> {
+        // Tool bodies run SQL and (for search) ONNX inference while holding
+        // the store guard — CPU-bound, blocking work that must not occupy
+        // an async worker: under HTTP, concurrent sessions would starve the
+        // runtime of workers for SSE keep-alives and shutdown.
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.get_topic_impl(p))
+            .await
+            .map_err(join_error)?
+    }
+
+    fn get_topic_impl(&self, p: GetTopicParams) -> Result<String, ErrorData> {
         let store = self.store();
         let mut source_scope = p.source.clone();
         // A typo'd source must not masquerade as a missing topic.
@@ -420,10 +461,21 @@ impl CorpusServer {
         name = "get_post_context",
         description = "Fetch one document from the local corpus in full. Forum posts (ethresear.ch, Ethereum Magicians) come with their immediate conversation — a few thread posts before and after; standalone documents (EIP/ERC specifications, consensus specs, blog articles) come back whole. Use this whenever a search_posts or find_similar snippet looks relevant: replies usually only make sense next to what they answer, and the snippet alone is not enough to quote or cite responsibly. Takes a doc_id as returned by search_posts, get_topic, or find_similar. Every post in the output carries author, published date, source tier, and a citable URL — cite that URL when you use the content. For the whole thread rather than a local window, use get_topic instead."
     )]
-    fn get_post_context(
+    async fn get_post_context(
         &self,
         Parameters(p): Parameters<GetPostContextParams>,
     ) -> Result<String, ErrorData> {
+        // Tool bodies run SQL and (for search) ONNX inference while holding
+        // the store guard — CPU-bound, blocking work that must not occupy
+        // an async worker: under HTTP, concurrent sessions would starve the
+        // runtime of workers for SSE keep-alives and shutdown.
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.get_post_context_impl(p))
+            .await
+            .map_err(join_error)?
+    }
+
+    fn get_post_context_impl(&self, p: GetPostContextParams) -> Result<String, ErrorData> {
         let store = self.store();
         let doc = store
             .get(&p.doc_id)
@@ -510,10 +562,21 @@ impl CorpusServer {
         name = "find_similar",
         description = "Find documents in the local corpus (research forums, EIP/ERC and consensus specs, blogs) that are semantically similar to a given one — nearest neighbors by embedding, not keyword overlap, including across sources. Use it to explore outward from a good hit: parallel proposals, competing mechanisms, the standards discussion of a research idea, and later posts revisiting the same design space share ideas but often not vocabulary, so keyword search misses them. Takes the doc_id of any document (from search_posts, get_topic, or get_post_context) and returns scored results with doc_id, author, published date, source tier, and citable URL. Comparing published dates across the results is the fastest way to trace how a line of research evolved and which design superseded which. Very short posts carry no embedding and return no neighbors — fall back to search_posts with the post's key phrases."
     )]
-    fn find_similar(
+    async fn find_similar(
         &self,
         Parameters(p): Parameters<FindSimilarParams>,
     ) -> Result<String, ErrorData> {
+        // Tool bodies run SQL and (for search) ONNX inference while holding
+        // the store guard — CPU-bound, blocking work that must not occupy
+        // an async worker: under HTTP, concurrent sessions would starve the
+        // runtime of workers for SSE keep-alives and shutdown.
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.find_similar_impl(p))
+            .await
+            .map_err(join_error)?
+    }
+
+    fn find_similar_impl(&self, p: FindSimilarParams) -> Result<String, ErrorData> {
         let limit = p.limit.unwrap_or(10).clamp(1, MAX_LIMIT);
         let store = self.store();
         let doc = store
@@ -576,7 +639,21 @@ impl CorpusServer {
         name = "lookup_spec",
         description = "Look up an exact identifier in the canonical Ethereum specifications held in the local corpus: a constant's value (MAX_EFFECTIVE_BALANCE, MIN_SLASHING_PENALTY_QUOTIENT) or a spec function's Python body (process_deposit, get_validator_churn_limit). Use this INSTEAD of search_posts whenever the question names a specific spec identifier — free-text search stems identifiers apart and ranks forum discussion above the defining document; this tool reads the spec documents themselves and returns every definition with a citable URL. Matching is case-sensitive and substring-based on the identifier, which matters: forks often introduce suffixed variants rather than redefining a name (MAX_EFFECTIVE_BALANCE_ELECTRA), so a base-name query intentionally returns the variants too — compare the fork labels in the citations to pick the right one, and don't assume the newest fork redefines every constant. Pass fork (a spec directory name like \"electra\" or \"phase0\") to put that fork's definitions first; other forks' definitions still follow, because the value a fork actually uses is often inherited from an earlier one or lives under a suffixed name. Returns nothing for concepts or prose — for those use search_posts."
     )]
-    fn lookup_spec(&self, Parameters(p): Parameters<LookupSpecParams>) -> Result<String, ErrorData> {
+    async fn lookup_spec(
+        &self,
+        Parameters(p): Parameters<LookupSpecParams>,
+    ) -> Result<String, ErrorData> {
+        // Tool bodies run SQL and (for search) ONNX inference while holding
+        // the store guard — CPU-bound, blocking work that must not occupy
+        // an async worker: under HTTP, concurrent sessions would starve the
+        // runtime of workers for SSE keep-alives and shutdown.
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.lookup_spec_impl(p))
+            .await
+            .map_err(join_error)?
+    }
+
+    fn lookup_spec_impl(&self, p: LookupSpecParams) -> Result<String, ErrorData> {
         let name = p.name.trim();
         if name.is_empty() {
             return Err(ErrorData::invalid_params("name must be a spec identifier", None));
@@ -695,7 +772,7 @@ impl ServerHandler for CorpusServer {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
-        info.instructions = Some(self.instructions.clone());
+        info.instructions = Some(self.instructions.to_string());
         info
     }
 }
@@ -771,24 +848,24 @@ mod tests {
         let s = colliding_server();
         // Bare numeric topic id across two forums: refuse to merge.
         let err = s
-            .get_topic(Parameters(GetTopicParams {
+            .get_topic_impl(GetTopicParams {
                 doc_id: None,
                 topic_id: Some(7),
                 source: None,
                 reply_offset: None,
-            }))
+            })
             .unwrap_err();
         assert!(err.message.contains("ethmagicians"), "{}", err.message);
         assert!(err.message.contains("ethresearch"), "{}", err.message);
 
         // Scoped by source param: single forum.
         let out = s
-            .get_topic(Parameters(GetTopicParams {
+            .get_topic_impl(GetTopicParams {
                 doc_id: None,
                 topic_id: Some(7),
                 source: Some("ethmagicians".into()),
                 reply_offset: None,
-            }))
+            })
             .unwrap();
         assert!(out.contains("Topic ethmagicians/7"));
         assert!(out.contains("magicians EIP discussion"));
@@ -797,12 +874,12 @@ mod tests {
 
         // Anchored by doc_id: the doc's source wins, no ambiguity.
         let out = s
-            .get_topic(Parameters(GetTopicParams {
+            .get_topic_impl(GetTopicParams {
                 doc_id: Some("ethresearch/post/7002".into()),
                 topic_id: None,
                 source: None,
                 reply_offset: None,
-            }))
+            })
             .unwrap();
         assert!(out.contains("Topic ethresearch/7"));
         assert!(!out.contains("magicians"));
@@ -810,34 +887,34 @@ mod tests {
         // doc_id passed ALONGSIDE topic_id still pins the source — models
         // routinely send both.
         let out = s
-            .get_topic(Parameters(GetTopicParams {
+            .get_topic_impl(GetTopicParams {
                 doc_id: Some("ethresearch/post/7002".into()),
                 topic_id: Some(7),
                 source: None,
                 reply_offset: None,
-            }))
+            })
             .unwrap();
         assert!(out.contains("Topic ethresearch/7"));
 
         // A typo'd source names the real ones instead of "not in corpus".
         let err = s
-            .get_topic(Parameters(GetTopicParams {
+            .get_topic_impl(GetTopicParams {
                 doc_id: None,
                 topic_id: Some(7),
                 source: Some("ethereum-magicians".into()),
                 reply_offset: None,
-            }))
+            })
             .unwrap_err();
         assert!(err.message.contains("known sources"), "{}", err.message);
         assert!(err.message.contains("ethmagicians"), "{}", err.message);
 
         // get_post_context stays inside the anchor doc's forum too.
         let out = s
-            .get_post_context(Parameters(GetPostContextParams {
+            .get_post_context_impl(GetPostContextParams {
                 doc_id: "ethmagicians/post/9001".into(),
                 before: None,
                 after: None,
-            }))
+            })
             .unwrap();
         assert!(out.contains("magicians"));
         assert!(!out.contains("zorbling"));
@@ -894,10 +971,10 @@ mod tests {
     fn lookup_spec_returns_fork_first_with_variants_and_citations() {
         let s = spec_server();
         let out = s
-            .lookup_spec(Parameters(LookupSpecParams {
+            .lookup_spec_impl(LookupSpecParams {
                 name: "MAX_WIDGET_BALANCE".into(),
                 fork: Some("electra".into()),
-            }))
+            })
             .unwrap();
         // Electra's suffixed variant leads; phase0's base value follows.
         let electra_pos = out.find("MAX_WIDGET_BALANCE_ELECTRA").expect("variant present");
@@ -913,10 +990,10 @@ mod tests {
     fn lookup_spec_finds_functions_with_their_spec_labels() {
         let s = spec_server();
         let out = s
-            .lookup_spec(Parameters(LookupSpecParams {
+            .lookup_spec_impl(LookupSpecParams {
                 name: "process_widget".into(),
                 fork: None,
-            }))
+            })
             .unwrap();
         assert!(out.contains("```python"), "{out}");
         assert!(out.contains("def process_widget"));
@@ -927,18 +1004,18 @@ mod tests {
     fn lookup_spec_miss_is_instructional_not_an_error() {
         let s = spec_server();
         let out = s
-            .lookup_spec(Parameters(LookupSpecParams {
+            .lookup_spec_impl(LookupSpecParams {
                 name: "NO_SUCH_NAME".into(),
                 fork: None,
-            }))
+            })
             .unwrap();
         assert!(out.contains("case-sensitive"), "{out}");
         // A fork with no in-fork match still reports elsewhere-definitions.
         let out = s
-            .lookup_spec(Parameters(LookupSpecParams {
+            .lookup_spec_impl(LookupSpecParams {
                 name: "MAX_WIDGET_BALANCE".into(),
                 fork: Some("fulu".into()),
-            }))
+            })
             .unwrap();
         assert!(out.contains("No definition matching"), "{out}");
         assert!(out.contains("inherited"), "explains fork inheritance:\n{out}");
@@ -949,10 +1026,10 @@ mod tests {
     fn lookup_spec_labels_definitions_with_spec_status() {
         let s = spec_server();
         let out = s
-            .lookup_spec(Parameters(LookupSpecParams {
+            .lookup_spec_impl(LookupSpecParams {
                 name: "MAX_WIDGET_BALANCE".into(),
                 fork: None,
-            }))
+            })
             .unwrap();
         // The Withdrawn EIP's definition must not read like a Final one.
         assert!(out.contains("[status: Withdrawn]"), "{out}");
@@ -964,17 +1041,17 @@ mod tests {
     fn blank_fork_and_scope_are_loud_errors() {
         let s = spec_server();
         assert!(s
-            .lookup_spec(Parameters(LookupSpecParams {
+            .lookup_spec_impl(LookupSpecParams {
                 name: "MAX_WIDGET_BALANCE".into(),
                 fork: Some("  ".into()),
-            }))
+            })
             .is_err());
         assert!(s
-            .search_posts(Parameters(SearchPostsParams {
+            .search_posts_impl(SearchPostsParams {
                 query: "widget".into(),
                 limit: None,
                 scope: Some("".into()),
-            }))
+            })
             .is_err());
     }
 
@@ -983,21 +1060,21 @@ mod tests {
         let s = spec_server();
         // Valid scope, no matches: advise retrying unscoped.
         let out = s
-            .search_posts(Parameters(SearchPostsParams {
+            .search_posts_impl(SearchPostsParams {
                 query: "flumph".into(),
                 limit: None,
                 scope: Some("eips".into()),
-            }))
+            })
             .unwrap();
         assert!(out.contains("within scope"), "{out}");
         assert!(out.contains("retry without"), "{out}");
         // A scope matching no indexed source id: say it can never match.
         let out = s
-            .search_posts(Parameters(SearchPostsParams {
+            .search_posts_impl(SearchPostsParams {
                 query: "widget".into(),
                 limit: None,
                 scope: Some("consensus-specs".into()),
-            }))
+            })
             .unwrap();
         assert!(out.contains("never match"), "{out}");
         assert!(out.contains("ethresearch"), "lists indexed sources: {out}");
@@ -1007,25 +1084,39 @@ mod tests {
     fn search_posts_scope_narrows_results() {
         let s = spec_server();
         let out = s
-            .search_posts(Parameters(SearchPostsParams {
+            .search_posts_impl(SearchPostsParams {
                 query: "MAX_WIDGET_BALANCE".into(),
                 limit: None,
                 scope: Some("ethresearch".into()),
-            }))
+            })
             .unwrap();
         assert!(out.contains("ethresearch/post/1"), "{out}");
         assert!(!out.contains("eips/eip-9999"), "scope leaked:\n{out}");
+    }
+
+    #[tokio::test]
+    async fn async_tool_wrappers_round_trip_via_spawn_blocking() {
+        let s = server();
+        let out = s
+            .search_posts(Parameters(SearchPostsParams {
+                query: "zorbling".into(),
+                limit: Some(1),
+                scope: None,
+            }))
+            .await
+            .unwrap();
+        assert!(out.contains("results for"), "{out}");
     }
 
     #[test]
     fn search_posts_output_carries_citations_and_footer() {
         let s = server();
         let out = s
-            .search_posts(Parameters(SearchPostsParams {
+            .search_posts_impl(SearchPostsParams {
                 query: "zorbling".into(),
                 limit: Some(2),
                 scope: None,
-            }))
+            })
             .unwrap();
         assert!(out.contains("ethresearch/post/7001"));
         assert!(out.contains("https://ethresear.ch/t/7/1"));
@@ -1039,11 +1130,11 @@ mod tests {
     #[test]
     fn search_posts_empty_result_suggests_fallback() {
         let out = server()
-            .search_posts(Parameters(SearchPostsParams {
+            .search_posts_impl(SearchPostsParams {
                 query: "wexlurb".into(),
                 limit: None,
                 scope: None,
-            }))
+            })
             .unwrap();
         assert!(out.contains("fall back to web search"));
     }
@@ -1052,12 +1143,12 @@ mod tests {
     fn get_topic_by_reply_doc_id_recovers_the_op() {
         let s = server();
         let out = s
-            .get_topic(Parameters(GetTopicParams {
+            .get_topic_impl(GetTopicParams {
                 doc_id: Some("ethresearch/post/7005".into()),
                 topic_id: None,
                 source: None,
                 reply_offset: None,
-            }))
+            })
             .unwrap();
         assert!(out.contains("Original post"));
         assert!(out.contains("the original zorbling proposal"));
@@ -1072,31 +1163,31 @@ mod tests {
     fn get_topic_by_topic_id_and_unknowns() {
         let s = server();
         assert!(
-            s.get_topic(Parameters(GetTopicParams {
+            s.get_topic_impl(GetTopicParams {
                 doc_id: None,
                 topic_id: Some(8),
                 source: None,
                 reply_offset: None,
-            }))
+            })
             .unwrap()
             .contains("flumph")
         );
         assert!(
-            s.get_topic(Parameters(GetTopicParams {
+            s.get_topic_impl(GetTopicParams {
                 doc_id: None,
                 topic_id: Some(404),
                 source: None,
                 reply_offset: None,
-            }))
+            })
             .is_err()
         );
         assert!(
-            s.get_topic(Parameters(GetTopicParams {
+            s.get_topic_impl(GetTopicParams {
                 doc_id: None,
                 topic_id: None,
                 source: None,
                 reply_offset: None,
-            }))
+            })
             .is_err()
         );
     }
@@ -1111,22 +1202,22 @@ mod tests {
         store.upsert(&docs).unwrap();
         let s = CorpusServer::new(store, None).unwrap();
         let page1 = s
-            .get_topic(Parameters(GetTopicParams {
+            .get_topic_impl(GetTopicParams {
                 doc_id: None,
                 topic_id: Some(9),
                 source: None,
                 reply_offset: None,
-            }))
+            })
             .unwrap();
         assert!(page1.contains("Replies 1–50 of 61"));
         assert!(page1.contains("reply_offset=50"));
         let page2 = s
-            .get_topic(Parameters(GetTopicParams {
+            .get_topic_impl(GetTopicParams {
                 doc_id: None,
                 topic_id: Some(9),
                 source: None,
                 reply_offset: Some(50),
-            }))
+            })
             .unwrap();
         assert!(page2.contains("Replies 51–61 of 61"));
         assert!(!page2.contains("more replies"));
@@ -1136,11 +1227,11 @@ mod tests {
     fn get_post_context_windows_by_position_across_gaps() {
         let s = server();
         let out = s
-            .get_post_context(Parameters(GetPostContextParams {
+            .get_post_context_impl(GetPostContextParams {
                 doc_id: "ethresearch/post/7005".into(),
                 before: Some(1),
                 after: Some(1),
-            }))
+            })
             .unwrap();
         // Positional neighbors of #5 are #2 and #6, not #4.
         assert!(out.contains("── #2 ·"));
@@ -1153,11 +1244,11 @@ mod tests {
     #[test]
     fn get_post_context_rejects_unknown_doc() {
         let err = server()
-            .get_post_context(Parameters(GetPostContextParams {
+            .get_post_context_impl(GetPostContextParams {
                 doc_id: "ethresearch/post/404404".into(),
                 before: None,
                 after: None,
-            }))
+            })
             .unwrap_err();
         assert!(err.message.contains("not in the corpus"));
     }
@@ -1185,11 +1276,11 @@ mod tests {
             .unwrap();
         let s = CorpusServer::new(store, None).unwrap();
         let out = s
-            .get_post_context(Parameters(GetPostContextParams {
+            .get_post_context_impl(GetPostContextParams {
                 doc_id: "eips/eip-9999".into(),
                 before: None,
                 after: None,
-            }))
+            })
             .unwrap();
         assert!(out.contains("Standalone document"), "{out}");
         assert!(out.contains("zorbling precompile enables"), "full text present");
@@ -1203,12 +1294,12 @@ mod tests {
         store.upsert(&[standalone_doc()]).unwrap();
         let s = CorpusServer::new(store, None).unwrap();
         let out = s
-            .get_topic(Parameters(GetTopicParams {
+            .get_topic_impl(GetTopicParams {
                 doc_id: Some("eips/eip-9999".into()),
                 topic_id: None,
                 source: None,
                 reply_offset: None,
-            }))
+            })
             .unwrap();
         assert!(out.contains("standalone document"), "{out}");
         assert!(out.contains("get_post_context"), "{out}");
@@ -1217,10 +1308,10 @@ mod tests {
     #[test]
     fn find_similar_without_vector_space_is_friendly_text() {
         let out = server()
-            .find_similar(Parameters(FindSimilarParams {
+            .find_similar_impl(FindSimilarParams {
                 doc_id: "ethresearch/post/7001".into(),
                 limit: None,
-            }))
+            })
             .unwrap();
         assert!(out.contains("corpus embed"));
     }
