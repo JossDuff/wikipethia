@@ -45,6 +45,13 @@ cargo run --release -p corpus-cli -- index
 cargo run --release -p corpus-cli -- embed
 ```
 
+Thereafter, one command runs all three stages incrementally — this is
+what a cron job on a server should call:
+
+```bash
+cargo run --release -p corpus-cli -- refresh
+```
+
 Try it:
 
 ```bash
