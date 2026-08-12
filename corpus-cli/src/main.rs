@@ -1,5 +1,6 @@
 //! CLI: sync, index, search, embed, add, and eval subcommands.
 
+mod agent_eval;
 mod eval;
 mod manifest;
 
@@ -98,6 +99,37 @@ enum Command {
         /// Hand-written question set (see ROADMAP.md M3).
         #[arg(long, default_value = "tests/eval/questions.toml")]
         questions: PathBuf,
+    },
+    /// Run each eval question through headless Claude Code with wikipethia
+    /// as the only tool source and grade the answer's citations.
+    /// COSTS REAL API MONEY — every question is a full agentic session;
+    /// use --limit for a cheap smoke run first.
+    AgentEval {
+        /// Database file the MCP server will serve.
+        #[arg(long, default_value = "corpus.sqlite")]
+        db: PathBuf,
+        /// Question set shared with `eval`.
+        #[arg(long, default_value = "tests/eval/questions.toml")]
+        questions: PathBuf,
+        /// Model for the headless sessions (haiku is the cheap smoke tier).
+        #[arg(long, default_value = "sonnet")]
+        model: String,
+        /// Per-question API budget cap in USD (this build of the claude CLI
+        /// has no --max-turns; the budget is the runaway bound).
+        #[arg(long, default_value_t = 1.0)]
+        budget_per_question: f64,
+        /// Kill a question's session after this many seconds.
+        #[arg(long, default_value_t = 300)]
+        timeout_secs: u64,
+        /// Only the first N questions (smoke runs).
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Artifacts directory; default eval-runs/<unix-epoch>/ (gitignored).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// corpus-mcp binary for the session to spawn.
+        #[arg(long, default_value = "target/release/corpus-mcp")]
+        server_bin: PathBuf,
     },
 }
 
@@ -199,6 +231,25 @@ fn main() -> anyhow::Result<()> {
             };
             eval::run(&store, &questions, embed_query)
         }
+        Command::AgentEval {
+            db,
+            questions,
+            model,
+            budget_per_question,
+            timeout_secs,
+            limit,
+            out,
+            server_bin,
+        } => agent_eval::run(&agent_eval::Config {
+            db,
+            questions,
+            model,
+            budget_per_question,
+            timeout_secs,
+            limit,
+            out_dir: out,
+            server_bin,
+        }),
     }
 }
 
