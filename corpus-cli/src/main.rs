@@ -71,6 +71,17 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Bring the corpus up to date: sync, index, and embed in sequence.
+    /// The one command a cron job or an operator needs; the individual
+    /// stages remain available for surgical use (--force lives there).
+    Refresh {
+        /// One source id from sources.toml; omit to refresh everything.
+        #[arg(long)]
+        source: Option<String>,
+        /// Database file to update.
+        #[arg(long, default_value = "corpus.sqlite")]
+        db: PathBuf,
+    },
     /// Add a source by URL (arrives in M8).
     Add {
         url: String,
@@ -170,39 +181,22 @@ fn main() -> anyhow::Result<()> {
                 );
                 return Ok(());
             }
-            // Per-source failures don't abort the rest of the run — an
-            // unattended multi-source sync must not let one flaky forum
-            // starve the others. Still exits non-zero if anything failed.
-            let mut failed = Vec::new();
-            for entry in manifest.select(source.as_deref())? {
-                let started = std::time::Instant::now();
-                // One fresh client per source, sources strictly sequential —
-                // this is what keeps "one request per second per host" true.
-                match adapter_for(entry).sync(&mut HttpClient::new(), limit) {
-                    Ok(stats) => {
-                        let secs = started.elapsed().as_secs();
-                        println!(
-                            "sync {}: {} fetched, {} already on disk, in {}m{:02}s → data/{}",
-                            entry.id,
-                            stats.fetched,
-                            stats.skipped,
-                            secs / 60,
-                            secs % 60,
-                            entry.id
-                        );
-                    }
-                    Err(err) => {
-                        eprintln!("sync {} failed: {err:#}", entry.id);
-                        failed.push(entry.id.clone());
-                    }
-                }
-            }
-            if !failed.is_empty() {
-                bail!("sync failed for: {} (resume by re-running)", failed.join(", "));
-            }
-            Ok(())
+            sync_sources(&manifest, source.as_deref(), limit)
         }
         Command::Index { source, db, force } => index(source.as_deref(), &db, force),
+        Command::Refresh { source, db } => {
+            // The operator's one verb: the three stages are separate
+            // primitives (different failure modes, politeness constraints,
+            // and --force semantics), but the routine "bring the corpus up
+            // to date" path shouldn't require knowing that.
+            let manifest = Manifest::load()?;
+            println!("refresh: stage 1/3 — sync");
+            sync_sources(&manifest, source.as_deref(), None)?;
+            println!("refresh: stage 2/3 — index");
+            index(source.as_deref(), &db, false)?;
+            println!("refresh: stage 3/3 — embed");
+            embed(&db, false)
+        }
         Command::Dedup {
             db,
             threshold,
@@ -259,6 +253,44 @@ fn main() -> anyhow::Result<()> {
             regrade,
         }),
     }
+}
+
+/// Sync every selected source, tolerating per-source failures — an
+/// unattended multi-source sync must not let one flaky forum starve the
+/// others. Still exits non-zero if anything failed.
+fn sync_sources(
+    manifest: &Manifest,
+    source: Option<&str>,
+    limit: Option<usize>,
+) -> anyhow::Result<()> {
+    let mut failed = Vec::new();
+    for entry in manifest.select(source)? {
+        let started = std::time::Instant::now();
+        // One fresh client per source, sources strictly sequential —
+        // this is what keeps "one request per second per host" true.
+        match adapter_for(entry).sync(&mut HttpClient::new(), limit) {
+            Ok(stats) => {
+                let secs = started.elapsed().as_secs();
+                println!(
+                    "sync {}: {} fetched, {} already on disk, in {}m{:02}s → data/{}",
+                    entry.id,
+                    stats.fetched,
+                    stats.skipped,
+                    secs / 60,
+                    secs % 60,
+                    entry.id
+                );
+            }
+            Err(err) => {
+                eprintln!("sync {} failed: {err:#}", entry.id);
+                failed.push(entry.id.clone());
+            }
+        }
+    }
+    if !failed.is_empty() {
+        bail!("sync failed for: {} (resume by re-running)", failed.join(", "));
+    }
+    Ok(())
 }
 
 fn search(query: &str, db: &Path, limit: usize) -> anyhow::Result<()> {
@@ -374,6 +406,8 @@ fn embed(db: &Path, force: bool) -> anyhow::Result<()> {
         return Ok(());
     }
     let mut done = 0usize;
+    let started = std::time::Instant::now();
+    let mut last_note = std::time::Instant::now();
     loop {
         let batch = store.chunks_missing_embedding(64)?;
         if batch.is_empty() {
@@ -392,7 +426,18 @@ fn embed(db: &Path, force: bool) -> anyhow::Result<()> {
             .collect();
         store.write_embeddings(&rows)?;
         done += rows.len();
-        println!("embedded {done}/{total}");
+        // Rate and ETA, throttled: a full embed runs long enough that
+        // "how much longer" is the question, not "is it moving".
+        if last_note.elapsed().as_secs() >= 5 || done == total {
+            let rate = done as f64 / started.elapsed().as_secs_f64().max(0.001);
+            let left = (total - done) as f64 / rate.max(0.001);
+            println!(
+                "embedded {done}/{total} ({rate:.0}/s, ~{}m{:02}s left)",
+                (left as u64) / 60,
+                (left as u64) % 60
+            );
+            last_note = std::time::Instant::now();
+        }
     }
     println!(
         "embed done: {done} chunks, model {MODEL_ID} → {}",
@@ -432,9 +477,18 @@ fn index(source: Option<&str>, db: &Path, force: bool) -> anyhow::Result<()> {
                 continue;
             }
         };
+        // Parsing tens of thousands of files takes minutes; without a
+        // heartbeat the whole source is one silent gap.
+        eprintln!("index {}: {} raw files…", entry.id, paths.len());
+        let started = std::time::Instant::now();
+        let mut last_note = std::time::Instant::now();
         let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut source_errors = 0usize;
-        for path in &paths {
+        for (done, path) in paths.iter().enumerate() {
+            if last_note.elapsed().as_secs() >= 5 {
+                eprintln!("index {}: {done}/{} files…", entry.id, paths.len());
+                last_note = std::time::Instant::now();
+            }
             // One bad file shouldn't sink the run; report it and keep going.
             match index_raw_file(&mut store, adapter.as_ref(), path, force, &mut seen_ids) {
                 Ok((wrote, total)) => {
@@ -449,6 +503,14 @@ fn index(source: Option<&str>, db: &Path, force: bool) -> anyhow::Result<()> {
             }
         }
         errors += source_errors;
+        let secs = started.elapsed().as_secs();
+        eprintln!(
+            "index {}: done in {}m{:02}s ({} errors)",
+            entry.id,
+            secs / 60,
+            secs % 60,
+            source_errors
+        );
         // Prune index entries whose raw files disappeared (upstream
         // deletions/renames — sync already pruned the raw files). Only when
         // this source parsed cleanly: a failed file's documents are absent

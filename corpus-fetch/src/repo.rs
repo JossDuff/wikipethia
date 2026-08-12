@@ -132,7 +132,20 @@ impl crate::Adapter for RepoAdapter {
         fetcher: &mut dyn Fetcher,
         limit: Option<usize>,
     ) -> Result<SyncStats, FetchError> {
+        // The tarball is one silent request that can take minutes for
+        // asset-heavy repos — without this line, that whole window is
+        // indistinguishable from a hang (measured: eips took 6m21s on a
+        // rate-limited server with no output at all).
+        eprintln!(
+            "sync {}: downloading {} tarball ({})…",
+            self.source_id, self.branch, self.repo_url
+        );
         let bytes = fetcher.get_bytes(&tarball_url(&self.repo_url, &self.branch))?;
+        eprintln!(
+            "sync {}: tarball {:.1}MB, extracting…",
+            self.source_id,
+            bytes.len() as f64 / 1_048_576.0
+        );
         let mut archive = tar::Archive::new(GzDecoder::new(bytes.as_slice()));
 
         let mut stats = SyncStats::default();
@@ -209,15 +222,29 @@ impl crate::Adapter for RepoAdapter {
         for relpath in &dirty {
             dates.remove(relpath);
         }
-        for path in self.raw_files().unwrap_or_default() {
-            let relpath = self.relpath_of(&path);
-            if dates.contains_key(&relpath) {
-                continue;
-            }
-            let content = fs::read_to_string(&path).unwrap_or_default();
-            if frontmatter(&content).is_some_and(|fm| fm.contains_key("created")) {
-                continue;
-            }
+        let pending: Vec<String> = self
+            .raw_files()
+            .unwrap_or_default()
+            .iter()
+            .map(|path| self.relpath_of(path))
+            .filter(|relpath| {
+                if dates.contains_key(relpath) {
+                    return false;
+                }
+                let content =
+                    fs::read_to_string(self.files_dir().join(relpath)).unwrap_or_default();
+                !frontmatter(&content).is_some_and(|fm| fm.contains_key("created"))
+            })
+            .collect();
+        if !pending.is_empty() {
+            eprintln!(
+                "sync {}: filling commit dates for {} files (~{}s at 1 request/s)",
+                self.source_id,
+                pending.len(),
+                pending.len()
+            );
+        }
+        for relpath in pending {
             let atom = fetcher.get_text(&commits_atom_url(&self.repo_url, &self.branch, &relpath))?;
             let Some(entry) = xml::blocks(&atom, "entry").into_iter().next() else {
                 eprintln!("warn: no commit entries for {relpath} — published stays empty");

@@ -154,6 +154,13 @@ impl<C: Clock> HttpClient<C> {
                         break;
                     }
                     let delay = retry_after.map_or(backoff, |ra| ra.max(backoff));
+                    // Unlogged waits look exactly like a hang from outside —
+                    // on rate-limited hosts these can chain to minutes.
+                    eprintln!(
+                        "warn: retry {attempt}/{MAX_ATTEMPTS} for {url}: {last_error} — \
+                         waiting {}s",
+                        delay.as_secs()
+                    );
                     self.clock.sleep(delay);
                     backoff = (backoff * 2).min(MAX_BACKOFF);
                 }
