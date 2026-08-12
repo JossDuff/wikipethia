@@ -7,3 +7,4 @@ corpus.sqlite-shm
 claude-web-shot.txt
 ethereum-mcp-shot.txt
 wikipethia-shot.txt
+eval-runs/

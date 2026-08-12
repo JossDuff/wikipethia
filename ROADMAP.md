@@ -210,7 +210,19 @@ spec-engineering eval questions are added with their free-text recall
 recorded honestly — they measure the gap the tool bypasses, and the
 flagship question scores fused 0.00 at the time the box was checked.
 
-### [ ] M11 — Agent-level answer eval
+### [x] M11 — Agent-level answer eval
+
+**Baseline (2026-08-12, sonnet, $4.26):** strict 0.298 / thread 0.312
+over 23 questions, zero failed sessions. The number is low and honestly
+decomposed: (1) genuine agent-layer wins exactly where retrieval scores
+0.00 — all three EIP-4844 questions at 1.00, the Vitalik-stages question
+at 1.00, the temporal trap at 0.50; (2) a metric-narrowness bias — answers
+citing valid alternative sources (the MAX_EB "modest proposal" thread
+instead of EIP-7251) score 0 against single-doc expects; (3) a real
+finding nothing else could see: **citation dropout** — some answers use
+the tools correctly and then cite nothing (FOCIL, the lookup_spec
+questions), an instructions-layer gap and the first work item this
+harness pays for.
 
 Promoted from Deferred, name unchanged. Also the unblock for M9's
 revisit: this suite can credit thread-level relevance (a client

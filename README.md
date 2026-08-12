@@ -148,7 +148,18 @@ Deployment notes:
 ## Help improve wikipethia by asking questions
 
 A hand-written eval set of questions and answers (`tests/eval/questions.toml`)
-scores every change by recall@10.  Feel free to contribute eval questions with
+scores every change by recall@10.
+
+A second eval layer measures the whole loop instead of one search: the
+`agent-eval` subcommand runs each question through a headless Claude Code
+session with wikipethia as the only tool source and grades whether the
+final answer cites the expected documents (strictly, and at thread level).
+Each run consumes real usage — API credit or your Claude plan's allowance,
+depending on how the `claude` CLI is authenticated — so start small:
+
+```bash
+cargo run --release -p corpus-cli -- agent-eval --limit 2 --model haiku
+```  Feel free to contribute eval questions with
 links to the source that you feel should be retrieved to answer the question.  
 
 For example, if you wrote a post about LeanVM that you feel is the perfect source for a
