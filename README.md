@@ -91,23 +91,35 @@ Search can also be scoped to one source or fork
 
 ## Hosting it remotely
 
-The MCP server speaks stdio by default and streamable HTTP with `--http`:
+The shape: your server runs `corpus-mcp --http` as a long-lived daemon next
+to its own copy of the corpus; your other machines add it to Claude Code as
+an HTTP MCP server and query it over the network. The MCP server speaks
+stdio by default and streamable HTTP with `--http`.
+
+**There is no authentication**, so the port must never be publicly
+reachable. Two safe ways to reach it:
+
+**Over an SSH tunnel** — works anywhere you can ssh, nothing else to set up:
 
 ```bash
-# same-machine (or through an ssh -L tunnel):
+# ON THE SERVER — bind loopback only; unreachable from outside the box:
 corpus-mcp --db /srv/wikipethia/corpus.sqlite --http 127.0.0.1:8642
+
+# ON YOUR LOCAL MACHINE — forward a local port to the server's loopback,
+# then connect to it as if it were local:
+ssh -N -L 8642:127.0.0.1:8642 you@yourserver &
 claude mcp add --transport http wikipethia http://127.0.0.1:8642/mcp
 ```
 
-**There is no authentication.** Bind to loopback or a private interface
-(Tailscale/WireGuard) only — never a public address. For a non-loopback
-bind, allow the bare hostname clients will use (rmcp rejects unknown Host
-headers as DNS-rebind protection; port-less names match any port):
+**Over a private network** (Tailscale/WireGuard) — no tunnel to keep alive:
 
 ```bash
-# on the server:
+# ON THE SERVER — bind the private interface, and allow the bare hostname
+# clients will use (rmcp rejects unknown Host headers as DNS-rebind
+# protection; port-less names match any port):
 corpus-mcp --db corpus.sqlite --http 100.64.0.7:8642 --allow-host myserver.tailnet.ts.net
-# on each client machine:
+
+# ON EACH CLIENT MACHINE:
 claude mcp add --transport http wikipethia http://myserver.tailnet.ts.net:8642/mcp
 ```
 
