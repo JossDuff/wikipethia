@@ -5,12 +5,13 @@
 //! descriptions, the model's query reformulation, retrieval, synthesis —
 //! where `eval` measures the retrieval function alone.
 //!
-//! NOT a cargo test: every run costs real API money and needs network.
-//! The pure grading/parsing functions below are unit-tested; the runner
-//! is exercised by running it.
+//! NOT a cargo test: every run consumes real usage — API credit or the
+//! authenticated Claude plan's allowance, depending on how the `claude`
+//! CLI is logged in — and needs network. The pure grading/parsing
+//! functions below are unit-tested; the runner is exercised by running it.
 
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -19,7 +20,7 @@ use anyhow::{Context, bail};
 use corpus_core::Store;
 use serde_json::{Value, json};
 
-use crate::eval::parse_questions;
+use crate::eval::{parse_questions, resolve_expected_docs};
 
 pub struct Config {
     pub db: PathBuf,
@@ -31,6 +32,9 @@ pub struct Config {
     pub out_dir: Option<PathBuf>,
     /// The corpus-mcp binary the headless session will spawn.
     pub server_bin: PathBuf,
+    /// Re-score an existing run's artifacts with the current grader — no
+    /// sessions, no spend. The escape hatch for grader fixes.
+    pub regrade: Option<PathBuf>,
 }
 
 /// Everything the built-in toolbox offers that could leak information in
@@ -41,35 +45,25 @@ pub struct Config {
 const DISALLOWED: &str = "Read,Write,Edit,Bash,Glob,Grep,WebSearch,WebFetch,Task,NotebookEdit";
 
 pub fn run(config: &Config) -> anyhow::Result<()> {
+    if let Some(dir) = &config.regrade {
+        return regrade(dir);
+    }
     let text = fs::read_to_string(&config.questions)
         .with_context(|| format!("reading {}", config.questions.display()))?;
     let mut questions = parse_questions(&text)?;
     if let Some(limit) = config.limit {
         questions.truncate(limit);
     }
+    if questions.is_empty() {
+        // --limit 0 would otherwise sail through to NaN means.
+        bail!("no questions to run (is --limit 0?)");
+    }
 
-    // Resolve expected doc ids to URLs up front — an unknown id is a typo
-    // in the questions file, same preflight contract as `eval`.
     let store = Store::open(&config.db)?;
-    let expected_urls: Vec<Vec<String>> = questions
-        .iter()
-        .map(|q| {
-            q.expect
-                .iter()
-                .map(|id| {
-                    store
-                        .get(id)?
-                        .map(|d| d.url)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "expect id {id:?} (question {:?}) is not in the corpus",
-                                q.question
-                            )
-                        })
-                })
-                .collect()
-        })
-        .collect::<anyhow::Result<_>>()?;
+    let expected_urls: Vec<Vec<String>> = resolve_expected_docs(&store, &questions)?
+        .into_iter()
+        .map(|docs| docs.into_iter().map(|d| d.url).collect())
+        .collect();
 
     let out_dir = match &config.out_dir {
         Some(dir) => dir.clone(),
@@ -82,29 +76,33 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
     // Absolute from here on: the child runs with its cwd set to this
     // directory and resolves relative paths against it, not against ours.
     let out_dir = out_dir.canonicalize()?;
-    let mcp_config = write_mcp_config(&out_dir, &config.server_bin, &config.db)?;
+    let (mcp_config, mut server_cmd) = write_mcp_config(&out_dir, &config.server_bin, &config.db)?;
 
-    let mut rows: Vec<Value> = Vec::new();
-    let (mut strict_total, mut thread_total, mut cost_total) = (0.0, 0.0, 0.0);
+    // One direct handshake with the exact configured server BEFORE any
+    // paid session: a broken server otherwise burns a full budget per
+    // question, for every question, answering from pretraining.
+    probe_server(&mut server_cmd, Duration::from_secs(60))?;
+
+    let mut strict_total = 0.0;
+    let mut thread_total = 0.0;
+    let mut cost_total = 0.0;
     let mut failures = 0usize;
     println!("strict thread tools    cost  question");
     for (i, (q, urls)) in questions.iter().zip(&expected_urls).enumerate() {
-        let outcome = run_one(config, &mcp_config, &out_dir, i, &q.question);
-        let (answer, queries, cost, error) = match outcome {
-            Ok(run) => (run.answer, run.queries, run.cost_usd, None),
-            Err(e) => {
-                failures += 1;
-                (String::new(), Vec::new(), 0.0, Some(format!("{e:#}")))
-            }
-        };
-        let (strict, thread) = grade(&answer, urls);
+        let run = run_one(config, &mcp_config, &out_dir, i, &q.question);
+        if run.error.is_some() {
+            failures += 1;
+        }
+        let answer = run.answer.as_deref().unwrap_or("");
+        let (strict, thread) = grade(answer, urls);
         strict_total += strict;
         thread_total += thread;
-        cost_total += cost;
-        let flag = if error.is_some() { "  [FAILED]" } else { "" };
+        cost_total += run.cost_usd;
+        let flag = if run.error.is_some() { "  [FAILED]" } else { "" };
         println!(
-            "  {strict:.2}   {thread:.2}  {:5}  ${cost:.2}  {}{flag}",
-            queries.len(),
+            "  {strict:.2}   {thread:.2}  {:5}  ${:.2}  {}{flag}",
+            run.queries.len(),
+            run.cost_usd,
             q.question
         );
         let row = json!({
@@ -113,13 +111,12 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
             "expected_urls": urls,
             "strict": strict,
             "thread": thread,
-            "cost_usd": cost,
-            "queries": queries,
+            "cost_usd": run.cost_usd,
+            "queries": run.queries,
             "answer": answer,
-            "error": error,
+            "error": run.error,
         });
         fs::write(out_dir.join(format!("q{i:02}.json")), serde_json::to_string_pretty(&row)?)?;
-        rows.push(row);
     }
 
     let n = questions.len() as f64;
@@ -129,12 +126,15 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
         "failures": failures,
         "strict_mean": strict_total / n,
         "thread_mean": thread_total / n,
-        "total_cost_usd": cost_total,
+        // A killed session's spend has no result event to report it, so
+        // this is a floor, not an invoice, whenever failures > 0.
+        "total_cost_usd_lower_bound": cost_total,
     });
     fs::write(out_dir.join("summary.json"), serde_json::to_string_pretty(&summary)?)?;
+    let cost_note = if failures > 0 { " (lower bound — failed sessions still spend)" } else { "" };
     println!(
         "\nagent-eval: strict {:.3}, thread {:.3} over {} questions — {} failed, \
-         ${cost_total:.2} total ({}), artifacts in {}",
+         ${cost_total:.2}{cost_note} total ({}), artifacts in {}",
         strict_total / n,
         thread_total / n,
         questions.len(),
@@ -145,10 +145,55 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Re-score persisted q*.json artifacts with the current grader. Free:
+/// answers and expected URLs are already on disk.
+fn regrade(dir: &Path) -> anyhow::Result<()> {
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with('q') && n.ends_with(".json") && !n.contains('-'))
+        })
+        .collect();
+    entries.sort();
+    if entries.is_empty() {
+        bail!("no q*.json artifacts in {}", dir.display());
+    }
+    let mut strict_total = 0.0;
+    let mut thread_total = 0.0;
+    println!("strict thread  question (regraded)");
+    for path in &entries {
+        let row: Value = serde_json::from_str(&fs::read_to_string(path)?)?;
+        let answer = row["answer"].as_str().unwrap_or("");
+        let urls: Vec<String> = row["expected_urls"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let (strict, thread) = grade(answer, &urls);
+        strict_total += strict;
+        thread_total += thread;
+        println!("  {strict:.2}   {thread:.2}  {}", row["question"].as_str().unwrap_or("?"));
+    }
+    let n = entries.len() as f64;
+    println!(
+        "\nregraded: strict {:.3}, thread {:.3} over {} questions",
+        strict_total / n,
+        thread_total / n,
+        entries.len()
+    );
+    Ok(())
+}
+
 struct RunOutcome {
-    answer: String,
+    /// None when the session produced no result event.
+    answer: Option<String>,
     queries: Vec<Value>,
+    /// From the result event when one exists; a killed session's spend is
+    /// real but unreportable, so 0.0 here means "unknown", not "free".
     cost_usd: f64,
+    error: Option<String>,
 }
 
 /// One headless session. NOT `--bare`: bare mode restricts auth to
@@ -159,8 +204,28 @@ struct RunOutcome {
 /// ~/.claude context can still load — a documented, constant-across-runs
 /// residue). `--max-budget-usd` bounds runaway agentic loops — this CLI
 /// build has no --max-turns — and a watchdog kills the child at
-/// timeout_secs.
+/// timeout_secs. Never returns Err: every failure is embedded in the
+/// outcome so the sweep continues and partial data (stream, cost,
+/// queries) survives.
 fn run_one(
+    config: &Config,
+    mcp_config: &Path,
+    cwd: &Path,
+    index: usize,
+    question: &str,
+) -> RunOutcome {
+    match run_one_inner(config, mcp_config, cwd, index, question) {
+        Ok(outcome) => outcome,
+        Err(e) => RunOutcome {
+            answer: None,
+            queries: Vec::new(),
+            cost_usd: 0.0,
+            error: Some(format!("{e:#}")),
+        },
+    }
+}
+
+fn run_one_inner(
     config: &Config,
     mcp_config: &Path,
     cwd: &Path,
@@ -176,7 +241,6 @@ fn run_one(
         .args([
             "--strict-mcp-config",
             "-p",
-            question,
             "--mcp-config",
             &mcp_config.display().to_string(),
             "--allowedTools",
@@ -192,6 +256,11 @@ fn run_one(
             "--output-format",
             "stream-json",
             "--verbose",
+            // The question is a positional; the separator keeps a
+            // contributed question starting with '-' from being parsed
+            // as an option (measured: it errors the whole invocation).
+            "--",
+            question,
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::from(stderr_file))
@@ -206,6 +275,7 @@ fn run_one(
         BufReader::new(stdout).lines().map_while(Result::ok).collect::<Vec<String>>()
     });
     let deadline = Instant::now() + Duration::from_secs(config.timeout_secs);
+    let mut timed_out = false;
     loop {
         if child.try_wait()?.is_some() {
             break;
@@ -213,19 +283,23 @@ fn run_one(
         if Instant::now() > deadline {
             child.kill().ok();
             child.wait().ok();
-            bail!("timed out after {}s", config.timeout_secs);
+            timed_out = true;
+            break;
         }
         std::thread::sleep(Duration::from_millis(200));
     }
+    // The child is dead either way, so stdout is at EOF and the join is
+    // prompt. The stream file is written on EVERY path — a hung run is
+    // exactly when the audit trail matters.
     let lines = reader.join().expect("reader thread");
-    // The raw stream is the audit trail — which tools really ran, whether
-    // anything non-wikipethia leaked in — and the only way to debug a
-    // malformed run after the fact.
     fs::write(cwd.join(format!("q{index:02}-stream.jsonl")), lines.join("\n"))?;
 
+    // Parse everything before judging anything: a bail that skips lines
+    // discards the result event's cost sitting later in the same buffer.
     let mut answer = None;
     let mut cost = 0.0;
     let mut queries = Vec::new();
+    let mut server_status = None;
     for line in &lines {
         match parse_stream_line(line) {
             Some(StreamEvent::ToolUse { name, input }) => {
@@ -235,35 +309,51 @@ fn run_one(
                 answer = Some(a);
                 cost = cost_usd;
             }
-            Some(StreamEvent::ServerStatus { status }) if status != "connected" => {
-                // Without the server the model answers from pretraining
-                // and the score measures nothing — fail loudly instead.
-                bail!(
-                    "wikipethia MCP server status {status:?} — see {} and the \
-                     mcp-config",
-                    stderr_path.display()
-                );
-            }
-            _ => {}
+            Some(StreamEvent::ServerStatus { status }) => server_status = Some(status),
+            None => {}
         }
     }
-    let answer = answer.ok_or_else(|| {
-        anyhow::anyhow!(
+
+    let error = if timed_out {
+        Some(format!(
+            "timed out after {}s — spend unreported; see q{index:02}-stream.jsonl",
+            config.timeout_secs
+        ))
+    } else if server_status.as_deref().is_some_and(|s| s != "connected") {
+        // The pre-sweep probe makes this a mid-run degradation signal
+        // rather than the common path; the answer is pretraining, not
+        // corpus, so it must not score.
+        Some(format!(
+            "wikipethia MCP server status {:?} mid-run — see {}",
+            server_status.as_deref().unwrap_or("?"),
+            stderr_path.display()
+        ))
+    } else if answer.is_none() {
+        Some(format!(
             "no result event in {} stream lines — see {}",
             lines.len(),
             stderr_path.display()
-        )
-    })?;
+        ))
+    } else {
+        None
+    };
     Ok(RunOutcome {
-        answer,
+        // A pretraining answer (server died mid-run) must not be graded.
+        answer: if error.is_none() { answer } else { None },
         queries,
         cost_usd: cost,
+        error,
     })
 }
 
 /// The --mcp-config payload: wikipethia and nothing else, absolute paths
-/// so the headless session's cwd doesn't matter.
-fn write_mcp_config(out_dir: &Path, server_bin: &Path, db: &Path) -> anyhow::Result<PathBuf> {
+/// so the headless session's cwd doesn't matter. Returns the config path
+/// and the equivalent direct command for the pre-sweep probe.
+fn write_mcp_config(
+    out_dir: &Path,
+    server_bin: &Path,
+    db: &Path,
+) -> anyhow::Result<(PathBuf, Command)> {
     let server_bin = server_bin.canonicalize().with_context(|| {
         format!(
             "corpus-mcp binary not found at {} — build it: cargo build --release -p corpus-mcp",
@@ -271,13 +361,16 @@ fn write_mcp_config(out_dir: &Path, server_bin: &Path, db: &Path) -> anyhow::Res
         )
     })?;
     let db = db.canonicalize().context("db path")?;
-    let path = out_dir.join("mcp-config.json");
     // fastembed's cache defaults to .fastembed_cache RELATIVE TO CWD, and
     // the headless session launches the server from the artifacts dir —
     // without an absolute cache path the server silently re-downloads the
-    // model there (or hangs offline) and the MCP handshake times out.
-    // Point it at the invoker's cache, where `corpus embed` put the model.
-    let cache = std::env::current_dir()?.join(".fastembed_cache");
+    // model there (or hangs offline) and the MCP handshake times out. An
+    // explicit FASTEMBED_CACHE_DIR wins; otherwise assume the invoker's
+    // cwd, where `corpus embed` put the model.
+    let cache = std::env::var("FASTEMBED_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or(std::env::current_dir()?.join(".fastembed_cache"));
+    let path = out_dir.join("mcp-config.json");
     let config = json!({
         "mcpServers": {
             "wikipethia": {
@@ -289,7 +382,52 @@ fn write_mcp_config(out_dir: &Path, server_bin: &Path, db: &Path) -> anyhow::Res
         }
     });
     fs::write(&path, serde_json::to_string_pretty(&config)?)?;
-    Ok(path)
+    let mut cmd = Command::new(&server_bin);
+    cmd.args(["--db", &db.display().to_string()])
+        .env("FASTEMBED_CACHE_DIR", &cache)
+        .current_dir(out_dir);
+    Ok((path, cmd))
+}
+
+/// One direct JSON-RPC initialize round-trip against the configured
+/// server, exactly as the headless sessions will launch it.
+fn probe_server(cmd: &mut Command, timeout: Duration) -> anyhow::Result<()> {
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("spawning corpus-mcp for the pre-sweep probe")?;
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\
+              \"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\
+              \"clientInfo\":{\"name\":\"agent-eval-probe\",\"version\":\"0\"}}}\n",
+        )?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let reader = std::thread::spawn(move || {
+        BufReader::new(stdout).lines().next().and_then(Result::ok)
+    });
+    let deadline = Instant::now() + timeout;
+    while !reader.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Kill unconditionally: on success the probe is done with the server;
+    // on deadline this EOFs stdout so the join below returns promptly.
+    child.kill().ok();
+    child.wait().ok();
+    let first = reader.join().expect("probe reader");
+    if !first.is_some_and(|l| l.contains("serverInfo")) {
+        bail!(
+            "the configured wikipethia server failed its initialize handshake — \
+             fix this before paid sessions run (check the binary, --db, and the \
+             fastembed cache)"
+        );
+    }
+    Ok(())
 }
 
 enum StreamEvent {
@@ -299,9 +437,9 @@ enum StreamEvent {
     ServerStatus { status: String },
 }
 
-/// One line of `--output-format stream-json`. Only wikipethia tool calls
-/// and the final result matter; everything else (init, text deltas, tool
-/// results) is None.
+/// One line of `--output-format stream-json`. Only wikipethia tool calls,
+/// the init event's server status, and the final result matter;
+/// everything else (text deltas, tool results) is None.
 fn parse_stream_line(line: &str) -> Option<StreamEvent> {
     let v: Value = serde_json::from_str(line).ok()?;
     match v.get("type")?.as_str()? {
@@ -341,7 +479,7 @@ fn parse_stream_line(line: &str) -> Option<StreamEvent> {
 }
 
 /// Fractions of expected URLs the answer credits, (strict, thread).
-/// Strict: the document's own URL appears. Thread: for forum posts, any
+/// Strict: the document's own URL is cited. Thread: for forum posts, any
 /// URL from the same topic counts — a client that cites a thread's OP
 /// after finding it via a reply has served the reader; this is the column
 /// doc-id recall@10 structurally cannot measure (the M9 lesson).
@@ -349,38 +487,67 @@ pub fn grade(answer: &str, expected_urls: &[String]) -> (f64, f64) {
     if expected_urls.is_empty() {
         return (0.0, 0.0);
     }
-    let strict = expected_urls.iter().filter(|u| answer_cites(answer, u)).count();
+    let cited = cited_urls(answer);
+    let strict = expected_urls
+        .iter()
+        .filter(|u| cited.contains(u.trim_end_matches('/')))
+        .count();
     let thread = expected_urls
         .iter()
         .filter(|u| {
-            answer_cites(answer, u)
-                || thread_prefix(u).is_some_and(|p| answer_cites(answer, &p))
+            cited.contains(u.trim_end_matches('/'))
+                || thread_prefix(u).is_some_and(|p| {
+                    cited.iter().any(|c| *c == p || c.starts_with(&format!("{p}/")))
+                })
         })
         .count();
     let n = expected_urls.len() as f64;
     (strict as f64 / n, thread as f64 / n)
 }
 
-/// Trailing-slash-insensitive substring: citations routinely drop or add
-/// the final slash.
-fn answer_cites(answer: &str, url: &str) -> bool {
-    answer.contains(url.trim_end_matches('/'))
+/// Every URL cited in the answer, normalized (trailing slash and trailing
+/// punctuation stripped). Extraction — not substring matching — because a
+/// substring check has no right boundary: an expected OP URL ending in /1
+/// is a prefix of its thread's replies /10–/19, which silently converted
+/// thread-level citations into strict credit (9 of 15 expected docs end
+/// in /1 today).
+fn cited_urls(answer: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for (start, _) in answer.match_indices("http") {
+        let rest = &answer[start..];
+        if !rest.starts_with("http://") && !rest.starts_with("https://") {
+            continue;
+        }
+        let end = rest
+            .find(|c: char| c.is_whitespace() || "()[]<>\"'`".contains(c))
+            .unwrap_or(rest.len());
+        let url = rest[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', '*']);
+        if !url.is_empty() {
+            out.insert(url.trim_end_matches('/').to_string());
+        }
+    }
+    out
 }
 
 /// The topic-level prefix of a Discourse post URL —
-/// `https://host/t/slug/21517/34` → `https://host/t/slug/21517` — and
-/// None for anything not shaped like a forum post (specs, blogs), where
-/// thread credit has no meaning beyond strict.
+/// `https://host/t/slug/21517/34` → `https://host/t/slug/21517`, and the
+/// slugless fallback shape ingest can emit (`/t/21517/34`) →
+/// `https://host/t/21517`. None for anything not shaped like a forum post
+/// (specs, blogs), where thread credit has no meaning beyond strict.
 fn thread_prefix(url: &str) -> Option<String> {
     let (_, rest) = url.split_once("/t/")?;
     let mut segments = rest.split('/');
-    let slug = segments.next()?;
+    let first = segments.next()?;
+    let host = &url[..url.len() - rest.len()];
+    if !first.is_empty() && first.chars().all(|c| c.is_ascii_digit()) {
+        // Slugless: the first segment IS the topic id.
+        return Some(format!("{host}{first}"));
+    }
     let topic = segments.next()?;
     if topic.is_empty() || !topic.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    let host = &url[..url.len() - rest.len()];
-    Some(format!("{host}{slug}/{topic}"))
+    Some(format!("{host}{first}/{topic}"))
 }
 
 #[cfg(test)]
@@ -398,36 +565,60 @@ mod tests {
             thread_prefix("https://ethresear.ch/t/native-rollups/21517").as_deref(),
             Some("https://ethresear.ch/t/native-rollups/21517")
         );
+        // The slugless fallback shape ingest can emit.
+        assert_eq!(
+            thread_prefix("https://ethresear.ch/t/21517/34").as_deref(),
+            Some("https://ethresear.ch/t/21517")
+        );
         assert_eq!(thread_prefix("https://eips.ethereum.org/EIPS/eip-4844"), None);
         assert_eq!(thread_prefix("https://ethresear.ch/t/slug-only"), None);
     }
 
     #[test]
+    fn strict_credit_requires_the_exact_url_not_a_prefix() {
+        // The bug the extraction rewrite fixes: expected OP /1 must NOT be
+        // credited by a citation of reply /12.
+        let expected = vec!["https://ethresear.ch/t/native-rollups/21517/1".to_string()];
+        let (strict, thread) =
+            grade("See https://ethresear.ch/t/native-rollups/21517/12 here.", &expected);
+        assert_eq!(strict, 0.0, "prefix must not earn strict credit");
+        assert_eq!(thread, 1.0, "same thread still earns thread credit");
+    }
+
+    #[test]
     fn grading_gives_thread_credit_without_strict_credit() {
         let expected = vec!["https://ethresear.ch/t/native-rollups/21517/1".to_string()];
-        // Cites a DIFFERENT post of the same thread.
         let answer = "See https://ethresear.ch/t/native-rollups/21517/34 for details.";
         assert_eq!(grade(answer, &expected), (0.0, 1.0));
-        // Cites the exact post: both.
         let answer = "See https://ethresear.ch/t/native-rollups/21517/1.";
         assert_eq!(grade(answer, &expected), (1.0, 1.0));
-        // Cites nothing relevant.
         assert_eq!(grade("no links here", &expected), (0.0, 0.0));
     }
 
     #[test]
+    fn url_extraction_handles_markdown_and_punctuation() {
+        let cited = cited_urls(
+            "Per [the EIP](https://eips.ethereum.org/EIPS/eip-4844), and \
+             https://ethresear.ch/t/x/9/2. Also <https://a.io/b/>!",
+        );
+        assert!(cited.contains("https://eips.ethereum.org/EIPS/eip-4844"));
+        assert!(cited.contains("https://ethresear.ch/t/x/9/2"));
+        assert!(cited.contains("https://a.io/b"));
+        // A bare "http" word is not a URL.
+        assert!(cited_urls("http is a protocol").is_empty());
+    }
+
+    #[test]
     fn citation_matching_ignores_trailing_slash() {
-        assert!(answer_cites("x https://eips.ethereum.org/EIPS/eip-4844 y",
-            "https://eips.ethereum.org/EIPS/eip-4844/"));
         let (strict, _) = grade(
-            "https://eips.ethereum.org/EIPS/eip-4844",
+            "see https://eips.ethereum.org/EIPS/eip-4844/ here",
             &["https://eips.ethereum.org/EIPS/eip-4844".to_string()],
         );
         assert_eq!(strict, 1.0);
     }
 
     #[test]
-    fn stream_lines_yield_wikipethia_calls_and_result() {
+    fn stream_lines_yield_wikipethia_calls_result_and_server_status() {
         let tool = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__wikipethia__search_posts","input":{"query":"PBS"}}]}}"#;
         match parse_stream_line(tool) {
             Some(StreamEvent::ToolUse { name, input }) => {
@@ -444,10 +635,13 @@ mod tests {
             }
             _ => panic!("result not parsed"),
         }
-        // Non-wikipethia tools and other event types are ignored.
+        let init = r#"{"type":"system","subtype":"init","mcp_servers":[{"name":"wikipethia","status":"failed"}]}"#;
+        match parse_stream_line(init) {
+            Some(StreamEvent::ServerStatus { status }) => assert_eq!(status, "failed"),
+            _ => panic!("server status not parsed"),
+        }
         let other = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"WebSearch","input":{}}]}}"#;
         assert!(parse_stream_line(other).is_none());
-        assert!(parse_stream_line(r#"{"type":"system","subtype":"init"}"#).is_none());
         assert!(parse_stream_line("not json").is_none());
     }
 }

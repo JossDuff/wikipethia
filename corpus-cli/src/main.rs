@@ -102,8 +102,10 @@ enum Command {
     },
     /// Run each eval question through headless Claude Code with wikipethia
     /// as the only tool source and grade the answer's citations.
-    /// COSTS REAL API MONEY — every question is a full agentic session;
-    /// use --limit for a cheap smoke run first.
+    /// CONSUMES REAL USAGE — API credit or the authenticated Claude plan's
+    /// allowance, depending on how the claude CLI is logged in; every
+    /// question is a full agentic session. Use --limit for a cheap smoke
+    /// run first, and --regrade to re-score existing artifacts for free.
     AgentEval {
         /// Database file the MCP server will serve.
         #[arg(long, default_value = "corpus.sqlite")]
@@ -130,6 +132,10 @@ enum Command {
         /// corpus-mcp binary for the session to spawn.
         #[arg(long, default_value = "target/release/corpus-mcp")]
         server_bin: PathBuf,
+        /// Re-score an existing run directory's artifacts with the current
+        /// grader — no sessions, no spend.
+        #[arg(long)]
+        regrade: Option<PathBuf>,
     },
 }
 
@@ -240,6 +246,7 @@ fn main() -> anyhow::Result<()> {
             limit,
             out,
             server_bin,
+            regrade,
         } => agent_eval::run(&agent_eval::Config {
             db,
             questions,
@@ -249,6 +256,7 @@ fn main() -> anyhow::Result<()> {
             limit,
             out_dir: out,
             server_bin,
+            regrade,
         }),
     }
 }

@@ -6,7 +6,7 @@
 //! without an eval run is not a finished change.
 
 use anyhow::{Context, bail};
-use corpus_core::Store;
+use corpus_core::{Document, Store};
 use serde::Deserialize;
 
 /// Results per query the metric is computed over.
@@ -44,6 +44,33 @@ pub fn parse_questions(text: &str) -> anyhow::Result<Vec<Question>> {
     Ok(file.questions)
 }
 
+/// Every question's expected docs, resolved. An expect id that is not in
+/// the corpus at all is a typo in the questions file, not a retrieval
+/// miss — fail loudly instead of silently deflating the score. The one
+/// preflight both eval layers share; retrieval eval ignores the payload.
+pub fn resolve_expected_docs(
+    store: &Store,
+    questions: &[Question],
+) -> anyhow::Result<Vec<Vec<Document>>> {
+    questions
+        .iter()
+        .map(|q| {
+            q.expect
+                .iter()
+                .map(|id| {
+                    store.get(id)?.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "expect id {id:?} (question {:?}) is not in the corpus — \
+                             typo, or the topic is not synced?",
+                            q.question
+                        )
+                    })
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// Fraction of `expect` ids present in `got` — the order of `got` does not
 /// matter at fixed k.
 pub fn recall_at_k(expect: &[String], got: &[String]) -> f64 {
@@ -59,20 +86,7 @@ pub fn run(
     questions: &[Question],
     embed_query: Option<EmbedQuery<'_>>,
 ) -> anyhow::Result<()> {
-    // An expect id that is not in the corpus at all is a typo in the
-    // questions file, not a retrieval miss — fail loudly instead of
-    // silently deflating the score.
-    for q in questions {
-        for id in &q.expect {
-            if store.get(id)?.is_none() {
-                bail!(
-                    "expect id {id:?} (question {:?}) is not in the corpus — \
-                     typo, or the topic is not synced?",
-                    q.question
-                );
-            }
-        }
-    }
+    resolve_expected_docs(store, questions)?;
 
     let mut lex_total = 0.0;
     let mut fused_total = 0.0;
