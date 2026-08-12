@@ -175,6 +175,19 @@ lexical #27, the rollup-stages post at #46, eip-8184 at #31).
 question regressing, and a hybrid+rerank query stays interactive (a few
 seconds, not tens).
 
+**Status: PARKED (2026-08-12), full implementation on branch
+`retrieval/reranker`.** Two attempts fell short of the gate: 0.225 at
+46s/query (bge-base, content-only pair text), 0.357 at 10s/query
+(jina-turbo, title+content). Findings the next attempt inherits: rerank
+text must include the chunk's title (key phrases often live only there —
+restoring it took "What is EIP 4844?" from 0.00 to 1.00); and the
+cross-encoder surfaces the right THREAD but prefers replies over OPs
+(replies answer, OPs open with preamble), which doc_id-level recall
+scores as a miss. That is a metric-design question — topic-level credit,
+or OP canonicalization — so revisit after M11 gives the eval suite a way
+to price thread-level relevance. Untried latency levers: shorter pair
+text, 256-token max_length, smaller candidate pool.
+
 ### [ ] M10 — Spec-engineering lookups
 
 Constants, spec function bodies, and fork-filtered spec content over the
@@ -191,7 +204,10 @@ and passing.
 
 ### [ ] M11 — Agent-level answer eval
 
-Promoted from Deferred, name unchanged. Headless client runs
+Promoted from Deferred, name unchanged. Also the unblock for M9's
+revisit: this suite can credit thread-level relevance (a client
+recovers a thread's OP from any of its replies via get_topic), which
+doc_id recall@10 cannot. Headless client runs
 (`claude -p`) per eval question with wikipethia as the only server;
 judge citation-recall of expected URLs in the final answer. Web search
 disabled, or web-sourced claims flagged — the Aug 2026 client test
