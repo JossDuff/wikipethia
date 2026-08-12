@@ -402,16 +402,7 @@ impl Store {
         let Some(row) = rows.next()? else {
             return Ok(None);
         };
-        Ok(Some(Document {
-            id: row.get(0)?,
-            source: row.get(1)?,
-            url: row.get(2)?,
-            title: row.get(3)?,
-            author: row.get(4)?,
-            published: row.get(5)?,
-            content: row.get(6)?,
-            meta: serde_json::from_str(&row.get::<_, String>(7)?)?,
-        }))
+        Ok(Some(row_to_document(row)?))
     }
 
     /// Documents whose meta JSON field `key` equals `value` (integer or
@@ -458,16 +449,7 @@ impl Store {
         // (missing post_number sorts to the end).
         let mut docs = Vec::new();
         while let Some(row) = rows.next()? {
-            docs.push(Document {
-                id: row.get(0)?,
-                source: row.get(1)?,
-                url: row.get(2)?,
-                title: row.get(3)?,
-                author: row.get(4)?,
-                published: row.get(5)?,
-                content: row.get(6)?,
-                meta: serde_json::from_str(&row.get::<_, String>(7)?)?,
-            });
+            docs.push(row_to_document(row)?);
         }
         Ok(docs)
     }
@@ -504,16 +486,7 @@ impl Store {
         let mut rows = stmt.query(params.as_slice())?;
         let mut docs = Vec::new();
         while let Some(row) = rows.next()? {
-            docs.push(Document {
-                id: row.get(0)?,
-                source: row.get(1)?,
-                url: row.get(2)?,
-                title: row.get(3)?,
-                author: row.get(4)?,
-                published: row.get(5)?,
-                content: row.get(6)?,
-                meta: serde_json::from_str(&row.get::<_, String>(7)?)?,
-            });
+            docs.push(row_to_document(row)?);
         }
         Ok(docs)
     }
@@ -826,8 +799,16 @@ impl Store {
                      WHERE v.embedding MATCH ?1 AND k = ?2
                      ORDER BY v.distance",
                 )?;
+                // Scope is applied AFTER the KNN cut, so a narrow scope
+                // (one source among ~80k vectors) would filter away nearly
+                // every corpus-wide neighbor and silently drop the whole
+                // vector arm. KNN in sqlite-vec is an exhaustive scan
+                // either way, so a much deeper k under scope costs only
+                // the larger result heap.
+                // sqlite-vec rejects k above 4096.
+                let k = if scope.is_some() { 4096 } else { CANDIDATES * 2 };
                 let rows: Vec<(i64, String)> = stmt
-                    .query_map(params![vec_blob(qv), (CANDIDATES * 2) as i64], |row| {
+                    .query_map(params![vec_blob(qv), k as i64], |row| {
                         Ok((row.get(0)?, row.get(1)?))
                     })?
                     .collect::<Result<_, _>>()?;
@@ -1107,6 +1088,24 @@ fn delete_chunks(conn: &Connection, doc_id: &str, has_vec: bool) -> Result<(), C
     conn.prepare_cached("DELETE FROM chunks WHERE doc_id = ?1")?
         .execute([doc_id])?;
     Ok(())
+}
+
+/// One `documents` row in the canonical 8-column order (id, source, url,
+/// title, author, published, content, meta). Corrupt meta propagates as an
+/// error; the migration backfill is the one reader that instead tolerates
+/// it (a v1 file is being rescued, not validated) and keeps its own
+/// lenient mapping.
+fn row_to_document(row: &rusqlite::Row) -> Result<Document, CoreError> {
+    Ok(Document {
+        id: row.get(0)?,
+        source: row.get(1)?,
+        url: row.get(2)?,
+        title: row.get(3)?,
+        author: row.get(4)?,
+        published: row.get(5)?,
+        content: row.get(6)?,
+        meta: serde_json::from_str(&row.get::<_, String>(7)?)?,
+    })
 }
 
 /// Rebuild every document's chunks — the v1 → v2 migration, run once when an

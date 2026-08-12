@@ -185,6 +185,15 @@ impl CorpusServer {
         Parameters(p): Parameters<SearchPostsParams>,
     ) -> Result<String, ErrorData> {
         let limit = p.limit.unwrap_or(10).clamp(1, MAX_LIMIT);
+        // scope: "" would silently behave as unscoped ("" prefixes every
+        // id) — a blank almost always means an unset template variable.
+        if p.scope.as_deref().is_some_and(|s| s.trim().is_empty()) {
+            return Err(ErrorData::invalid_params(
+                "scope must be a source id or doc-id prefix — omit it entirely to \
+                 search the whole corpus",
+                None,
+            ));
+        }
         let query_vec = match &self.embedder {
             Some(embedder) => Some(embedder.embed_query(&p.query).map_err(internal)?),
             None => None,
@@ -194,6 +203,25 @@ impl CorpusServer {
             .hybrid_search_scoped(&p.query, query_vec.as_deref(), p.scope.as_deref(), limit)
             .map_err(internal)?;
         if hits.is_empty() {
+            // A scoped miss is usually a scope problem, not a coverage
+            // problem — say so, or the client wrongly abandons the corpus.
+            if let Some(scope) = &p.scope {
+                let stats = store.source_stats().map_err(internal)?;
+                let known: Vec<&str> = stats.iter().map(|s| s.id.as_str()).collect();
+                let hint = if known.iter().any(|id| scope.starts_with(id)) {
+                    "the scope matched no documents for this query — retry without \
+                     scope before concluding the corpus lacks it"
+                } else {
+                    "the scope does not start with any indexed source id, so it can \
+                     never match — retry without scope or fix it"
+                };
+                return Ok(format!(
+                    "No results for {:?} within scope {scope:?}: {hint}. Indexed \
+                     sources: {}.",
+                    p.query,
+                    known.join(", ")
+                ));
+            }
             return Ok(format!(
                 "No results in the corpus for {:?}. Coverage is a curated slice of the \
                  indexed sources (research forums, EIP/ERC and consensus specs, \
@@ -547,6 +575,15 @@ impl CorpusServer {
         if name.is_empty() {
             return Err(ErrorData::invalid_params("name must be a spec identifier", None));
         }
+        // A blank fork is almost always an unset template variable; failing
+        // loudly beats emitting the misleading "not in fork \"\"" preamble.
+        if p.fork.as_deref().is_some_and(|f| f.trim().is_empty()) {
+            return Err(ErrorData::invalid_params(
+                "fork must be a spec directory name like \"electra\" — omit it entirely \
+                 to search all forks",
+                None,
+            ));
+        }
         let store = self.store();
         // Spec-tier sources by manifest tier — never a hardcoded source list.
         let stats = store.source_stats().map_err(internal)?;
@@ -566,8 +603,15 @@ impl CorpusServer {
         let fork_needle = p.fork.as_deref().map(|f| format!("/{f}/"));
         let mut blocks: Vec<(bool, bool, bool, String)> = Vec::new();
         for doc in &docs {
-            let tier = store.source_tier(&doc.source).map_err(internal)?;
-            let cite = citation(&doc.id, doc.author.as_deref(), &doc.published, tier.as_deref(), &doc.url);
+            // Every doc came from a tier="spec" source by construction —
+            // no per-doc tier query needed.
+            let cite = citation(&doc.id, doc.author.as_deref(), &doc.published, Some("spec"), &doc.url);
+            // An EIP/ERC definition's authority hinges on its status
+            // (Withdrawn vs Final) — the same field the temporal-trap
+            // labels exist for; a lookup result must not hide it.
+            let status = spec_status(&doc.meta)
+                .map(|s| format!(" [status: {s}]"))
+                .unwrap_or_default();
             let in_fork = fork_needle.as_deref().is_some_and(|f| doc.id.contains(f));
             for c in spec::constants(&doc.content) {
                 if !c.name.contains(name) {
@@ -578,7 +622,7 @@ impl CorpusServer {
                     in_fork,
                     false,
                     c.name == name,
-                    format!("{} = {}{desc}\n   {cite}", c.name, c.value),
+                    format!("{} = {}{desc}{status}\n   {cite}", c.name, c.value),
                 ));
             }
             for f in spec::functions(&doc.content) {
@@ -591,7 +635,7 @@ impl CorpusServer {
                     true,
                     f.name == name,
                     format!(
-                        "{}{label}\n```python\n{}\n```\n   {cite}",
+                        "{}{label}{status}\n```python\n{}\n```\n   {cite}",
                         f.name,
                         truncate_block(&f.code, FUNCTION_MAX_CHARS, &doc.id),
                     ),
@@ -818,11 +862,17 @@ mod tests {
             content: content.into(),
             meta: Map::new(),
         };
+        let mut eip = doc(
+            "eips/eip-9999",
+            "eips",
+            "| Name | Value |\n| - | - |\n| `MAX_WIDGET_BALANCE_ELECTRA` | `Gwei(2**11 * 10**9)` (2048 ETH) |",
+        );
+        eip.meta.insert("status".into(), json!("Withdrawn"));
         store
             .upsert(&[
                 doc("specs/specs/phase0/beacon-chain", "specs", phase0),
                 doc("specs/specs/electra/beacon-chain", "specs", electra),
-                doc("eips/eip-9999", "eips", "prose mentioning MAX_WIDGET_BALANCE only"),
+                eip,
                 doc("ethresearch/post/1", "ethresearch", "forum chatter on MAX_WIDGET_BALANCE"),
             ])
             .unwrap();
@@ -887,6 +937,64 @@ mod tests {
         assert!(out.contains("No definition matching"), "{out}");
         assert!(out.contains("inherited"), "explains fork inheritance:\n{out}");
         assert!(out.contains("MAX_WIDGET_BALANCE"), "still shows definitions");
+    }
+
+    #[test]
+    fn lookup_spec_labels_definitions_with_spec_status() {
+        let s = spec_server();
+        let out = s
+            .lookup_spec(Parameters(LookupSpecParams {
+                name: "MAX_WIDGET_BALANCE".into(),
+                fork: None,
+            }))
+            .unwrap();
+        // The Withdrawn EIP's definition must not read like a Final one.
+        assert!(out.contains("[status: Withdrawn]"), "{out}");
+        // Consensus-spec docs carry no status meta — no empty label.
+        assert!(!out.contains("[status: ]"), "{out}");
+    }
+
+    #[test]
+    fn blank_fork_and_scope_are_loud_errors() {
+        let s = spec_server();
+        assert!(s
+            .lookup_spec(Parameters(LookupSpecParams {
+                name: "MAX_WIDGET_BALANCE".into(),
+                fork: Some("  ".into()),
+            }))
+            .is_err());
+        assert!(s
+            .search_posts(Parameters(SearchPostsParams {
+                query: "widget".into(),
+                limit: None,
+                scope: Some("".into()),
+            }))
+            .is_err());
+    }
+
+    #[test]
+    fn scoped_empty_results_explain_the_scope() {
+        let s = spec_server();
+        // Valid scope, no matches: advise retrying unscoped.
+        let out = s
+            .search_posts(Parameters(SearchPostsParams {
+                query: "flumph".into(),
+                limit: None,
+                scope: Some("eips".into()),
+            }))
+            .unwrap();
+        assert!(out.contains("within scope"), "{out}");
+        assert!(out.contains("retry without"), "{out}");
+        // A scope matching no indexed source id: say it can never match.
+        let out = s
+            .search_posts(Parameters(SearchPostsParams {
+                query: "widget".into(),
+                limit: None,
+                scope: Some("consensus-specs".into()),
+            }))
+            .unwrap();
+        assert!(out.contains("never match"), "{out}");
+        assert!(out.contains("ethresearch"), "lists indexed sources: {out}");
     }
 
     #[test]

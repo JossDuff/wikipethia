@@ -52,14 +52,22 @@ pub struct SpecFunction {
 pub fn constants(content: &str) -> Vec<SpecConstant> {
     let mut out = Vec::new();
     let mut in_fence = false;
+    let mut fence_ticks = 0usize; // 0 = outside any fence
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("```") {
-            in_fence = !in_fence;
+        if in_fence {
+            if fence_close(trimmed, fence_ticks) {
+                in_fence = false;
+            }
+            continue;
+        }
+        if let Some((ticks, _)) = fence_open(trimmed) {
+            in_fence = true;
+            fence_ticks = ticks;
             continue;
         }
         // Tables inside code fences are content, not spec structure.
-        if in_fence || !trimmed.starts_with('|') {
+        if !trimmed.starts_with('|') {
             continue;
         }
         let cells: Vec<&str> = trimmed
@@ -86,6 +94,31 @@ pub fn constants(content: &str) -> Vec<SpecConstant> {
     out
 }
 
+/// A fence opener: three or more backticks, then an info string. Returns
+/// (tick count, info string). CommonMark semantics matter on real spec
+/// files: erc-5252 uses four-backtick fences with three-backtick fences
+/// nested inside as content.
+fn fence_open(trimmed: &str) -> Option<(usize, &str)> {
+    let ticks = trimmed.chars().take_while(|c| *c == '`').count();
+    (ticks >= 3).then(|| (ticks, trimmed[ticks..].trim()))
+}
+
+/// A fence closer for an opener of `ticks` backticks: a line of at least
+/// that many backticks and nothing else.
+fn fence_close(trimmed: &str, ticks: usize) -> bool {
+    trimmed.len() >= ticks && trimmed.chars().all(|c| c == '`')
+}
+
+/// Whether a fence info string marks Python. Real spec-tier documents use
+/// "python", "py", "python3", and "``` python" (leading space) — eip-100,
+/// eip-3076, and the eip-3368 family are live examples of each.
+fn python_info(info: &str) -> bool {
+    matches!(
+        info.split_whitespace().next(),
+        Some("python") | Some("py") | Some("python3")
+    )
+}
+
 /// The identifier inside `` `LIKE_THIS` `` when the cell is exactly a
 /// backticked ALL_CAPS name; None for headers, separators, and prose.
 fn constant_name(cell: &str) -> Option<String> {
@@ -101,20 +134,20 @@ fn constant_name(cell: &str) -> Option<String> {
 pub fn functions(content: &str) -> Vec<SpecFunction> {
     let mut out = Vec::new();
     let mut heading: Option<String> = None;
-    // Some while inside any fence; the bool records whether it was ```python.
-    let mut fence: Option<(bool, Vec<&str>)> = None;
+    // Some while inside any fence: (opener's tick count, was python, lines).
+    let mut fence: Option<(usize, bool, Vec<&str>)> = None;
     for line in content.lines() {
         let trimmed = line.trim();
         match &mut fence {
             None => {
                 if let Some(h) = trimmed.strip_prefix('#') {
                     heading = Some(h.trim_start_matches('#').trim().to_string());
-                } else if trimmed.starts_with("```") {
-                    fence = Some((trimmed == "```python", Vec::new()));
+                } else if let Some((ticks, info)) = fence_open(trimmed) {
+                    fence = Some((ticks, python_info(info), Vec::new()));
                 }
             }
-            Some((python, lines)) => {
-                if trimmed == "```" {
+            Some((ticks, python, lines)) => {
+                if fence_close(trimmed, *ticks) {
                     if *python {
                         out.extend(fence_functions(lines, heading.as_deref()));
                     }
@@ -124,6 +157,12 @@ pub fn functions(content: &str) -> Vec<SpecFunction> {
                 }
             }
         }
+    }
+    // An unclosed fence runs to end of input (CommonMark); its functions
+    // are still real — dropping them cost every def below erc-5252's
+    // unterminated block before this flush existed.
+    if let Some((_, true, lines)) = fence {
+        out.extend(fence_functions(&lines, heading.as_deref()));
     }
     out
 }

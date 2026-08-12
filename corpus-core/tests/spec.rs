@@ -76,6 +76,44 @@ fn class_definitions_are_not_functions() {
 }
 
 #[test]
+fn fence_language_variants_from_real_eips_are_recognized() {
+    // eip-100 uses "``` python" (space), the eip-3368 family "```py",
+    // eip-3076 "```python3" — all hold spec functions.
+    for opener in ["``` python", "```py", "```python3", "```python"] {
+        let md = format!("{opener}\ndef calc_thing(x):\n    return x\n```");
+        let fns = functions(&md);
+        assert_eq!(fns.len(), 1, "opener {opener:?} not recognized");
+        assert_eq!(fns[0].name, "calc_thing");
+    }
+    // Non-python languages still don't count.
+    assert!(functions("```rust\ndef fake(x):\n```").is_empty());
+}
+
+#[test]
+fn four_backtick_fences_nest_three_backtick_content() {
+    // The erc-5252 shape: a ````-fence whose body contains ```-fences.
+    // Everything inside is content; parsing resumes after the ```` closer.
+    let md = "````math\n```math\nx = 1\n```\n````\n\n\
+              #### `after_the_nested_block`\n\n\
+              ```python\ndef after_the_nested_block(s):\n    return s\n```\n\n\
+              | Name | Value |\n| - | - |\n| `AFTER_CONST` | `1` |";
+    let fns = functions(md);
+    assert_eq!(fns.len(), 1, "defs after a nested fence must survive");
+    assert_eq!(fns[0].name, "after_the_nested_block");
+    let consts = constants(md);
+    assert_eq!(consts.len(), 1, "constants after a nested fence must survive");
+    assert_eq!(consts[0].name, "AFTER_CONST");
+}
+
+#[test]
+fn an_unclosed_python_fence_still_yields_its_functions() {
+    let md = "```python\ndef trailing(x):\n    return x";
+    let fns = functions(md);
+    assert_eq!(fns.len(), 1);
+    assert_eq!(fns[0].name, "trailing");
+}
+
+#[test]
 fn edge_cases_from_synthetic_markdown() {
     // Two defs in one fence split at the def boundary.
     let two = "```python\ndef first(x):\n    return x\n\ndef second(y):\n    return y\n```";
