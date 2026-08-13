@@ -104,7 +104,12 @@ an HTTP MCP server and query it over the network. The MCP server speaks
 stdio by default and streamable HTTP with `--http`.
 
 **There is no authentication**, so the port must never be publicly
-reachable. Two safe ways to reach it:
+reachable. Two safe ways to reach it.
+
+Reading the examples: `127.0.0.1` is literal — the loopback address,
+type it exactly. Anything in `<angle brackets>` is yours to fill in.
+`8642` is an arbitrary port; pick any free one, just keep it consistent
+across the server and client commands.
 
 **Over an SSH tunnel** — works anywhere you can ssh, nothing else to set up:
 
@@ -114,20 +119,21 @@ corpus-mcp --db /srv/wikipethia/corpus.sqlite --http 127.0.0.1:8642
 
 # ON YOUR LOCAL MACHINE — forward a local port to the server's loopback,
 # then connect to it as if it were local:
-ssh -N -L 8642:127.0.0.1:8642 you@yourserver &
+ssh -N -L 8642:127.0.0.1:8642 <user>@<your-server> &
 claude mcp add --transport http wikipethia http://127.0.0.1:8642/mcp
 ```
 
 **Over a private network** (Tailscale/WireGuard) — no tunnel to keep alive:
 
 ```bash
-# ON THE SERVER — bind the private interface, and allow the bare hostname
-# clients will use (rmcp rejects unknown Host headers as DNS-rebind
-# protection; port-less names match any port):
-corpus-mcp --db corpus.sqlite --http 100.64.0.7:8642 --allow-host myserver.tailnet.ts.net
+# ON THE SERVER — bind the server's OWN private-network address (Tailscale
+# assigns 100.x.y.z addresses; `tailscale ip -4` prints yours) and allow
+# the bare hostname clients will use (rmcp rejects unknown Host headers as
+# DNS-rebind protection; port-less names match any port):
+corpus-mcp --db corpus.sqlite --http <your-tailscale-ip>:8642 --allow-host <your-server>.<your-tailnet>.ts.net
 
 # ON EACH CLIENT MACHINE:
-claude mcp add --transport http wikipethia http://myserver.tailnet.ts.net:8642/mcp
+claude mcp add --transport http wikipethia http://<your-server>.<your-tailnet>.ts.net:8642/mcp
 ```
 
 Deployment notes:
