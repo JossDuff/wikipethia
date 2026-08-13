@@ -416,7 +416,11 @@ impl CorpusServer {
             date(last),
             op.url,
             citation(&op.id, op.author.as_deref(), &op.published, tier.as_deref(), &op.url),
-            truncate_block(&op.content, OP_MAX_CHARS, &op.id),
+            // `window`, not truncate_block: get_post_context caps the OP at
+            // the same OP_MAX_CHARS, so "call it for the full text" would
+            // return this identical prefix — an 8k round trip that teaches
+            // the model nothing. The offset hint is actionable immediately.
+            window(&op.content, 0, OP_MAX_CHARS, &op.id),
         );
 
         let replies = &posts[1..];
@@ -463,7 +467,7 @@ impl CorpusServer {
 
     #[tool(
         name = "get_post_context",
-        description = "Fetch one document from the local corpus in full. Forum posts (ethresear.ch, Ethereum Magicians) come with their immediate conversation — a few thread posts before and after; standalone documents (EIP/ERC specifications, consensus specs, blog articles) come back whole. Long documents page: a response ending in a truncation notice names the offset to pass on the next call to continue reading — long EIPs routinely take two or three pages, and sections near the end (Security Considerations, appendix tables) are only reachable that way. Use this whenever a search_posts or find_similar snippet looks relevant: replies usually only make sense next to what they answer, and the snippet alone is not enough to quote or cite responsibly. Takes a doc_id as returned by search_posts, get_topic, or find_similar. Every post in the output carries author, published date, source tier, and a citable URL — cite that URL when you use the content. For the whole thread rather than a local window, use get_topic instead."
+        description = "Fetch one document from the local corpus. Forum posts (ethresear.ch, Ethereum Magicians) come with their immediate conversation — a few thread posts before and after; standalone documents (EIP/ERC specifications, consensus specs, blog articles) come back on their own. Short documents arrive whole; longer ones page, and long EIPs and consensus specs usually do: a response ending in a truncation notice names the exact offset to pass on the next call, and sections near the end (Security Considerations, appendix tables, later constant tables) are ONLY reachable by following it — do not conclude a document lacks a section from one page. Use this whenever a search_posts or find_similar snippet looks relevant: replies usually only make sense next to what they answer, and the snippet alone is not enough to quote or cite responsibly. Takes a doc_id as returned by search_posts, get_topic, or find_similar. Every post in the output carries author, published date, source tier, and a citable URL — cite that URL when you use the content. For the whole thread rather than a local window, use get_topic instead."
     )]
     async fn get_post_context(
         &self,
@@ -497,13 +501,22 @@ impl CorpusServer {
             let status = spec_status(&doc.meta)
                 .map(|s| format!("\nStatus: {s}"))
                 .unwrap_or_default();
+            let body = window(&doc.content, p.offset.unwrap_or(0), OP_MAX_CHARS, &doc.id);
+            // The header must not promise completeness a paged body does
+            // not deliver: a model that anchors on "full text follows"
+            // will report a section absent when it is merely on page 2.
+            let complete = doc.content.chars().count() <= OP_MAX_CHARS;
+            let header = if complete {
+                "Standalone document (not a forum thread) — full text follows."
+            } else {
+                "Standalone document (not a forum thread) — too long for one \
+                 response; this is one page of it (see the offset note below)."
+            };
             return Ok(format!(
-                "Standalone document (not a forum thread) — full text follows.\n\n\
-                 ── {} ──\n{}{status}\n\n{}\n\n\
+                "{header}\n\n── {} ──\n{}{status}\n\n{body}\n\n\
                  Related forum discussion: find_similar(\"{}\").",
                 doc.title,
                 citation(&doc.id, doc.author.as_deref(), &doc.published, tier.as_deref(), &doc.url),
-                window(&doc.content, p.offset.unwrap_or(0), OP_MAX_CHARS, &doc.id),
                 doc.id,
             ));
         };
@@ -532,16 +545,30 @@ impl CorpusServer {
 
         // Window by position, not post_number arithmetic — deleted posts
         // leave gaps in the numbering.
-        let before = p.before.unwrap_or(2).min(MAX_CONTEXT);
-        let after = p.after.unwrap_or(3).min(MAX_CONTEXT);
+        let offset = p.offset.unwrap_or(0);
+        // Continuation pages carry the requested post alone: neighbors are
+        // context for a first read, and re-sending them costs ~7.5k chars
+        // per page while pushing the paging hint away from the tail, where
+        // the tool description promises it.
+        let paging = offset > 0;
+        let before = if paging { 0 } else { p.before.unwrap_or(2).min(MAX_CONTEXT) };
+        let after = if paging { 0 } else { p.after.unwrap_or(3).min(MAX_CONTEXT) };
         let start = pos.saturating_sub(before);
         let end = (pos + after + 1).min(posts.len());
 
-        let mut out = format!(
-            "Thread: {} (topic {tid}, {} posts) — posts around #{target_pn}\n",
-            doc.title,
-            posts.len()
-        );
+        let mut out = if paging {
+            format!("Thread: {} (topic {tid}) — post #{target_pn}, continued\n", doc.title)
+        } else {
+            format!(
+                "Thread: {} (topic {tid}, {} posts) — posts around #{target_pn}\n",
+                doc.title,
+                posts.len()
+            )
+        };
+        // Posts stay in thread order — a reply next to what it answers is
+        // the reason this tool exists.
+        let mut shown_end = 0usize;
+        let mut truncated = false;
         for (index, d) in posts[start..end].iter().enumerate() {
             let absolute = start + index;
             let pn = d
@@ -550,13 +577,17 @@ impl CorpusServer {
                 .and_then(Value::as_u64)
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| "?".into());
-            let marker = if absolute == pos { "  ◀ requested post" } else { "" };
+            let is_requested = absolute == pos;
+            let marker = if is_requested { "  ◀ requested post" } else { "" };
             // The requested post pages through `offset` (its truncation
             // hint must not point back at this same call); neighbors keep
             // the tighter cap and the truncate_block hint, which is
             // honest for them — requesting THAT doc really shows more.
-            let body = if absolute == pos {
-                window(&d.content, p.offset.unwrap_or(0), OP_MAX_CHARS, &d.id)
+            let body = if is_requested {
+                let total = d.content.chars().count();
+                shown_end = (offset + OP_MAX_CHARS).min(total);
+                truncated = shown_end < total;
+                window(&d.content, offset, OP_MAX_CHARS, &d.id)
             } else {
                 truncate_block(&d.content, NEIGHBOR_MAX_CHARS, &d.id)
             };
@@ -565,7 +596,19 @@ impl CorpusServer {
                 citation(&d.id, d.author.as_deref(), &d.published, tier.as_deref(), &d.url),
             ));
         }
-        out.push_str("\nMore: raise before/after, or get_topic for the full thread index.");
+        // Trailing neighbors would otherwise bury the requested post's
+        // paging hint under THEIR hints, which name different doc_ids —
+        // a model reading the tail to continue would follow the wrong one.
+        if !paging {
+            out.push_str("\nMore: raise before/after, or get_topic for the full thread index.");
+        }
+        if truncated {
+            out.push_str(&format!(
+                "\nPost #{target_pn} is truncated above: call get_post_context with \
+                 doc_id={}, offset={shown_end} to continue reading it.",
+                p.doc_id
+            ));
+        }
         Ok(out)
     }
 
@@ -724,15 +767,35 @@ impl CorpusServer {
                     continue;
                 }
                 let label = f.heading.map(|h| format!(" [{h}]")).unwrap_or_default();
+                // A long body's continuation hint must land the model ON
+                // the function, not on character 0 of a 78k-char spec —
+                // locate the `def` line and hand get_post_context its
+                // offset. Byte→char conversion because offsets are chars.
+                let code = if f.code.chars().count() <= FUNCTION_MAX_CHARS {
+                    f.code.clone()
+                } else {
+                    let head: String = f.code.chars().take(FUNCTION_MAX_CHARS).collect();
+                    let at = f
+                        .code
+                        .lines()
+                        .next()
+                        .and_then(|def| doc.content.find(def))
+                        .map(|byte| doc.content[..byte].chars().count());
+                    match at {
+                        Some(at) => format!(
+                            "{}\n… [function truncated — call get_post_context with \
+                             doc_id={}, offset={at} to read it in the spec]",
+                            head.trim_end(),
+                            doc.id
+                        ),
+                        None => format!("{}\n… [function truncated]", head.trim_end()),
+                    }
+                };
                 blocks.push((
                     in_fork,
                     true,
                     f.name == name,
-                    format!(
-                        "{}{label}{status}\n```python\n{}\n```\n   {cite}",
-                        f.name,
-                        truncate_block(&f.code, FUNCTION_MAX_CHARS, &doc.id),
-                    ),
+                    format!("{}{label}{status}\n```python\n{code}\n```\n   {cite}", f.name),
                 ));
             }
         }
@@ -1121,7 +1184,10 @@ mod tests {
         assert!(!page1.contains("TAIL-MARKER"), "12k chars must not fit one page");
         // The hint must NOT be the circular "call get_post_context for the
         // full text" — it names the next offset.
-        assert!(!page1.contains("for the full text"), "{}", &page1[page1.len() - 300..]);
+        // Slice by chars, not bytes: the output carries …, –, and ── , so
+        // a byte slice would panic instead of printing this diagnostic.
+        let tail: String = page1.chars().rev().take(300).collect::<Vec<_>>().into_iter().rev().collect();
+        assert!(!page1.contains("for the full text"), "{tail}");
         let next = page1
             .split("offset=")
             .nth(1)
@@ -1136,8 +1202,85 @@ mod tests {
                 offset: Some(next),
             })
             .unwrap();
-        assert!(page2.contains("continuing from character"), "{}", &page2[..200]);
+        let head: String = page2.chars().take(200).collect();
+        assert!(page2.contains("continuing from character"), "{head}");
         assert!(page2.contains("TAIL-MARKER"), "second page reaches the tail");
+    }
+
+    #[test]
+    fn the_header_only_promises_full_text_when_it_delivers_it() {
+        let mut store = Store::open_in_memory().unwrap();
+        let doc = |id: &str, content: String| Document {
+            id: id.into(),
+            source: "eips".into(),
+            url: format!("https://example.com/{id}"),
+            title: "Spec".into(),
+            author: None,
+            published: "2026-01-01T00:00:00Z".into(),
+            content,
+            meta: Map::new(),
+        };
+        store
+            .upsert(&[
+                doc("eips/eip-1000", "short and complete".into()),
+                doc("eips/eip-1001", "filler word ".repeat(1_000)),
+            ])
+            .unwrap();
+        let s = CorpusServer::new(store, None).unwrap();
+        let params = |id: &str| GetPostContextParams {
+            doc_id: id.into(),
+            before: None,
+            after: None,
+            offset: None,
+        };
+        let short = s.get_post_context_impl(params("eips/eip-1000")).unwrap();
+        assert!(short.contains("full text follows"), "{short}");
+        let long = s.get_post_context_impl(params("eips/eip-1001")).unwrap();
+        assert!(!long.contains("full text follows"), "header must not promise completeness");
+        assert!(long.contains("one page of it"), "{}", long.chars().take(200).collect::<String>());
+    }
+
+    #[test]
+    fn a_long_thread_post_gets_a_tail_pointer_to_its_own_continuation() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .upsert(&[
+                post(7, 1, "the original zorbling proposal"),
+                post(7, 2, &format!("HEAD {} TAIL", "long reply text ".repeat(700))),
+                post(7, 3, "a short following reply"),
+            ])
+            .unwrap();
+        let s = CorpusServer::new(store, None).unwrap();
+        let page1 = s
+            .get_post_context_impl(GetPostContextParams {
+                doc_id: "ethresearch/post/7002".into(),
+                before: None,
+                after: None,
+                offset: None,
+            })
+            .unwrap();
+        // Neighbors are present on page 1, and the LAST thing in the
+        // response points at the requested post, not at a neighbor.
+        assert!(page1.contains("ethresearch/post/7003"), "neighbors on page 1");
+        let tail: String = page1.chars().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect();
+        assert!(tail.contains("doc_id=ethresearch/post/7002"), "tail points at requested: {tail}");
+        let next: usize = tail
+            .split("offset=")
+            .nth(1)
+            .and_then(|s| s.trim_end_matches(" to continue reading it.").parse().ok())
+            .expect("offset in tail pointer");
+        // Page 2 is the requested post alone — no neighbor re-send.
+        let page2 = s
+            .get_post_context_impl(GetPostContextParams {
+                doc_id: "ethresearch/post/7002".into(),
+                before: None,
+                after: None,
+                offset: Some(next),
+            })
+            .unwrap();
+        assert!(page2.contains("continued"), "{}", page2.chars().take(120).collect::<String>());
+        assert!(page2.contains("TAIL"), "second page reaches the end");
+        assert!(!page2.contains("ethresearch/post/7003"), "neighbors suppressed while paging");
     }
 
     #[test]
