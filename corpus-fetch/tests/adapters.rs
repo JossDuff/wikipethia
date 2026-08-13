@@ -64,6 +64,7 @@ fn repo_adapter(data_dir: &Path, paths: &[&str]) -> RepoAdapter {
         branch: "master".into(),
         paths: paths.iter().map(|s| s.to_string()).collect(),
         doc_url: "https://example.org/{path}".into(),
+        file_types: vec!["md".into()],
         data_dir: data_dir.to_path_buf(),
         dates: Default::default(),
     }
@@ -285,6 +286,7 @@ fn erc_files_use_the_eip_key_but_title_as_erc() {
         branch: "master".into(),
         paths: vec!["ERCS".into()],
         doc_url: "https://ercs.ethereum.org/ERCS/{stem}".into(),
+        file_types: vec!["md".into()],
         data_dir: dir.path().to_path_buf(),
         dates: Default::default(),
     };

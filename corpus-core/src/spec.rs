@@ -167,6 +167,47 @@ pub fn functions(content: &str) -> Vec<SpecFunction> {
     out
 }
 
+/// Every top-level `def` in a file that IS Python, rather than markdown
+/// containing Python. [`functions`] finds nothing here — it looks for
+/// fences, and a `.py` file has none.
+///
+/// Headings are deliberately `None`: [`functions`] treats a leading `#` as
+/// a markdown heading, which in Python is a comment, so inferring one would
+/// label every function with whatever remark happened to precede it.
+pub fn functions_in_python(content: &str) -> Vec<SpecFunction> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out = Vec::new();
+    for (start, line) in lines.iter().enumerate() {
+        let Some(rest) = line.strip_prefix("def ") else {
+            continue;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        // A def's body ends at the next column-0 statement, not at the
+        // next `def`. Inside a markdown fence the terminator bounds the
+        // last function, but a whole .py file has no such bound: taking
+        // def-to-next-def hands back every module-level constant and
+        // alias in between as if it were the function's source.
+        let end = lines
+            .iter()
+            .enumerate()
+            .skip(start + 1)
+            .find(|(_, l)| !l.trim().is_empty() && !l.starts_with([' ', '\t', ')', ']', '}']))
+            .map_or(lines.len(), |(i, _)| i);
+        out.push(SpecFunction {
+            name,
+            code: lines[start..end].join("\n").trim_end().to_string(),
+            heading: None,
+        });
+    }
+    out
+}
+
 /// Split one fence's lines into per-`def` functions. Top-level means the
 /// `def` starts at column 0 — methods of container classes are indented
 /// and deliberately not extracted.

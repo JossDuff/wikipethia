@@ -101,6 +101,11 @@ enum Command {
         /// ingested one — a full-corpus scan is one KNN query per document).
         #[arg(long)]
         source: Option<String>,
+        /// Report duplicates WITHIN one source instead of across sources —
+        /// the copy-paste-evolution case (execution-specs carries 24
+        /// near-identical fork directories), not the cross-posting case.
+        #[arg(long)]
+        within_source: bool,
     },
     /// Run the retrieval eval set and report recall@10.
     Eval {
@@ -201,7 +206,8 @@ fn main() -> anyhow::Result<()> {
             db,
             threshold,
             source,
-        } => dedup(&db, threshold, source.as_deref()),
+            within_source,
+        } => dedup(&db, threshold, source.as_deref(), within_source),
         Command::Search { query, db, limit } => search(&query, &db, limit),
         Command::Embed { db, force } => embed(&db, force),
         Command::Add { .. } => bail!("add is not implemented until M8"),
@@ -328,7 +334,12 @@ fn search(query: &str, db: &Path, limit: usize) -> anyhow::Result<()> {
 /// Walk `source`'s documents (or all) and flag cross-source near-duplicate
 /// pairs at or above `threshold` cosine similarity. Report-only: the gate
 /// asks for flagging, not deletion — which copy is canonical is editorial.
-fn dedup(db: &Path, threshold: f64, source: Option<&str>) -> anyhow::Result<()> {
+fn dedup(
+    db: &Path,
+    threshold: f64,
+    source: Option<&str>,
+    within_source: bool,
+) -> anyhow::Result<()> {
     let store = Store::open(db)?;
     if store.embedding_count()? == 0 {
         bail!("{} has no embeddings — run `corpus embed` first", db.display());
@@ -349,7 +360,12 @@ fn dedup(db: &Path, threshold: f64, source: Option<&str>) -> anyhow::Result<()> 
         let anchor_source = id.split('/').next().unwrap_or_default();
         for hit in hits {
             let hit_source = hit.doc_id.split('/').next().unwrap_or_default();
-            if hit.score < threshold || hit_source == anchor_source {
+            let same_source = hit_source == anchor_source;
+            // Cross-source duplication is the cross-posting case; within
+            // one source it is copy-paste evolution (execution-specs keeps
+            // 24 near-identical fork directories). Opposite questions, so
+            // the caller picks one.
+            if hit.score < threshold || same_source != within_source {
                 continue;
             }
             let key = if *id < hit.doc_id {
@@ -367,8 +383,9 @@ fn dedup(db: &Path, threshold: f64, source: Option<&str>) -> anyhow::Result<()> 
         println!("{score:.3}  {a}  ↔  {b}  {title:?}");
     }
     println!(
-        "\n{} cross-source pair(s) ≥ {threshold} across {} document(s)",
+        "\n{} {} pair(s) ≥ {threshold} across {} document(s)",
         pairs.len(),
+        if within_source { "within-source" } else { "cross-source" },
         ids.len()
     );
     Ok(())

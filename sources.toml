@@ -64,6 +64,60 @@ doc_url = "https://github.com/ethereum/consensus-specs/blob/master/{path}"
 tier = "spec"
 
 [[sources]]
+# EELS — the executable execution-layer spec. `file_types = ["py"]` because
+# the spec IS Python here, not markdown quoting Python.
+#
+# The branch is fork-named and there is NO stable alternative: this repo has
+# no master/main, and its `mainnet` branch lags the tip by months. So the pin
+# below goes stale every hard fork, and sync warns when it stops being the
+# repo's default branch — when Amsterdam ships, update this line.
+#
+# paths excludes tests/ (2,694 files) and packages/ — only ~24% of this
+# repo's Python is spec.
+id = "executionspecs"
+kind = "repo"
+url = "https://github.com/ethereum/execution-specs"
+branch = "forks/amsterdam"
+paths = ["src/ethereum/forks"]
+file_types = ["py"]
+doc_url = "https://github.com/ethereum/execution-specs/blob/forks/amsterdam/{path}"
+tier = "spec"
+
+[[sources]]
+# The prose Engine API spec, one document per fork. src/eth/*.yaml (JSON-RPC
+# method definitions) and the generated docs-api/*.mdx are excluded — the
+# first needs YAML support we don't have, the second is JSX scaffolding.
+id = "executionapis"
+kind = "repo"
+url = "https://github.com/ethereum/execution-apis"
+branch = "main"
+paths = ["src/engine"]
+doc_url = "https://github.com/ethereum/execution-apis/blob/main/{path}"
+tier = "spec"
+
+[[sources]]
+# AllCoreDevs notes — the record of what was decided and when. Tier
+# "process": these are neither research nor spec, and lookup_spec (which
+# filters tier == "spec") correctly ignores them.
+#
+# .github/ is excluded: 900+ bot-generated transcript artifacts, half the
+# repo's files. Dates come from each note's own `Meeting Date/Time:` line;
+# filenames carry no dates and the commit date moves on every later edit.
+id = "pm"
+kind = "repo"
+url = "https://github.com/ethereum/pm"
+branch = "master"
+paths = [
+  "AllCoreDevs-EL-Meetings",
+  "AllCoreDevs-CL-Meetings",
+  "Breakout-Room-Meetings",
+  "Interop-Notes",
+  "Network-Upgrade-Archive",
+]
+doc_url = "https://github.com/ethereum/pm/blob/master/{path}"
+tier = "process"
+
+[[sources]]
 id = "vitalik"
 kind = "feed"
 url = "https://vitalik.eth.limo/feed.xml"

@@ -14,6 +14,9 @@ Everything in the corpus, as declared in [`sources.toml`](sources.toml)
 | [ethereum/EIPs](https://github.com/ethereum/EIPs) | Core-protocol EIP specifications |
 | [ethereum/ERCs](https://github.com/ethereum/ERCs) | Application-level ERC standards |
 | [consensus-specs](https://github.com/ethereum/consensus-specs) | Consensus-layer specifications, per fork |
+| [execution-specs](https://github.com/ethereum/execution-specs) | EELS — the executable execution-layer spec, per fork |
+| [execution-apis](https://github.com/ethereum/execution-apis) | Engine API specifications, per fork |
+| [ethereum/pm](https://github.com/ethereum/pm) | AllCoreDevs notes — what was decided, and when |
 | [vitalik.eth.limo](https://vitalik.eth.limo) | Vitalik's writing |
 | [EF blog](https://blog.ethereum.org) | Ethereum Foundation announcements and research |
 

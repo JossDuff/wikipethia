@@ -136,6 +136,28 @@ differently, and only one of the three is a Discourse problem:
   updates, and one that scrolls out of the feed window is unreachable even
   in principle. Re-fetch when the feed's `<updated>` timestamp or content
   hash for an item changes.
+- **Repo — branch tracking.** `execution-specs` has no stable branch: it
+  names its development branch after the fork in progress
+  (`forks/amsterdam`), has no `master`/`main`, and its `mainnet` branch
+  lags by months. Every hard fork silently strands our pin — a
+  frozen-but-existing branch keeps syncing successfully while receiving
+  nothing new. M13 shipped a *warning* (one `api.github.com/repos/{o}/{r}`
+  request per sync, comparing `default_branch` against the pin), which
+  turns silence into a visible nudge but still needs a human.
+
+  The fix is to let a source opt into tracking: `branch = "default"`,
+  resolved per sync through that same API field. Two things must move
+  together, and the second is easy to miss — **`doc_url` hardcodes the
+  branch too**
+  (`.../blob/forks/amsterdam/{path}`), so auto-tracking without a
+  `{branch}` placeholder would leave every citation pointing at a stale
+  ref. Keep explicit pins the default: reproducibility is worth more for
+  repos that have a stable branch, and only execution-specs needs this.
+
+  (GitHub also offers `api.github.com/repos/{o}/{r}/tarball` with no ref,
+  which serves the default branch directly — but it redirects and gives no
+  way to record *which* ref was fetched, so resolving the name first and
+  keeping the existing codeload URL is the better shape.)
 
 **Gate:** three checks, one per adapter kind — a reply posted to a known
 forum topic appears in search after the next scheduled run; an edited
@@ -152,6 +174,36 @@ was wrong.
 **Gate:** `sources.toml` holds at least one source of each type and `eval` recall
 has not regressed. Watch for near-duplicates between blog posts and their
 ethresear.ch cross-posts; flag anything above ~0.95 cosine at ingest.
+
+### [ ] Pipeline safety: index and embed can corrupt each other
+
+**Found the hard way, 2026-08-13.** `embed` and `index` share one SQLite
+file with no lock and no warning. SQLite reuses rowids after deletion, so:
+`embed` reads a chunk and starts computing its vector; `index --force`
+deletes that chunk and reinserts a *different* one at the same rowid;
+`embed` writes its now-stale vector against that rowid. The vector no
+longer describes the text it is attached to, and **nothing reports an
+error** — semantic search simply returns confidently wrong neighbours
+forever. Two concurrent `embed` runs collide more loudly (`UNIQUE
+constraint failed on chunks_vec`), which is the only reason the hazard was
+noticed at all.
+
+`refresh` makes this likelier, not less: it is the command an operator
+reaches for, and a cron firing it while a long manual `embed` is still
+running reproduces exactly this.
+
+Candidate fixes, cheapest first:
+- An advisory lock (a row in `meta`, or an OS file lock on the db path) so
+  the second writer fails fast with "another index/embed is running"
+  instead of interleaving.
+- Have `write_embeddings` verify the chunk's content hash before insert —
+  catches the mismatch even across processes, at the cost of a hash column.
+- Make chunk ids non-reusable (`AUTOINCREMENT`), which removes the aliasing
+  but not the wasted work.
+
+**Gate:** starting `index --force` while an `embed` is mid-run either
+blocks or fails cleanly, and a test demonstrates that no vector can
+outlive the chunk content it was computed from.
 
 ### [ ] M8 — Contribution workflow
 
@@ -312,6 +364,51 @@ cited answer in under ten minutes using only public docs. Note this is
 unreachable until M8 publishes a downloadable corpus — today the path
 runs through a multi-hour crawl.
 
+### [ ] M13 — Execution-layer and process sources
+
+Four sources that close the corpus's two biggest content gaps: the
+execution layer (today only the consensus layer has specs) and the
+record of what core devs actually decided. RIPs are deliberately not in
+this batch — outdated and lightly used.
+
+| Source | What it adds | What it forces |
+|---|---|---|
+| `ethereum/execution-specs` | EELS — the executable EL spec | repo adapter must read `.py`, not just `.md` |
+| `ethereum/pm` | AllCoreDevs agendas and notes | dates from body prose; `paths` filter; a tier for process records |
+| `ethereum/execution-apis` | engine API (`src/engine/*.md`) | markdown-only `paths`; the JSON-RPC YAML stays out |
+| ~~`ethereum/beacon-APIs`~~ | ~~beacon node HTTP interface~~ | **deferred** — ~97% YAML, 4 markdown files; needs OpenAPI description extraction |
+
+Three prongs of work, in dependency order:
+
+1. **File types.** `Adapter::wanted` accepts `.md` only. EELS is Python
+   and the API specs are YAML, so both are invisible today. `spec.rs`
+   already parses Python function bodies out of fenced blocks — a `.py`
+   file is that without the fence, so `lookup_spec` extends to the
+   execution layer nearly for free once the files are ingested.
+2. **Dates from body prose.** `ethereum/pm` filenames carry no dates at
+   all (`Meeting 95.md`, `call_104.md`) — the date is a line inside the
+   note, in at least two formats (`Friday 4 Sept 2020, 14:00 UTC` and
+   `Thursday 2023/3/9 at 14:00 UTC`). The adapter's fallback is the
+   last-commit date, which moves whenever a file is touched and would
+   stamp a 2020 decision with a 2026 date, poisoning exactly the
+   supersession reasoning the corpus is built on. A body-date rule is a
+   correctness requirement here, not a nicety.
+3. **A tier for process records.** ACD notes are neither research nor
+   spec. Adding a tier changes citation output and the instructions
+   string, both prompt surfaces — so it needs `agent-eval`, not just
+   `eval`.
+
+**Watch:** this batch is spec-shaped, and spec documents already lose to
+forum volume in free-text ranking (measured three times). Ingest in
+small batches with eval questions attached, and report the delta per
+batch rather than at the end — a single combined number would hide one
+source degrading another.
+
+**Gate:** each source is a `sources.toml` entry plus the adapter work
+above and nothing else; the README table matches; eval questions exist
+for each source with their recall recorded; and `lookup_spec` answers an
+execution-layer identifier the way it answers a consensus-layer one.
+
 ---
 
 ## Source backlog
@@ -320,21 +417,23 @@ Vetted against the curation policy in the sources.toml header (Ethereum-
 canonical only). Each batch ends with the standing ritual: README table,
 sync, index, embed, `eval` delta reported.
 
+**In flight:** `ethereum/pm`, `execution-specs`, `execution-apis`, and
+`beacon-APIs` are M13 above. The pm priority evidence, for the record:
+the Aug 2026 client test found that the nuance about a third BPO fork
+being deliberately deprioritized until blob usage catches up lives only
+in those notes — the corpus couldn't answer it, web search could.
+
 **Manifest edits, ready when wanted (all `ethereum` GitHub org):**
 
-- `ethereum/pm` — AllCoreDevs agendas and notes; the canonical record of
-  what shipped and why. Priority evidence from the Aug 2026 client test:
-  the nuance that a third BPO fork is deliberately deprioritized until
-  blob usage catches up lives only in these notes — the corpus couldn't
-  answer it, web search could.
-- `ethereum/RIPs` — Rollup Improvement Proposals; same frontmatter as EIPs.
-- `ethereum/execution-specs` — EELS, the EL counterpart to consensus-specs.
 - `ethereum/annotated-spec` — the most explanatory spec prose anywhere.
+  Near-duplicate of consensus-specs by construction; decide which copy is
+  canonical (a `dedup` question) before ingesting, not after.
 - `ethereum/devp2p` — networking-layer specs (discv5, RLPx, gossip).
-- `ethereum/execution-apis` + `ethereum/beacon-APIs` — engine/JSON-RPC and
-  beacon interface specs. Verify markdown-to-YAML ratio before adding.
 - `ethereum/solidity` (docs/ only via the paths filter) — in-org, so within
   policy; moderate value for protocol research.
+- `ethereum/RIPs` — Rollup Improvement Proposals; same frontmatter as EIPs,
+  so it would extend `lookup_spec` for free. **Declined 2026-08-13**:
+  outdated and lightly used in practice. Revisit if RIP activity picks up.
 - ethereum.org docs and EPF/Protocol Studies — canonical but explanatory
   rather than research; add only if breadth beats research-density.
 
@@ -369,12 +468,21 @@ Listed so they stay out of scope, not because they are unimportant.
   major clients are millions of lines against today's 55k-doc corpus, so
   unscoped ingest balloons embed time and the published artifact, and code
   chunks would flood research recall through the same volume pathology
-  spec documents already suffer. Prerequisites before any ingest: the
-  reranker shipped (M9), source/tier filtering on search so code can be
-  scoped out of research queries, and a path filter per client (core
-  protocol directories, not vendored dependencies). Note the backlog's
-  client issue/PR history likely delivers more design-why per megabyte
-  and should come first.
+  spec documents already suffer. Prerequisites before any ingest, with
+  current status: **source/tier filtering — done** (M10's `scope`);
+  **per-client path filter — available** (the repo adapter's `paths`
+  already does this); **non-markdown file types — arrives with M13**
+  (`.py` for EELS is the same machinery `.go`/`.rs` would need);
+  **reranker — still parked (M9)**, and the only real blocker left.
+
+  Field evidence for the value, from an Aug 2026 review of a client repo:
+  wikipethia resolved every EIP the code depended on, but was blind to
+  that client's divergences from the drafts (a renumbered opcode, an
+  extra selector) — and the reviewer noted that a review trusting
+  wikipethia alone would have "corrected" working code toward the draft.
+  That is the concrete failure client code would fix. The backlog's
+  client issue/PR history delivers more design-*why* per megabyte, but
+  the code itself is what answers "what does this client actually do".
 - **Web frontend** — a weekend once retrieval is good, and a mistake before then.
   Deliberately not scoped here.
 - **Richer provenance metadata** — stamp repo docs' meta with the tarball
