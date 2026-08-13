@@ -1,12 +1,22 @@
 # ROADMAP.md
 
-Milestones are sequential. Each has a **gate** — a concrete, checkable condition.
-Do not start the next milestone until the current gate passes. Update the
-checkbox when it does.
+Each milestone has a **gate** — a concrete, checkable condition. Update the
+checkbox when it passes.
 
-`CLAUDE.md` describes the target architecture, including `sources.toml` and the
-adapter trait. Those arrive at M6. Until then ethresear.ch is hardcoded — that is
-intentional, not an oversight. Two call sites before a trait.
+Milestones are **not** strictly sequential; the numbering records the order
+they were written, not the order they must ship. M10 and M11 shipped while
+M8 and M9 stayed open, deliberately. What binds is dependencies, not
+numbers:
+
+- M12 (adoption) needs M8's published corpus — a stranger can't be ten
+  minutes from an answer while a multi-hour crawl stands in the way.
+- M9's revisit needed M11's thread-level metric; that dependency is now
+  satisfied.
+- Everything retrieval-shaped is gated on the eval discipline below, not
+  on a milestone.
+
+`CLAUDE.md` describes the architecture, including `sources.toml` and the
+adapter trait (both live since M6).
 
 ---
 
@@ -95,19 +105,43 @@ proof that the abstraction holds.
 **Gate:** adding EthMagicians is a `sources.toml` edit and nothing else. No
 changes to `corpus-core`.
 
-### [ ] Continuous refresh (slots after M6, before or alongside M7)
+### [ ] Continuous refresh
 
-Two halves. **Incremental re-sync:** `sync` currently never revisits a topic
-already on disk, so active threads go stale. Fix per NOTES-discourse-api.md —
-walk `/latest` in activity order, refetch topics whose `last_posted_at` is
-newer than the previous run's checkpoint, stop at the first older one. A
-refresh pass then costs seconds, not an hour. **Scheduling:** a cron/systemd
-timer running `sync && index && embed` once (or a few times) a day, per
-source. All three stages are already incremental or idempotent, and the MCP
-server sees updates live through WAL — no restart.
+**Scheduling — done.** `corpus refresh` runs sync → index → embed in one
+command (per-source scoping supported); all three stages are incremental or
+idempotent and the MCP server sees updates live through WAL, so no restart
+is needed. What remains is a cron/systemd timer calling it, which is only
+worth setting up once the per-adapter work below makes a run cheap.
 
-**Gate:** a reply posted to a known topic appears in search results after the
-next scheduled run, with no manual steps and no full re-crawl.
+**Per-adapter freshness — the actual work.** Each adapter kind stales
+differently, and only one of the three is a Discourse problem:
+
+| Adapter | Sees new items | Sees *edits* to existing items | Cost per run |
+|---|---|---|---|
+| Discourse (2 forums) | yes | **no** — a topic on disk is skipped forever | ~50 min: the full listing walked at 1 req/s |
+| Repo (eips, ercs, consensusspecs) | yes | yes — byte-compares every file, prunes deletions | 1 full tarball each run (~6 min for EIPs) |
+| Feed (vitalik, efblog) | yes | **no** — `dest.exists()` ⇒ skip, and feeds truncate | seconds |
+
+- **Discourse — correctness and cost.** Per NOTES-discourse-api.md, walk
+  `/latest` in activity order, refetch topics whose `last_posted_at` beats
+  the previous run's checkpoint, and stop at the first older one: a quiet
+  day costs a handful of requests instead of three thousand, and active
+  threads stop being frozen at first fetch.
+- **Repo — cost only.** Correctness is already there (verified: a
+  `refresh --source consensusspecs` in Aug 2026 pulled 31 changed spec
+  files). The tarball is fetched unconditionally even when the branch has
+  not moved; a conditional request (ETag/`If-None-Match`, or comparing the
+  branch head first) turns six minutes into one request.
+- **Feed — correctness.** An article corrected after publication never
+  updates, and one that scrolls out of the feed window is unreachable even
+  in principle. Re-fetch when the feed's `<updated>` timestamp or content
+  hash for an item changes.
+
+**Gate:** three checks, one per adapter kind — a reply posted to a known
+forum topic appears in search after the next scheduled run; an edited
+upstream spec file does too; and a full `refresh` with nothing changed
+upstream completes in well under a minute. All with no manual steps and no
+full re-crawl.
 
 ### [x] M7 — More source types
 
@@ -152,13 +186,26 @@ client test:
   Hardfork Meta EIPs, EIP-7251, and EIP-4844. Recall@10 fused is 0.375
   against a 0.581 candidate-pool ceiling, so the loss is ordering, not
   candidate recall.
-- No typed lookup for constants, spec functions, or fork-scoped spec
-  content, though the documents are already indexed.
-- The instructions and tool descriptions steer real client behavior but
-  have zero automated coverage — the client test caught a stale
-  forward-looking claim ("expected mid-2026", stated in August 2026)
-  repeated from the corpus without date-checking.
+- ~~No typed lookup for constants, spec functions, or fork-scoped spec
+  content~~ — closed by M10 (`lookup_spec`, `scope`), and validated in the
+  field: an Aug 2026 review session used it to prove a client's dispatcher
+  comment mislabelled its opcodes.
+- ~~The instructions and tool descriptions steer real client behavior but
+  have zero automated coverage~~ — closed by M11 (`agent-eval`), which
+  immediately found what it was built to find: **citation dropout**, below.
 - No install story, no health/diagnostics surface, no adopter docs.
+
+Open work items surfaced by that instrumentation, in value order:
+
+1. **Citation dropout** (from M11's baseline): some answers use the tools
+   correctly and then cite nothing — FOCIL and the `lookup_spec` questions
+   score 0 not because retrieval failed but because the answer carried no
+   URL. An instructions-layer fix, and the cheapest measurable win
+   available: edit, then `agent-eval --limit --model haiku` for cents.
+2. **Single-doc expects understate the agent layer**: answers citing an
+   equally valid alternative source (the MAX_EB "modest proposal" thread
+   instead of EIP-7251) score 0. Widening `expect` to source-sets would
+   measure what a reader actually needs.
 
 ### [ ] M9 — Reranker
 
@@ -187,6 +234,13 @@ scores as a miss. That is a metric-design question — topic-level credit,
 or OP canonicalization — so revisit after M11 gives the eval suite a way
 to price thread-level relevance. Untried latency levers: shorter pair
 text, 256-token max_length, smaller candidate pool.
+
+**Unblocked as of 2026-08-12**: M11 shipped, and its `thread` column is
+exactly the credit the parked attempt was denied. A revisit means running
+the same A/B under agent-eval's thread scoring (not doc-id recall@10),
+plus the latency levers above. Note the gate text above still names the
+old metric; re-state it in terms of both columns before starting, so the
+revisit isn't judged by the measure that parked it.
 
 ### [x] M10 — Spec-engineering lookups
 
@@ -247,8 +301,16 @@ download-and-verify, a health/diagnostics surface (today a broken index
 surfaces as prose mid-conversation), an adopter-facing README, and
 versioned releases in CI.
 
+Already done ahead of the milestone: the **streamable-HTTP transport**
+(`corpus-mcp --http`, shipped Aug 2026), so one host can serve several
+machines — with the standing caveat that it has no authentication and
+must bind loopback or a private interface. The README carries a
+quick-start and a hosting section.
+
 **Gate:** a stranger on a clean machine goes from nothing to a first
-cited answer in under ten minutes using only public docs.
+cited answer in under ten minutes using only public docs. Note this is
+unreachable until M8 publishes a downloadable corpus — today the path
+runs through a multi-hour crawl.
 
 ---
 
