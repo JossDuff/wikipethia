@@ -312,6 +312,48 @@ cited answer in under ten minutes using only public docs. Note this is
 unreachable until M8 publishes a downloadable corpus — today the path
 runs through a multi-hour crawl.
 
+### [ ] M13 — Execution-layer and process sources
+
+Four sources that close the corpus's two biggest content gaps: the
+execution layer (today only the consensus layer has specs) and the
+record of what core devs actually decided. RIPs are deliberately not in
+this batch — outdated and lightly used.
+
+| Source | What it adds | What it forces |
+|---|---|---|
+| `ethereum/execution-specs` | EELS — the executable EL spec | repo adapter must read `.py`, not just `.md` |
+| `ethereum/pm` | AllCoreDevs agendas and notes | dates from filenames; `paths` filter; a tier for process records |
+| `ethereum/execution-apis` | engine API and JSON-RPC | OpenAPI YAML handling, or markdown-only `paths` |
+| `ethereum/beacon-APIs` | beacon node HTTP interface | same |
+
+Three prongs of work, in dependency order:
+
+1. **File types.** `Adapter::wanted` accepts `.md` only. EELS is Python
+   and the API specs are YAML, so both are invisible today. `spec.rs`
+   already parses Python function bodies out of fenced blocks — a `.py`
+   file is that without the fence, so `lookup_spec` extends to the
+   execution layer nearly for free once the files are ingested.
+2. **Dates from filenames.** `ethereum/pm` names meeting notes by date
+   (`2024-01-11.md`). The adapter's fallback is the last-commit date,
+   which would stamp a 2021 decision with a 2026 date and poison exactly
+   the supersession reasoning the corpus is built on. A filename-date
+   rule is a correctness requirement here, not a nicety.
+3. **A tier for process records.** ACD notes are neither research nor
+   spec. Adding a tier changes citation output and the instructions
+   string, both prompt surfaces — so it needs `agent-eval`, not just
+   `eval`.
+
+**Watch:** this batch is spec-shaped, and spec documents already lose to
+forum volume in free-text ranking (measured three times). Ingest in
+small batches with eval questions attached, and report the delta per
+batch rather than at the end — a single combined number would hide one
+source degrading another.
+
+**Gate:** each source is a `sources.toml` entry plus the adapter work
+above and nothing else; the README table matches; eval questions exist
+for each source with their recall recorded; and `lookup_spec` answers an
+execution-layer identifier the way it answers a consensus-layer one.
+
 ---
 
 ## Source backlog
@@ -320,21 +362,23 @@ Vetted against the curation policy in the sources.toml header (Ethereum-
 canonical only). Each batch ends with the standing ritual: README table,
 sync, index, embed, `eval` delta reported.
 
+**In flight:** `ethereum/pm`, `execution-specs`, `execution-apis`, and
+`beacon-APIs` are M13 above. The pm priority evidence, for the record:
+the Aug 2026 client test found that the nuance about a third BPO fork
+being deliberately deprioritized until blob usage catches up lives only
+in those notes — the corpus couldn't answer it, web search could.
+
 **Manifest edits, ready when wanted (all `ethereum` GitHub org):**
 
-- `ethereum/pm` — AllCoreDevs agendas and notes; the canonical record of
-  what shipped and why. Priority evidence from the Aug 2026 client test:
-  the nuance that a third BPO fork is deliberately deprioritized until
-  blob usage catches up lives only in these notes — the corpus couldn't
-  answer it, web search could.
-- `ethereum/RIPs` — Rollup Improvement Proposals; same frontmatter as EIPs.
-- `ethereum/execution-specs` — EELS, the EL counterpart to consensus-specs.
 - `ethereum/annotated-spec` — the most explanatory spec prose anywhere.
+  Near-duplicate of consensus-specs by construction; decide which copy is
+  canonical (a `dedup` question) before ingesting, not after.
 - `ethereum/devp2p` — networking-layer specs (discv5, RLPx, gossip).
-- `ethereum/execution-apis` + `ethereum/beacon-APIs` — engine/JSON-RPC and
-  beacon interface specs. Verify markdown-to-YAML ratio before adding.
 - `ethereum/solidity` (docs/ only via the paths filter) — in-org, so within
   policy; moderate value for protocol research.
+- `ethereum/RIPs` — Rollup Improvement Proposals; same frontmatter as EIPs,
+  so it would extend `lookup_spec` for free. **Declined 2026-08-13**:
+  outdated and lightly used in practice. Revisit if RIP activity picks up.
 - ethereum.org docs and EPF/Protocol Studies — canonical but explanatory
   rather than research; add only if breadth beats research-density.
 
@@ -369,12 +413,21 @@ Listed so they stay out of scope, not because they are unimportant.
   major clients are millions of lines against today's 55k-doc corpus, so
   unscoped ingest balloons embed time and the published artifact, and code
   chunks would flood research recall through the same volume pathology
-  spec documents already suffer. Prerequisites before any ingest: the
-  reranker shipped (M9), source/tier filtering on search so code can be
-  scoped out of research queries, and a path filter per client (core
-  protocol directories, not vendored dependencies). Note the backlog's
-  client issue/PR history likely delivers more design-why per megabyte
-  and should come first.
+  spec documents already suffer. Prerequisites before any ingest, with
+  current status: **source/tier filtering — done** (M10's `scope`);
+  **per-client path filter — available** (the repo adapter's `paths`
+  already does this); **non-markdown file types — arrives with M13**
+  (`.py` for EELS is the same machinery `.go`/`.rs` would need);
+  **reranker — still parked (M9)**, and the only real blocker left.
+
+  Field evidence for the value, from an Aug 2026 review of a client repo:
+  wikipethia resolved every EIP the code depended on, but was blind to
+  that client's divergences from the drafts (a renumbered opcode, an
+  extra selector) — and the reviewer noted that a review trusting
+  wikipethia alone would have "corrected" working code toward the draft.
+  That is the concrete failure client code would fix. The backlog's
+  client issue/PR history delivers more design-*why* per megabyte, but
+  the code itself is what answers "what does this client actually do".
 - **Web frontend** — a weekend once retrieval is good, and a mistake before then.
   Deliberately not scoped here.
 - **Richer provenance metadata** — stamp repo docs' meta with the tarball
