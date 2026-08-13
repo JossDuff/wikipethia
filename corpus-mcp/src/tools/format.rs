@@ -60,7 +60,10 @@ pub fn excerpt(text: &str, max_chars: usize) -> String {
 }
 
 /// Whole block up to `max_chars` characters; when cut, tells the model how
-/// to get the rest.
+/// to get the rest. Correct ONLY where get_post_context genuinely shows
+/// more than the caller did (search snippets, neighbor posts) — for text
+/// that IS a get_post_context result, use [`window`], whose hint doesn't
+/// point back at the call that produced the truncation.
 pub fn truncate_block(text: &str, max_chars: usize, doc_id: &str) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();
@@ -69,6 +72,35 @@ pub fn truncate_block(text: &str, max_chars: usize, doc_id: &str) -> String {
     format!(
         "{}\n… [truncated — call get_post_context with doc_id={doc_id} for the full text]",
         cut.trim_end()
+    )
+}
+
+/// A `max_chars` window into `text` starting at character `offset`, with
+/// an accurate continuation hint. A 78k-char spec against an 8k cap is
+/// ~90% unreachable without this; the old hint told the model to repeat
+/// the exact call that produced the truncation.
+pub fn window(text: &str, offset: usize, max_chars: usize, doc_id: &str) -> String {
+    let total = text.chars().count();
+    if offset >= total && offset != 0 {
+        return format!(
+            "[offset {offset} is past the end — the document is {total} characters; \
+             call get_post_context with doc_id={doc_id} and a smaller offset]"
+        );
+    }
+    let body: String = text.chars().skip(offset).take(max_chars).collect();
+    let end = offset + body.chars().count();
+    let prefix = if offset > 0 {
+        format!("[…continuing from character {offset} of {total}]\n")
+    } else {
+        String::new()
+    };
+    if end >= total {
+        return format!("{prefix}{body}");
+    }
+    format!(
+        "{prefix}{}\n… [showing characters {offset}–{end} of {total} — call \
+         get_post_context with doc_id={doc_id}, offset={end} for the next part]",
+        body.trim_end()
     )
 }
 
@@ -138,6 +170,35 @@ mod tests {
         let cut = excerpt(&math, 10);
         assert!(cut.chars().count() <= 11); // 10 + ellipsis
         assert!(cut.ends_with('…'));
+    }
+
+    #[test]
+    fn window_pages_with_accurate_continuation_hints() {
+        let text = "abcdefghij"; // 10 chars
+        // Fits: returned whole, no hint.
+        assert_eq!(window(text, 0, 10, "d/1"), "abcdefghij");
+        // First page: hint names the exact next offset.
+        let first = window(text, 0, 4, "d/1");
+        assert!(first.starts_with("abcd"), "{first}");
+        assert!(first.contains("offset=4"), "{first}");
+        assert!(first.contains("characters 0–4 of 10"), "{first}");
+        // Middle page: continuation banner plus next hint.
+        let mid = window(text, 4, 4, "d/1");
+        assert!(mid.contains("continuing from character 4"), "{mid}");
+        assert!(mid.contains("efgh"), "{mid}");
+        assert!(mid.contains("offset=8"), "{mid}");
+        // Final page: no further hint.
+        let last = window(text, 8, 4, "d/1");
+        assert!(last.contains("ij"), "{last}");
+        assert!(!last.contains("offset="), "{last}");
+        // Past the end: instructive, names the document length.
+        let past = window(text, 99, 4, "d/1");
+        assert!(past.contains("past the end"), "{past}");
+        assert!(past.contains("10 characters"), "{past}");
+        // Multibyte safety: offsets are chars, not bytes.
+        let math = "∑∆∇√∂∫≈≠≤≥";
+        let page = window(math, 4, 3, "d/2");
+        assert!(page.contains("∂∫≈"), "{page}");
     }
 
     #[test]
