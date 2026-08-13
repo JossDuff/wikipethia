@@ -30,6 +30,9 @@ struct RawSource {
     branch: Option<String>,
     paths: Option<Vec<String>>,
     doc_url: Option<String>,
+    /// Extensions to ingest, without dots. Defaults to `["md"]`, which is
+    /// every source that predates execution-specs' Python.
+    file_types: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -80,6 +83,8 @@ pub enum SourceSpec {
         branch: String,
         paths: Vec<String>,
         doc_url: String,
+        /// Extensions without dots, never empty (defaulted to `["md"]`).
+        file_types: Vec<String>,
     },
     Feed,
 }
@@ -213,10 +218,28 @@ fn validate(raw: RawSource) -> anyhow::Result<Source> {
                     raw.id
                 );
             }
+            // Defaulting to markdown keeps every pre-existing source
+            // byte-identical in behavior.
+            let file_types = raw.file_types.clone().unwrap_or_else(|| vec!["md".into()]);
+            if file_types.is_empty() {
+                bail!("sources.toml: `file_types` for {:?} must not be empty", raw.id);
+            }
+            for ext in &file_types {
+                // A dotted or wildcarded value would silently match nothing
+                // and the deletion pass would then wipe the local mirror.
+                if ext.is_empty() || ext.starts_with('.') || ext.contains(['*', '/', '\\']) {
+                    bail!(
+                        "sources.toml: file_types entry {ext:?} for {:?} must be a bare \
+                         extension without a dot, e.g. \"md\" or \"py\"",
+                        raw.id
+                    );
+                }
+            }
             SourceSpec::Repo {
                 branch,
                 paths,
                 doc_url,
+                file_types,
             }
         }
         kind => {
@@ -224,6 +247,7 @@ fn validate(raw: RawSource) -> anyhow::Result<Source> {
                 ("branch", raw.branch.is_some()),
                 ("paths", raw.paths.is_some()),
                 ("doc_url", raw.doc_url.is_some()),
+                ("file_types", raw.file_types.is_some()),
             ] {
                 if set {
                     bail!(
@@ -266,12 +290,14 @@ pub fn adapter_for(source: &Source) -> Box<dyn Adapter> {
             branch,
             paths,
             doc_url,
+            file_types,
         } => Box::new(RepoAdapter {
             source_id: source.id.clone(),
             repo_url: source.url.clone(),
             branch: branch.clone(),
             paths: paths.clone(),
             doc_url: doc_url.clone(),
+            file_types: file_types.clone(),
             data_dir,
             dates: Default::default(),
         }),

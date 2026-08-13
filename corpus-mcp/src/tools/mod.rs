@@ -762,7 +762,14 @@ impl CorpusServer {
                     format!("{} = {}{desc}{status}\n   {cite}", c.name, c.value),
                 ));
             }
-            for f in spec::functions(&doc.content) {
+            // A .py document IS Python; everything else is prose that may
+            // quote Python inside fences.
+            let functions = if doc.id.ends_with(".py") {
+                spec::functions_in_python(&doc.content)
+            } else {
+                spec::functions(&doc.content)
+            };
+            for f in functions {
                 if !f.name.contains(name) {
                     continue;
                 }

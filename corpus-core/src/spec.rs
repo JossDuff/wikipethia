@@ -167,6 +167,18 @@ pub fn functions(content: &str) -> Vec<SpecFunction> {
     out
 }
 
+/// Every top-level `def` in a file that IS Python, rather than markdown
+/// containing Python. [`functions`] finds nothing here — it looks for
+/// fences, and a `.py` file has none.
+///
+/// Headings are deliberately `None`: [`functions`] treats a leading `#` as
+/// a markdown heading, which in Python is a comment, so inferring one would
+/// label every function with whatever remark happened to precede it.
+pub fn functions_in_python(content: &str) -> Vec<SpecFunction> {
+    let lines: Vec<&str> = content.lines().collect();
+    fence_functions(&lines, None)
+}
+
 /// Split one fence's lines into per-`def` functions. Top-level means the
 /// `def` starts at column 0 — methods of container classes are indented
 /// and deliberately not extracted.

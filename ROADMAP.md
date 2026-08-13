@@ -136,6 +136,28 @@ differently, and only one of the three is a Discourse problem:
   updates, and one that scrolls out of the feed window is unreachable even
   in principle. Re-fetch when the feed's `<updated>` timestamp or content
   hash for an item changes.
+- **Repo — branch tracking.** `execution-specs` has no stable branch: it
+  names its development branch after the fork in progress
+  (`forks/amsterdam`), has no `master`/`main`, and its `mainnet` branch
+  lags by months. Every hard fork silently strands our pin — a
+  frozen-but-existing branch keeps syncing successfully while receiving
+  nothing new. M13 shipped a *warning* (one `api.github.com/repos/{o}/{r}`
+  request per sync, comparing `default_branch` against the pin), which
+  turns silence into a visible nudge but still needs a human.
+
+  The fix is to let a source opt into tracking: `branch = "default"`,
+  resolved per sync through that same API field. Two things must move
+  together, and the second is easy to miss — **`doc_url` hardcodes the
+  branch too**
+  (`.../blob/forks/amsterdam/{path}`), so auto-tracking without a
+  `{branch}` placeholder would leave every citation pointing at a stale
+  ref. Keep explicit pins the default: reproducibility is worth more for
+  repos that have a stable branch, and only execution-specs needs this.
+
+  (GitHub also offers `api.github.com/repos/{o}/{r}/tarball` with no ref,
+  which serves the default branch directly — but it redirects and gives no
+  way to record *which* ref was fetched, so resolving the name first and
+  keeping the existing codeload URL is the better shape.)
 
 **Gate:** three checks, one per adapter kind — a reply posted to a known
 forum topic appears in search after the next scheduled run; an edited
@@ -152,6 +174,36 @@ was wrong.
 **Gate:** `sources.toml` holds at least one source of each type and `eval` recall
 has not regressed. Watch for near-duplicates between blog posts and their
 ethresear.ch cross-posts; flag anything above ~0.95 cosine at ingest.
+
+### [ ] Pipeline safety: index and embed can corrupt each other
+
+**Found the hard way, 2026-08-13.** `embed` and `index` share one SQLite
+file with no lock and no warning. SQLite reuses rowids after deletion, so:
+`embed` reads a chunk and starts computing its vector; `index --force`
+deletes that chunk and reinserts a *different* one at the same rowid;
+`embed` writes its now-stale vector against that rowid. The vector no
+longer describes the text it is attached to, and **nothing reports an
+error** — semantic search simply returns confidently wrong neighbours
+forever. Two concurrent `embed` runs collide more loudly (`UNIQUE
+constraint failed on chunks_vec`), which is the only reason the hazard was
+noticed at all.
+
+`refresh` makes this likelier, not less: it is the command an operator
+reaches for, and a cron firing it while a long manual `embed` is still
+running reproduces exactly this.
+
+Candidate fixes, cheapest first:
+- An advisory lock (a row in `meta`, or an OS file lock on the db path) so
+  the second writer fails fast with "another index/embed is running"
+  instead of interleaving.
+- Have `write_embeddings` verify the chunk's content hash before insert —
+  catches the mismatch even across processes, at the cost of a hash column.
+- Make chunk ids non-reusable (`AUTOINCREMENT`), which removes the aliasing
+  but not the wasted work.
+
+**Gate:** starting `index --force` while an `embed` is mid-run either
+blocks or fails cleanly, and a test demonstrates that no vector can
+outlive the chunk content it was computed from.
 
 ### [ ] M8 — Contribution workflow
 
@@ -322,9 +374,9 @@ this batch — outdated and lightly used.
 | Source | What it adds | What it forces |
 |---|---|---|
 | `ethereum/execution-specs` | EELS — the executable EL spec | repo adapter must read `.py`, not just `.md` |
-| `ethereum/pm` | AllCoreDevs agendas and notes | dates from filenames; `paths` filter; a tier for process records |
-| `ethereum/execution-apis` | engine API and JSON-RPC | OpenAPI YAML handling, or markdown-only `paths` |
-| `ethereum/beacon-APIs` | beacon node HTTP interface | same |
+| `ethereum/pm` | AllCoreDevs agendas and notes | dates from body prose; `paths` filter; a tier for process records |
+| `ethereum/execution-apis` | engine API (`src/engine/*.md`) | markdown-only `paths`; the JSON-RPC YAML stays out |
+| ~~`ethereum/beacon-APIs`~~ | ~~beacon node HTTP interface~~ | **deferred** — ~97% YAML, 4 markdown files; needs OpenAPI description extraction |
 
 Three prongs of work, in dependency order:
 
@@ -333,11 +385,14 @@ Three prongs of work, in dependency order:
    already parses Python function bodies out of fenced blocks — a `.py`
    file is that without the fence, so `lookup_spec` extends to the
    execution layer nearly for free once the files are ingested.
-2. **Dates from filenames.** `ethereum/pm` names meeting notes by date
-   (`2024-01-11.md`). The adapter's fallback is the last-commit date,
-   which would stamp a 2021 decision with a 2026 date and poison exactly
-   the supersession reasoning the corpus is built on. A filename-date
-   rule is a correctness requirement here, not a nicety.
+2. **Dates from body prose.** `ethereum/pm` filenames carry no dates at
+   all (`Meeting 95.md`, `call_104.md`) — the date is a line inside the
+   note, in at least two formats (`Friday 4 Sept 2020, 14:00 UTC` and
+   `Thursday 2023/3/9 at 14:00 UTC`). The adapter's fallback is the
+   last-commit date, which moves whenever a file is touched and would
+   stamp a 2020 decision with a 2026 date, poisoning exactly the
+   supersession reasoning the corpus is built on. A body-date rule is a
+   correctness requirement here, not a nicety.
 3. **A tier for process records.** ACD notes are neither research nor
    spec. Adding a tier changes citation output and the instructions
    string, both prompt surfaces — so it needs `agent-eval`, not just
