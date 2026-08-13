@@ -1,6 +1,6 @@
 # wikipethia
 
-Ethereum research corpus for LLMs. Searchable locally and exposed over MCP, so a frontier model answers protocol questions from the actual literature.
+Give your LLM direct access to Ethereum specs, research, discussion, and history.  All exposed as an MCP server.
 
 ## Sources
 
