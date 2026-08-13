@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use corpus_core::spec::{SpecConstant, constants, functions};
+use corpus_core::spec::{SpecConstant, constants, functions, functions_in_python};
 
 fn fixture() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -145,4 +145,34 @@ fn edge_cases_from_synthetic_markdown() {
     // Lowercase or non-identifier first cells are prose, not constants.
     let prose = "| `state.validators` | something |\n| plain text | more |";
     assert!(constants(prose).is_empty());
+}
+
+#[test]
+fn python_function_bodies_stop_at_the_next_module_level_statement() {
+    // The real shape from EELS stack.py: a def followed by module-level
+    // aliases. Taking def-to-next-def would return all of it as the
+    // function's source.
+    let src = "\"\"\"Stack ops.\"\"\"\n\n\
+               def swap_n(evm: Evm, n: int) -> None:\n\
+               \x20   \"\"\"Swap stack items.\"\"\"\n\
+               \x20   evm.stack[0], evm.stack[n] = evm.stack[n], evm.stack[0]\n\n\
+               swap1 = partial(swap_n, n=1)\n\
+               swap2 = partial(swap_n, n=2)\n\n\
+               def dup_n(evm: Evm, n: int) -> None:\n\
+               \x20   push(evm, evm.stack[n])\n";
+    let fns = functions_in_python(src);
+    assert_eq!(fns.len(), 2);
+    assert_eq!(fns[0].name, "swap_n");
+    assert!(fns[0].code.contains("evm.stack[0], evm.stack[n]"), "body kept");
+    assert!(!fns[0].code.contains("swap1 = partial"), "aliases are not the body:\n{}", fns[0].code);
+    assert_eq!(fns[1].name, "dup_n");
+    assert!(fns[1].code.contains("push(evm"));
+    // Continuation lines of a multi-line signature stay attached.
+    let wrapped = "def f(\n    a: int,\n) -> None:\n    return a\n\nX = 1\n";
+    let fns = functions_in_python(wrapped);
+    assert_eq!(fns.len(), 1);
+    assert!(fns[0].code.contains("return a"));
+    assert!(!fns[0].code.contains("X = 1"));
+    // A bare .py file has no fences, so the markdown parser sees nothing.
+    assert!(functions(src).is_empty());
 }

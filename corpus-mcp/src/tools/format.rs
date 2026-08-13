@@ -18,7 +18,10 @@ pub const MAX_LIMIT: usize = 50;
 /// Hard cap on get_post_context before/after.
 pub const MAX_CONTEXT: usize = 10;
 /// Definitions rendered per lookup_spec call before asking to narrow.
-pub const MAX_DEFINITIONS: usize = 20;
+/// Above the number of forks the executable spec carries (24 and
+/// growing): a cap below that would fill every slot with copies of one
+/// identifier and never reach another document.
+pub const MAX_DEFINITIONS: usize = 40;
 /// One spec function's code before truncation points at the full document.
 pub const FUNCTION_MAX_CHARS: usize = 2_500;
 

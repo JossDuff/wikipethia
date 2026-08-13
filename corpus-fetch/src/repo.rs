@@ -210,12 +210,10 @@ impl crate::Adapter for RepoAdapter {
         }
         let files_dir = self.files_dir();
         let mut paths = Vec::new();
-        // Same extension set as `wanted` — see the note there on why these
-        // two must never disagree.
-        let keep = |path: &Path| {
-            path.extension()
-                .is_some_and(|ext| self.file_types.iter().any(|want| want.as_str() == ext))
-        };
+        // Must agree with `wanted` on BOTH axes — extension and the paths
+        // prefix. Extension-only here would re-index a tree that was
+        // dropped from `paths` until the next full sync pruned it.
+        let keep = |path: &Path| self.wanted(&self.relpath_of(path));
         walk(&files_dir, &keep, &mut paths).map_err(|source| FetchError::Io {
             path: files_dir,
             source,
@@ -438,21 +436,23 @@ impl crate::Adapter for RepoAdapter {
             // Python rather than as prose quoting Python.
             let id_path = relpath.strip_suffix(".md").unwrap_or(&relpath);
             let kind = FileKind::of(&relpath).unwrap_or(FileKind::Markdown);
-            let title = match title_for(kind, &content) {
+            // For Python, the path tail carries the fork and module name —
+            // `amsterdam/bloom.py`, not the full `src/ethereum/forks/…`.
+            let short = self.strip_configured_prefix(id_path).unwrap_or(id_path);
+            let title = match (title_for(kind, &content), kind) {
                 // EELS docstrings never name their fork, so all 24
                 // `fork.py` files claim the title "Ethereum
                 // Specification" — and the per-(source, title) search cap
                 // would then hide 22 of them. Qualifying by path makes each
                 // unique and puts the fork name in the title field, which
                 // BM25 weights heavily.
-                Some(title) if kind == FileKind::Python => {
-                    match self.strip_configured_prefix(id_path) {
-                        Some(suffix) => format!("{title} — {suffix}"),
-                        None => title,
-                    }
-                }
-                Some(title) => title,
-                None => id_path.to_string(),
+                (Some(title), FileKind::Python) => format!("{title} — {short}"),
+                (Some(title), _) => title,
+                // Many EELS modules open with a wrapped paragraph rather
+                // than a title line; the path beats a mid-sentence
+                // fragment.
+                (None, FileKind::Python) => short.to_string(),
+                (None, _) => id_path.to_string(),
             };
             // A date in the body (meeting notes) beats the commit date,
             // which moves whenever the file is touched — a 2020 decision
@@ -488,7 +488,13 @@ impl crate::Adapter for RepoAdapter {
 /// extension included — a GitHub blob URL without .md 404s, and both parse
 /// branches must agree or one class of repo gets dead citations.
 fn render_url(template: &str, stem: &str, relpath: &str) -> String {
-    template.replace("{stem}", stem).replace("{path}", relpath)
+    // Encoded for the same reason the atom URL is: ethereum/pm has real
+    // filenames like `Meeting 1&2.md` under `(e)PBS/`. An unencoded space
+    // truncates the link in any markdown citation, which breaks the
+    // retrieval invariant that every result carries a CITABLE url.
+    template
+        .replace("{stem}", &percent_encode_path(stem))
+        .replace("{path}", &percent_encode_path(relpath))
 }
 
 /// One string field out of a flat JSON object, without pulling the whole
@@ -528,11 +534,28 @@ fn module_docstring_title(content: &str) -> Option<String> {
     let quote = ["\"\"\"", "'''"].into_iter().find(|q| first.starts_with(q))?;
     // The title may sit on the opening line or the one after it.
     let inline = first.trim_start_matches(quote).trim();
-    let candidate = if inline.is_empty() {
-        lines.next()?.trim().to_string()
+    let (candidate, closes_line) = if inline.is_empty() {
+        (lines.next()?.trim().to_string(), false)
     } else {
-        inline.to_string()
+        (inline.to_string(), inline.ends_with(quote))
     };
+    // Many EELS docstrings open with a WRAPPED PARAGRAPH, not a title:
+    // "The Amsterdam fork ([EIP-7773]) includes block-level access lists
+    // and the\ndeterministic…". Taking line one then yields a
+    // mid-sentence fragment as the document's title — and titles are both
+    // BM25-weighted and the visible label on every citation. A real title
+    // stands alone: the next line is blank, an underline, or the
+    // docstring's end.
+    if !closes_line {
+        let next = lines.next().map(str::trim).unwrap_or("");
+        let standalone = next.is_empty()
+            || next.starts_with(quote)
+            || next.starts_with("..")
+            || next.chars().all(|c| "-=~^\"'`#*+".contains(c));
+        if !standalone {
+            return None;
+        }
+    }
     let candidate = candidate.trim_end_matches(quote).trim();
     // reST directives and underline rules are structure, not titles.
     if candidate.is_empty()
@@ -555,11 +578,18 @@ fn body_date(content: &str) -> Option<String> {
     // mentions a date and yields a parseable one — requiring the date to
     // parse is what keeps prose mentions from being mistaken for the
     // document's own date.
-    content
-        .lines()
-        .take(30)
-        .filter(|l| l.to_ascii_lowercase().contains("date"))
-        .find_map(parse_loose_date)
+    content.lines().take(30).find_map(|line| {
+        // The word must be a LABEL — "date" followed closely by a colon —
+        // not merely present. Matching the substring alone reads "Speccing
+        // Updates" in a table row as a date field and then harvests the
+        // row number as a day, which put a fabricated 2025-12-13 on a
+        // document whose own text says TBD.
+        let lower = line.to_ascii_lowercase();
+        let at = lower.find("date")?;
+        let after = &line[at + "date".len()..];
+        let colon = after.find(':').filter(|i| *i <= 20)?;
+        parse_loose_date(&after[colon + 1..])
+    })
 }
 
 /// `2023/3/9`, `2023-03-09`, or `4 Sept 2020` → `YYYY-MM-DDT00:00:00Z`.
@@ -587,9 +617,14 @@ fn parse_loose_date(text: &str) -> Option<String> {
         if parts.len() != 3 || !parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) {
             continue;
         }
+        // `continue`, never `?`: an unparseable token (an overlong digit
+        // run) must skip that token, not abandon a good date elsewhere on
+        // the same line.
+        let nums: Option<Vec<u32>> = parts.iter().map(|p| p.parse::<u32>().ok()).collect();
+        let Some(nums) = nums else { continue };
         // ISO-ish: 2023/3/9 or 2023-03-09 — year first, unambiguous.
         if parts[0].len() == 4 {
-            let (y, m, d) = (parts[0], parts[1].parse::<u32>().ok()?, parts[2].parse::<u32>().ok()?);
+            let (y, m, d) = (nums[0], nums[1], nums[2]);
             if (1..=12).contains(&m) && (1..=31).contains(&d) {
                 return Some(format!("{y}-{m:02}-{d:02}T00:00:00Z"));
             }
@@ -597,11 +632,7 @@ fn parse_loose_date(text: &str) -> Option<String> {
         // US M/D/YY, the early AllCoreDevs convention ("Friday 7/14/17").
         // Two-digit years are 20xx: these notes start in 2015.
         if parts[2].len() == 2 {
-            let (m, d, y) = (
-                parts[0].parse::<u32>().ok()?,
-                parts[1].parse::<u32>().ok()?,
-                parts[2].parse::<u32>().ok()?,
-            );
+            let (m, d, y) = (nums[0], nums[1], nums[2]);
             if (1..=12).contains(&m) && (1..=31).contains(&d) {
                 return Some(format!("20{y:02}-{m:02}-{d:02}T00:00:00Z"));
             }
