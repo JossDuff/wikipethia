@@ -20,6 +20,22 @@ use crate::error::CoreError;
 /// [`Store::ensure_embedding_space`] creates it lazily.
 const SCHEMA_VERSION: i64 = 4;
 
+/// The `meta` key/value table, kept out of [`SCHEMA`] because [`WriterLock`]
+/// needs it before a [`Store`] has necessarily opened the file — on clone day
+/// the lock is taken first and the database does not exist yet.
+///
+/// One definition, executed by both. Restating it in the lock is what
+/// introduced a `STRICT` table without the `NOT NULL` constraints: whichever
+/// `CREATE TABLE IF NOT EXISTS` ran first won, and it was the lock's.
+///
+/// [`WriterLock`]: crate::WriterLock
+pub(crate) const META_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT NOT NULL PRIMARY KEY,
+  value TEXT NOT NULL
+) STRICT;
+";
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
   id        TEXT PRIMARY KEY,
@@ -69,10 +85,6 @@ CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
   VALUES (new.id, new.title, new.author, new.tags, new.content);
 END;
 
-CREATE TABLE IF NOT EXISTS meta (
-  key   TEXT NOT NULL PRIMARY KEY,
-  value TEXT NOT NULL
-) STRICT;
 
 CREATE TABLE IF NOT EXISTS sources (
   id   TEXT NOT NULL PRIMARY KEY,
@@ -185,6 +197,7 @@ impl Store {
         // mode as a row ("memory" for in-memory databases, "wal" on disk).
         conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        conn.execute_batch(META_SCHEMA)?;
         conn.execute_batch(SCHEMA)?;
         if version < 2 {
             backfill_chunks(&mut conn)?;

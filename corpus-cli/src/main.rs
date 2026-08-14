@@ -3,17 +3,19 @@
 mod agent_eval;
 mod eval;
 mod manifest;
+mod report;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use corpus_core::{Embedder, Store};
+use corpus_core::{Embedder, Store, WriterLock};
 use corpus_embed::{DIM, FastEmbedder, MODEL_ID};
-use corpus_fetch::{Adapter, HttpClient};
+use corpus_fetch::{Adapter, HttpClient, SyncIntent};
 
 use manifest::{Kind, Manifest, adapter_for};
+use report::{Run, Table};
 
 #[derive(Parser)]
 #[command(name = "corpus", about = "Curated Ethereum research corpus")]
@@ -34,9 +36,20 @@ enum Command {
         limit: Option<usize>,
         /// Fetch this one topic instead of walking the listing. Requires
         /// --source (topic ids are source-relative). Skips if already on
-        /// disk; delete the file first to force a refresh.
+        /// disk unless --force is given.
         #[arg(long)]
         topic: Option<u64>,
+        /// Look at everything the source offers, not just what has changed
+        /// since the last sync. Widens the search; still skips items upstream
+        /// has not touched.
+        #[arg(long)]
+        full: bool,
+        /// Refetch every item reached, whatever the local copy says. The
+        /// recovery path for posts edited in place — those move no upstream
+        /// timestamp, so nothing else can see them. Pair with --full to sweep
+        /// a whole source; expect it to take as long as the first sync did.
+        #[arg(long)]
+        force: bool,
     },
     /// Parse raw files on disk into documents and persist to SQLite.
     Index {
@@ -71,11 +84,24 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Build the corpus from nothing: sync, index, and embed in sequence.
+    /// The clone-day command. Expect hours — the forum crawls hold to one
+    /// request per second per host — and interrupt it freely; re-running
+    /// resumes where it stopped.
+    Build {
+        /// One source id from sources.toml; omit to build everything.
+        #[arg(long)]
+        source: Option<String>,
+        /// Database file to write.
+        #[arg(long, default_value = "corpus.sqlite")]
+        db: PathBuf,
+    },
     /// Bring the corpus up to date: sync, index, and embed in sequence.
-    /// The one command a cron job or an operator needs; the individual
-    /// stages remain available for surgical use (--force lives there).
-    Refresh {
-        /// One source id from sources.toml; omit to refresh everything.
+    /// The command to run on a schedule. Every stage is incremental, so a
+    /// run with nothing new upstream does nothing and says so.
+    #[command(alias = "refresh")]
+    Update {
+        /// One source id from sources.toml; omit to update everything.
         #[arg(long)]
         source: Option<String>,
         /// Database file to update.
@@ -161,8 +187,11 @@ fn main() -> anyhow::Result<()> {
             source,
             limit,
             topic,
+            full,
+            force,
         } => {
             let manifest = Manifest::load()?;
+            let intent = SyncIntent { limit, full, force };
             if let Some(topic_id) = topic {
                 let Some(source) = source.as_deref() else {
                     bail!("--topic needs --source: topic ids are source-relative");
@@ -179,29 +208,19 @@ fn main() -> anyhow::Result<()> {
                         entry.kind
                     ),
                 };
-                let stats = adapter.sync_topic(&mut HttpClient::new(), topic_id)?;
+                let stats = adapter.sync_topic(&mut HttpClient::new(), topic_id, force)?;
                 println!(
-                    "sync done: {} fetched, {} already on disk → data/{}",
-                    stats.fetched, stats.skipped, entry.id
+                    "sync done: {} fetched, {} updated, {} unchanged → data/{}",
+                    stats.fetched, stats.updated, stats.skipped, entry.id
                 );
                 return Ok(());
             }
-            sync_sources(&manifest, source.as_deref(), limit)
+            let table = Table::new(manifest.select(source.as_deref())?.iter().map(|s| s.id.as_str()));
+            sync_sources(&manifest, source.as_deref(), &intent, &table).into_result()
         }
         Command::Index { source, db, force } => index(source.as_deref(), &db, force),
-        Command::Refresh { source, db } => {
-            // The operator's one verb: the three stages are separate
-            // primitives (different failure modes, politeness constraints,
-            // and --force semantics), but the routine "bring the corpus up
-            // to date" path shouldn't require knowing that.
-            let manifest = Manifest::load()?;
-            println!("refresh: stage 1/3 — sync");
-            sync_sources(&manifest, source.as_deref(), None)?;
-            println!("refresh: stage 2/3 — index");
-            index(source.as_deref(), &db, false)?;
-            println!("refresh: stage 3/3 — embed");
-            embed(&db, false)
-        }
+        Command::Build { source, db } => pipeline(Run::Build, source.as_deref(), &db),
+        Command::Update { source, db } => pipeline(Run::Update, source.as_deref(), &db),
         Command::Dedup {
             db,
             threshold,
@@ -209,7 +228,10 @@ fn main() -> anyhow::Result<()> {
             within_source,
         } => dedup(&db, threshold, source.as_deref(), within_source),
         Command::Search { query, db, limit } => search(&query, &db, limit),
-        Command::Embed { db, force } => embed(&db, force),
+        Command::Embed { db, force } => {
+            let _lock = WriterLock::acquire(&db, "embed")?;
+            embed(&db, force)
+        }
         Command::Add { .. } => bail!("add is not implemented until M8"),
         Command::Eval { db, questions } => {
             let text = fs::read_to_string(&questions).with_context(|| {
@@ -261,42 +283,155 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
+/// The two pipeline commands. Identical stages, because the stages are
+/// already incremental — the difference between building a corpus and keeping
+/// one current lives entirely in `sync`, which reads its own checkpoints. What
+/// the caller picks here is what the reader is told, not what runs.
+fn pipeline(run: Run, source: Option<&str>, db: &Path) -> anyhow::Result<()> {
+    let manifest = Manifest::load()?;
+    let selected = manifest.select(source)?;
+    let table = Table::new(selected.iter().map(|s| s.id.as_str()));
+    let started = std::time::Instant::now();
+
+    println!(
+        "{}: {} source{} → {}",
+        run.verb(),
+        selected.len(),
+        report::plural(selected.len()),
+        db.display()
+    );
+    if run == Run::Build {
+        announce_build_cost(&selected);
+    }
+    println!();
+
+    // Fail before the crawl, not after it. The lock proper is taken below,
+    // around the two database stages; this only refuses a run that is already
+    // doomed — otherwise a timer firing during a manual `embed` would spend
+    // the full polite crawl (20 minutes, or hours on clone day) and only then
+    // discover it cannot write.
+    drop(WriterLock::acquire(db, run.verb())?);
+
+    report::stage(1, 3, "sync");
+    let synced = sync_sources(&manifest, source, &SyncIntent::default(), &table);
+    // One lock across both database stages: index and embed must not
+    // interleave with each other or with a hand-run stage, and releasing
+    // between them would leave exactly the gap worth closing. Re-acquired
+    // rather than held through the sync, so a long crawl does not lock out
+    // a reader-turned-writer for its whole duration.
+    let _lock = WriterLock::acquire(db, run.verb())?;
+    report::stage(2, 3, "index");
+    let indexed = index_with(source, db, false, Some(&table));
+    report::stage(3, 3, "embed");
+    let embedded = embed(db, false);
+
+    // Report before propagating: a failed embed must not hide the fact that
+    // the sync and index stages did land, or the next run's operator has no
+    // idea how much of the work survived.
+    let documents = indexed.as_ref().map(|i| i.written).unwrap_or(0);
+    println!();
+    // Both stages named, because they can disagree honestly: a sync that
+    // fetched nothing still indexes whatever an earlier bare `sync` left on
+    // disk, and "0 changed, 3 written" is confusing without the labels.
+    println!(
+        "{} done in {} — sync: {} source{} changed; index: {} document{} written",
+        run.verb(),
+        report::hms(started.elapsed()),
+        synced.changed.len(),
+        report::plural(synced.changed.len()),
+        documents,
+        report::plural(documents),
+    );
+    synced.into_result()?;
+    indexed?;
+    embedded
+}
+
+/// What clone day costs, said once before it starts costing it.
+///
+/// Joss's call: it takes as long as it takes. So this sets the expectation
+/// and names the escape hatch rather than nagging or offering to do less.
+fn announce_build_cost(selected: &[&manifest::Source]) {
+    let forums = selected.iter().filter(|s| s.kind == Kind::Discourse).count();
+    let repos = selected.iter().filter(|s| s.kind == Kind::Repo).count();
+    let feeds = selected.iter().filter(|s| s.kind == Kind::Feed).count();
+    if forums > 0 {
+        println!(
+            "  {forums} forum crawl{}: hours, at one request per second per host —",
+            report::plural(forums)
+        );
+        println!("    these forums are public goods and the rate limit is deliberate.");
+    }
+    // Separately, not nested: `build --source vitalik` is all feeds and no
+    // repos, and it still deserves to be told what it is in for.
+    if repos > 0 {
+        println!(
+            "  {repos} repo snapshot{}: minutes.",
+            report::plural(repos)
+        );
+    }
+    if feeds > 0 {
+        println!("  {feeds} feed{}: minutes.", report::plural(feeds));
+    }
+    println!("  Safe to interrupt at any point; re-running resumes where it stopped.");
+}
+
+/// What a multi-source sync produced: which sources changed, and which failed.
+#[derive(Default)]
+struct SyncOutcome {
+    changed: Vec<String>,
+    failed: Vec<String>,
+}
+
+impl SyncOutcome {
+    fn into_result(self) -> anyhow::Result<()> {
+        if !self.failed.is_empty() {
+            bail!(
+                "sync failed for: {} (resume by re-running)",
+                self.failed.join(", ")
+            );
+        }
+        Ok(())
+    }
+}
+
 /// Sync every selected source, tolerating per-source failures — an
 /// unattended multi-source sync must not let one flaky forum starve the
-/// others. Still exits non-zero if anything failed.
+/// others. The caller still exits non-zero if anything failed.
 fn sync_sources(
     manifest: &Manifest,
     source: Option<&str>,
-    limit: Option<usize>,
-) -> anyhow::Result<()> {
-    let mut failed = Vec::new();
-    for entry in manifest.select(source)? {
+    intent: &SyncIntent,
+    table: &Table,
+) -> SyncOutcome {
+    let mut outcome = SyncOutcome::default();
+    let entries = match manifest.select(source) {
+        Ok(entries) => entries,
+        Err(err) => {
+            eprintln!("sync failed: {err:#}");
+            outcome.failed.push("manifest".into());
+            return outcome;
+        }
+    };
+    for entry in entries {
         let started = std::time::Instant::now();
         // One fresh client per source, sources strictly sequential —
         // this is what keeps "one request per second per host" true.
-        match adapter_for(entry).sync(&mut HttpClient::new(), limit) {
+        match adapter_for(entry).sync(&mut HttpClient::new(), intent) {
             Ok(stats) => {
-                let secs = started.elapsed().as_secs();
-                println!(
-                    "sync {}: {} fetched, {} already on disk, in {}m{:02}s → data/{}",
-                    entry.id,
-                    stats.fetched,
-                    stats.skipped,
-                    secs / 60,
-                    secs % 60,
-                    entry.id
-                );
+                if stats.changed() || stats.pruned > 0 {
+                    outcome.changed.push(entry.id.clone());
+                }
+                table.timed_row(&entry.id, &report::describe_sync(&stats), started.elapsed());
             }
             Err(err) => {
                 eprintln!("sync {} failed: {err:#}", entry.id);
-                failed.push(entry.id.clone());
+                table.row(&entry.id, "FAILED — see the error above");
+                outcome.failed.push(entry.id.clone());
             }
         }
     }
-    if !failed.is_empty() {
-        bail!("sync failed for: {} (resume by re-running)", failed.join(", "));
-    }
-    Ok(())
+    outcome
 }
 
 fn search(query: &str, db: &Path, limit: usize) -> anyhow::Result<()> {
@@ -463,7 +598,21 @@ fn embed(db: &Path, force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The standalone `index` command: same pass, its own summary line, and its
+/// own lock — `build`/`update` hold one across both database stages instead.
 fn index(source: Option<&str>, db: &Path, force: bool) -> anyhow::Result<()> {
+    let _lock = WriterLock::acquire(db, "index")?;
+    index_with(source, db, force, None).map(|_| ())
+}
+
+/// `table` is `Some` when running inside `build`/`update`, which wants one
+/// aligned row per source instead of a standalone summary.
+fn index_with(
+    source: Option<&str>,
+    db: &Path,
+    force: bool,
+    table: Option<&Table>,
+) -> anyhow::Result<IndexOutcome> {
     let manifest = Manifest::load()?;
     let selected = manifest.select(source)?;
     let mut store = Store::open(db)?;
@@ -473,12 +622,9 @@ fn index(source: Option<&str>, db: &Path, force: bool) -> anyhow::Result<()> {
         store.upsert_source(&entry.id, &entry.url, &entry.tier)?;
     }
 
-    let mut files = 0usize;
-    let mut written = 0usize;
-    let mut unchanged = 0usize;
-    let mut errors = 0usize;
-    let mut pruned = 0usize;
+    let mut total = IndexOutcome::default();
     for entry in selected {
+        let mut counts = IndexOutcome::default();
         let adapter = adapter_for(entry);
         let paths = match adapter.raw_files() {
             Ok(paths) => paths,
@@ -500,7 +646,6 @@ fn index(source: Option<&str>, db: &Path, force: bool) -> anyhow::Result<()> {
         let started = std::time::Instant::now();
         let mut last_note = std::time::Instant::now();
         let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut source_errors = 0usize;
         for (done, path) in paths.iter().enumerate() {
             if last_note.elapsed().as_secs() >= 5 {
                 eprintln!("index {}: {done}/{} files…", entry.id, paths.len());
@@ -508,53 +653,123 @@ fn index(source: Option<&str>, db: &Path, force: bool) -> anyhow::Result<()> {
             }
             // One bad file shouldn't sink the run; report it and keep going.
             match index_raw_file(&mut store, adapter.as_ref(), path, force, &mut seen_ids) {
-                Ok((wrote, total)) => {
-                    files += 1;
-                    written += wrote;
-                    unchanged += total - wrote;
+                Ok((wrote, parsed)) => {
+                    counts.files += 1;
+                    counts.written += wrote;
+                    counts.unchanged += parsed - wrote;
                 }
                 Err(err) => {
-                    source_errors += 1;
+                    counts.errors += 1;
                     eprintln!("error {}: {err:#}", path.display());
                 }
             }
         }
-        errors += source_errors;
-        let secs = started.elapsed().as_secs();
         eprintln!(
-            "index {}: done in {}m{:02}s ({} errors)",
+            "index {}: done in {} ({} errors)",
             entry.id,
-            secs / 60,
-            secs % 60,
-            source_errors
+            report::hms(started.elapsed()),
+            counts.errors
         );
         // Prune index entries whose raw files disappeared (upstream
         // deletions/renames — sync already pruned the raw files). Only when
         // this source parsed cleanly: a failed file's documents are absent
         // from seen_ids and must not read as deletions.
-        if source_errors == 0 {
+        if counts.errors == 0 {
             for id in store.doc_ids(Some(&entry.id))? {
                 if !seen_ids.contains(&id) {
                     store.delete_document(&id)?;
-                    pruned += 1;
-                    eprintln!("prune {id} (raw file gone)");
+                    counts.pruned += 1;
+                    eprintln!("unindex {id} (raw file gone)");
                 }
             }
         }
+        if let Some(table) = table {
+            table.row(&entry.id, &counts.describe());
+        }
+        total.add(&counts);
     }
-    println!(
-        "index done: {files} files, {written} documents written, {unchanged} unchanged, \
-         {pruned} pruned, {errors} errors → {}",
-        db.display()
-    );
-    if errors > 0 {
-        bail!("{errors} raw file(s) failed to index");
+    // The standalone command still prints its own one-line summary; inside a
+    // pipeline the per-source rows above have already said it, and the run
+    // summary says the rest.
+    if table.is_none() {
+        println!(
+            "index done: {} files, {} documents written, {} unchanged, {} unindexed, \
+             {} errors → {}",
+            total.files,
+            total.written,
+            total.unchanged,
+            total.pruned,
+            total.errors,
+            db.display()
+        );
     }
-    let missing = store.missing_embedding_count()?;
-    if missing > 0 {
-        println!("{missing} chunks lack embeddings — run `corpus embed` to enable hybrid search");
+    if total.errors > 0 {
+        bail!("{} raw file(s) failed to index", total.errors);
     }
-    Ok(())
+    // Only worth saying to someone who ran `index` on its own. Inside a
+    // pipeline the very next stage embeds them, and advising otherwise reads
+    // as a warning about work already in hand.
+    if table.is_none() {
+        let missing = store.missing_embedding_count()?;
+        if missing > 0 {
+            println!(
+                "{missing} chunks lack embeddings — run `corpus embed` to enable hybrid search"
+            );
+        }
+    }
+    Ok(total)
+}
+
+/// What one index pass wrote, per source and in total.
+#[derive(Default)]
+struct IndexOutcome {
+    files: usize,
+    written: usize,
+    unchanged: usize,
+    pruned: usize,
+    errors: usize,
+}
+
+impl IndexOutcome {
+    fn add(&mut self, other: &IndexOutcome) {
+        self.files += other.files;
+        self.written += other.written;
+        self.unchanged += other.unchanged;
+        self.pruned += other.pruned;
+        self.errors += other.errors;
+    }
+
+    /// Same rule as the sync rows: say what changed, and say "up to date"
+    /// rather than reciting zeroes when nothing did.
+    fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if self.written > 0 {
+            parts.push(format!(
+                "{} document{} written",
+                self.written,
+                report::plural(self.written)
+            ));
+        }
+        if self.pruned > 0 {
+            parts.push(format!(
+                "{} unindexed",
+                self.pruned
+            ));
+        }
+        if self.errors > 0 {
+            parts.push(format!(
+                "{} error{}",
+                self.errors,
+                report::plural(self.errors)
+            ));
+        }
+        if parts.is_empty() {
+            parts.push("up to date".into());
+        } else if self.unchanged > 0 {
+            parts.push(format!("{} unchanged", self.unchanged));
+        }
+        parts.join(", ")
+    }
 }
 
 /// Returns (written, parsed) so the caller can report unchanged counts;

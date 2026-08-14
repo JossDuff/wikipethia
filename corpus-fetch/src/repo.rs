@@ -16,8 +16,9 @@ use corpus_core::{CoreError, Document};
 use flate2::read::GzDecoder;
 use serde_json::{Map, Value};
 
+use crate::adapter::Adapter;
 use crate::error::FetchError;
-use crate::sync::{Fetcher, SyncStats, write_atomic_bytes};
+use crate::sync::{Fetcher, SyncIntent, SyncState, SyncStats, write_atomic_bytes};
 use crate::xml;
 
 pub struct RepoAdapter {
@@ -88,6 +89,33 @@ fn commits_atom_url(repo_url: &str, branch: &str, relpath: &str) -> String {
         git_ref(branch),
         percent_encode_path(relpath)
     )
+}
+
+/// "https://github.com/{owner}/{repo}/commits/{branch}.atom" — the whole
+/// branch rather than one file, for reading its head commit.
+///
+/// Not [`commits_atom_url`] with an empty path: that yields `commits/HEAD/.atom`,
+/// which is a different (and wrong) URL.
+fn branch_atom_url(repo_url: &str, branch: &str) -> String {
+    format!("{repo_url}/commits/{}.atom", git_ref(branch))
+}
+
+/// The commit a ref currently points at, from its atom feed.
+///
+/// GitHub tags each entry `tag:github.com,2008:Grit::Commit/<sha>`, newest
+/// first, and serves the feed for `HEAD` as readily as for a named branch —
+/// so this works for tracking and pinned sources alike, with no extra
+/// endpoint and no API token.
+///
+/// Deliberately not a conditional HTTP request: `client.rs` classifies any
+/// non-2xx that is neither 429 nor 5xx as fatal, so a 304 would abort the
+/// sync, and response headers cannot escape the client anyway — an ETag has
+/// nowhere to surface. Comparing a value from the body sidesteps both.
+fn head_sha(atom: &str) -> Option<String> {
+    let entry = xml::blocks(atom, "entry").into_iter().next()?;
+    let id = xml::tag_text(entry, "id")?;
+    let sha = id.rsplit_once("Grit::Commit/")?.1.trim().to_string();
+    (!sha.is_empty()).then_some(sha)
 }
 
 /// Percent-encode a repo-relative path for use in a URL, leaving the `/`
@@ -242,6 +270,99 @@ impl RepoAdapter {
             .to_string_lossy()
             .replace('\\', "/")
     }
+
+    /// The manifest settings that decide which of a commit's files end up on
+    /// disk. Stored beside the head SHA so a `sources.toml` edit invalidates
+    /// the "nothing changed" shortcut even when upstream has not moved.
+    ///
+    /// `paths` is sorted so that reordering the list — which changes nothing
+    /// about what is kept — does not force a needless re-download.
+    fn config_fingerprint(&self) -> String {
+        let mut paths = self.paths.clone();
+        paths.sort();
+        let mut types = self.file_types.clone();
+        types.sort();
+        format!("{}|{}|{}", self.branch, paths.join(","), types.join(","))
+    }
+
+    /// Ask the per-file commit feed for every date still outstanding.
+    ///
+    /// Shared by the full sync and the unchanged-repo shortcut, which both
+    /// owe the same guarantee: a file on disk with no date anywhere indexes
+    /// with an empty `published`, and the retrieval invariants are built on
+    /// dates. One request per file at 1 rps, persisted after each so an
+    /// interrupted first sync resumes where it stopped.
+    fn fill_dates(
+        &self,
+        fetcher: &mut dyn Fetcher,
+        dates: &mut HashMap<String, String>,
+    ) -> Result<(), FetchError> {
+        let pending = self.pending_dates(dates);
+        if pending.is_empty() {
+            return Ok(());
+        }
+        eprintln!(
+            "sync {}: filling commit dates for {} files (~{}s at 1 request/s)",
+            self.source_id,
+            pending.len(),
+            pending.len()
+        );
+        for relpath in pending {
+            let atom = fetcher.get_text(&commits_atom_url(&self.repo_url, &self.branch, &relpath))?;
+            // Both misses below leave the file permanently dateless. They
+            // warn rather than fail — one unreachable feed must not sink the
+            // source — and the cost is one request per run thereafter.
+            let Some(entry) = xml::blocks(&atom, "entry").into_iter().next() else {
+                eprintln!("warn: no commit entries for {relpath} — published stays empty");
+                continue;
+            };
+            match xml::tag_text(entry, "updated") {
+                Some(updated) => {
+                    dates.insert(relpath, updated);
+                    self.save_dates(dates)?;
+                }
+                None => eprintln!("warn: no <updated> for {relpath} — published stays empty"),
+            }
+        }
+        Ok(())
+    }
+
+    /// Files on disk still owed a date from the commit feed: no `dates.json`
+    /// entry, and no date they state themselves.
+    ///
+    /// Shared by the dates pass and the unchanged-repo shortcut, which must
+    /// agree — a shortcut taken while dates were still outstanding would
+    /// strand those files with an empty `published` until something else
+    /// happened to change upstream.
+    fn pending_dates(&self, dates: &HashMap<String, String>) -> Vec<String> {
+        self.raw_files()
+            .unwrap_or_default()
+            .iter()
+            .map(|path| self.relpath_of(path))
+            .filter(|relpath| {
+                if dates.contains_key(relpath) {
+                    return false;
+                }
+                let content =
+                    fs::read_to_string(self.files_dir().join(relpath)).unwrap_or_default();
+                // Frontmatter is a markdown convention; probing a .py file
+                // for it is meaningless. A body-stated date also settles
+                // the question without a request.
+                if FileKind::of(relpath) == Some(FileKind::Markdown)
+                    && (frontmatter(&content).is_some_and(|fm| fm.contains_key("created"))
+                        || body_date(&content).is_some())
+                {
+                    return false;
+                }
+                true
+            })
+            .collect()
+    }
+}
+
+/// The first seven characters, the length git itself abbreviates to.
+fn short_sha(sha: &str) -> &str {
+    sha.get(..7).unwrap_or(sha)
 }
 
 impl crate::Adapter for RepoAdapter {
@@ -279,16 +400,48 @@ impl crate::Adapter for RepoAdapter {
     /// date (no frontmatter `created:`, no fresh dates.json entry). The
     /// dates pass is driven from disk state, so an interrupted run resumes
     /// where it stopped — dates.json persists after every fetch.
-    fn sync(
-        &self,
-        fetcher: &mut dyn Fetcher,
-        limit: Option<usize>,
-    ) -> Result<SyncStats, FetchError> {
+    fn sync(&self, fetcher: &mut dyn Fetcher, opts: &SyncIntent) -> Result<SyncStats, FetchError> {
+        let limit = opts.limit;
         // The tarball is one silent request that can take minutes for
         // asset-heavy repos — without this line, that whole window is
         // indistinguishable from a hang (measured: eips took 6m21s on a
         // rate-limited server with no output at all).
         self.report_branch(fetcher);
+
+        // A tarball for a commit we already unpacked teaches nothing, and it
+        // is by far the most expensive request in a routine update. Read the
+        // ref's head instead — one small feed — and stop there when nothing
+        // has moved.
+        let mut state = SyncState::load(&self.data_dir);
+        let fingerprint = self.config_fingerprint();
+        let head = fetcher
+            .get_text(&branch_atom_url(&self.repo_url, &self.branch))
+            .ok()
+            .and_then(|atom| head_sha(&atom));
+        if let Some(sha) = &head
+            && !opts.force
+            && limit.is_none()
+            && state.head_sha == *sha
+            // The fingerprint is what makes the SHA safe to trust. `paths`
+            // and `file_types` decide which of the commit's files we keep, so
+            // editing them in sources.toml changes the answer while upstream
+            // stands still — without this the edit would be silently ignored
+            // until someone else pushed.
+            && state.config_fingerprint == fingerprint
+            && !self.raw_files().unwrap_or_default().is_empty()
+        {
+            eprintln!("sync {}: unchanged at {}", self.source_id, short_sha(sha));
+            // The tree is right; its dates may not be. Finish the dates pass
+            // rather than gating the shortcut on it: a file that can never
+            // obtain a date — its commit feed has no entries, or none with an
+            // `<updated>`, both of which warn and continue — would otherwise
+            // turn the shortcut off for good and re-download the whole
+            // tarball every run, with nothing in the log to say why.
+            let mut dates = self.load_dates();
+            self.fill_dates(fetcher, &mut dates)?;
+            return Ok(SyncStats::default());
+        }
+
         eprintln!(
             "sync {}: downloading {} tarball ({})…",
             self.source_id,
@@ -335,6 +488,7 @@ impl crate::Adapter for RepoAdapter {
                 .read_to_end(&mut contents)
                 .map_err(|e| self.archive_err(format!("reading {relpath}: {e}")))?;
             let dest = self.files_dir().join(&relpath);
+            let known = dest.exists();
             if fs::read(&dest).is_ok_and(|existing| existing == contents) {
                 stats.skipped += 1;
                 continue;
@@ -346,8 +500,13 @@ impl crate::Adapter for RepoAdapter {
                 })?;
             }
             write_atomic_bytes(&dest, &contents)?;
-            stats.fetched += 1;
-            eprintln!("fetch {relpath}");
+            if known {
+                stats.updated += 1;
+                eprintln!("update {relpath}");
+            } else {
+                stats.fetched += 1;
+                eprintln!("fetch  {relpath}");
+            }
             dirty.push(relpath);
         }
 
@@ -380,7 +539,8 @@ impl crate::Adapter for RepoAdapter {
                 if !kept.contains(&relpath) {
                     let _ = fs::remove_file(&path);
                     dates.remove(&relpath);
-                    eprintln!("prune {relpath} (removed upstream)");
+                    stats.pruned += 1;
+                    eprintln!("prune  {relpath} (removed upstream)");
                 }
             }
             self.save_dates(&dates)?;
@@ -396,49 +556,25 @@ impl crate::Adapter for RepoAdapter {
         for relpath in &dirty {
             dates.remove(relpath);
         }
-        let pending: Vec<String> = self
-            .raw_files()
-            .unwrap_or_default()
-            .iter()
-            .map(|path| self.relpath_of(path))
-            .filter(|relpath| {
-                if dates.contains_key(relpath) {
-                    return false;
-                }
-                let content =
-                    fs::read_to_string(self.files_dir().join(relpath)).unwrap_or_default();
-                // Frontmatter is a markdown convention; probing a .py file
-                // for it is meaningless. A body-stated date also settles
-                // the question without a request.
-                if FileKind::of(relpath) == Some(FileKind::Markdown)
-                    && (frontmatter(&content).is_some_and(|fm| fm.contains_key("created"))
-                        || body_date(&content).is_some())
-                {
-                    return false;
-                }
-                true
-            })
-            .collect();
-        if !pending.is_empty() {
-            eprintln!(
-                "sync {}: filling commit dates for {} files (~{}s at 1 request/s)",
-                self.source_id,
-                pending.len(),
-                pending.len()
-            );
+        // `--force` means "whatever the local copy says", and a wrong
+        // `published` date is the main thing someone reaches for it to
+        // repair on a repo source — the file bytes are already byte-compared
+        // every run, so they were never the stale part.
+        if opts.force {
+            dates.clear();
         }
-        for relpath in pending {
-            let atom = fetcher.get_text(&commits_atom_url(&self.repo_url, &self.branch, &relpath))?;
-            let Some(entry) = xml::blocks(&atom, "entry").into_iter().next() else {
-                eprintln!("warn: no commit entries for {relpath} — published stays empty");
-                continue;
-            };
-            if let Some(updated) = xml::tag_text(entry, "updated") {
-                dates.insert(relpath, updated);
-                // Persist after every fetch so an interrupted first sync
-                // (~150 files at 1 rps) resumes without refetching.
-                self.save_dates(&dates)?;
-            }
+        self.fill_dates(fetcher, &mut dates)?;
+
+        // Record what produced this tree, last: everything above must have
+        // succeeded for the SHA to describe what is actually on disk. A
+        // `--limit` run unpacked an arbitrary slice of the commit, so it has
+        // no business claiming the whole of it is synced.
+        if let Some(sha) = head
+            && limit.is_none()
+        {
+            state.head_sha = sha;
+            state.config_fingerprint = fingerprint;
+            state.save(&self.data_dir)?;
         }
         Ok(stats)
     }

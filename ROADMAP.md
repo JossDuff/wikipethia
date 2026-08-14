@@ -105,37 +105,71 @@ proof that the abstraction holds.
 **Gate:** adding EthMagicians is a `sources.toml` edit and nothing else. No
 changes to `corpus-core`.
 
-### [ ] Continuous refresh
+### [x] Continuous refresh
 
-**Scheduling — done.** `corpus refresh` runs sync → index → embed in one
-command (per-source scoping supported); all three stages are incremental or
-idempotent and the MCP server sees updates live through WAL, so no restart
-is needed. What remains is a cron/systemd timer calling it, which is only
-worth setting up once the per-adapter work below makes a run cheap.
+**Done 2026-08-14.** The pipeline is now two named commands over one shared
+implementation — `corpus build` for clone day, `corpus update` for a timer
+(`refresh` kept as an alias) — and all three adapter kinds are genuinely
+incremental. README carries a systemd timer.
 
-**Per-adapter freshness — the actual work.** Each adapter kind stales
-differently, and only one of the three is a Discourse problem:
-
-| Adapter | Sees new items | Sees *edits* to existing items | Cost per run |
+| Adapter | Sees new items | Sees *edits* | Cost when nothing changed |
 |---|---|---|---|
-| Discourse (2 forums) | yes | **no** — a topic on disk is skipped forever | ~50 min: the full listing walked at 1 req/s |
-| Repo (eips, ercs, consensusspecs) | yes | yes — byte-compares every file, prunes deletions | 1 full tarball each run (~6 min for EIPs) |
-| Feed (vitalik, efblog) | yes | **no** — `dest.exists()` ⇒ skip, and feeds truncate | seconds |
+| Discourse | yes | yes, for any thread with new activity | walks to the checkpoint and stops (2 pages) |
+| Repo | yes | yes | one commit-feed request; no tarball |
+| Feed | yes | yes, within the feed window | one request per item in the window |
 
-- **Discourse — correctness and cost.** Per NOTES-discourse-api.md, walk
-  `/latest` in activity order, refetch topics whose `last_posted_at` beats
-  the previous run's checkpoint, and stop at the first older one: a quiet
-  day costs a handful of requests instead of three thousand, and active
-  threads stop being frozen at first fetch.
-- **Repo — cost only.** Correctness is already there (verified: a
-  `refresh --source consensusspecs` in Aug 2026 pulled 31 changed spec
-  files). The tarball is fetched unconditionally even when the branch has
-  not moved; a conditional request (ETag/`If-None-Match`, or comparing the
-  branch head first) turns six minutes into one request.
-- **Feed — correctness.** An article corrected after publication never
-  updates, and one that scrolls out of the feed window is unreachable even
-  in principle. Re-fetch when the feed's `<updated>` timestamp or content
-  hash for an item changes.
+- **Discourse.** `data/<id>/sync.json` holds a `bumped_at` watermark,
+  written only by a walk that ended on its own terms — a run cut short by
+  `--limit` or an error claims nothing. The walk stops after **60**
+  consecutive non-pinned entries at or below it, not the first one:
+  measured against the live forum, page 0 of ethresear.ch opens with a
+  pinned topic three weeks stale, so stopping at the first old entry would
+  end every walk before it read anything. Staleness is decided against the
+  stored file (`highest_post_number`, `posts_count`, then `last_posted_at`)
+  rather than a global timestamp, which is self-healing and needs no
+  per-topic state. A stale topic is rewritten wholesale, never merged —
+  `merge_posts` is additive and would keep an edited post's old copy.
+- **Repo.** The head commit comes from the branch's own atom feed, and is
+  stored with a fingerprint of `paths`/`file_types`/`branch` so that editing
+  the manifest invalidates the shortcut even when upstream stands still.
+  Measured on consensus-specs: 7.5s → 1.5s, no tarball. Deliberately not
+  `If-None-Match`: `client.rs` treats a 304 as fatal and response headers
+  cannot escape the client, so a body value was the cheaper seam.
+- **Feed.** Items are re-derived and compared against the stored wrapper —
+  title, byline, date, and body — and written only when they differ. There is
+  no per-item `<updated>` in either real feed to shortcut with. Note both
+  feeds turned out to be **full archives, not truncated windows** (632 items
+  for the EF blog, 174 for vitalik), so comparing all of them costs minutes
+  per run on the teaser-description feed; a routine sync compares the newest
+  30 and `--full` compares the lot. Discovery is never bounded — an item with
+  no local copy is fetched wherever it sits.
+
+**Two limits, stated rather than papered over.** A post edited in place in a
+thread with *no* other activity moves nothing upstream and stays invisible
+until `sync --full --force`; Discourse offers no edited-since feed. And a
+correction to a blog article older than the recheck window waits for a
+`--full` sync.
+
+**Gate: passed.** All three checks, measured 2026-08-14:
+
+- *A reply appears after the next run.* 12 of the first 40 ethresear.ch
+  topics were frozen at first fetch; the recovered replies indexed and
+  became searchable. The corpus-wide catch-up (20m50s, most of it the first
+  uncheckpointed walk of both listings) recovered 171 EthMagicians
+  documents, 15 EIPs, and 2 ERCs, and unindexed 25 posts deleted upstream.
+- *An edited upstream spec file does too.* 3 consensus-specs files.
+- *A no-op run is cheap.* **1m15s** across all ten sources, versus the
+  ~50min the old full-listing walk cost. Decomposed: index ~1s, the two
+  forum walks 3s, the six repos 6s, and the two feeds 60s — the feeds are
+  now the whole cost, because each re-reads 30 articles at one request per
+  second to detect corrections. Slightly over the "well under a minute" the
+  gate asked for, and the honest reason is a freshness feature the gate did
+  not anticipate rather than a walk that stayed expensive. `RECHECK_RECENT`
+  in `feed.rs` is the dial if it ever matters.
+
+Eval after: fused **0.424** / lexical **0.370** over 23q, up from the M10
+baseline of 0.413/0.326. Nothing about chunking or ranking changed; the gain
+is the recovered documents becoming retrievable.
 - **Repo — branch tracking. DONE (2026-08-14).** `execution-specs` has no
   stable branch: it names its development branch after the fork in progress
   (`forks/amsterdam`), has no `master`/`main`, and its `mainnet` branch lags
@@ -198,6 +232,37 @@ Candidate fixes, cheapest first:
   catches the mismatch even across processes, at the cost of a hash column.
 - Make chunk ids non-reusable (`AUTOINCREMENT`), which removes the aliasing
   but not the wasted work.
+
+**Half done, 2026-08-14 — the advisory lock shipped.** `WriterLock`
+(`corpus-core/src/lock.rs`) takes a `meta` row under `BEGIN IMMEDIATE`,
+holding `{pid, command, started_unix}`, and releases on drop including on
+panic. `index`, `embed`, `build`, and `update` hold it; `build`/`update`
+hold one across both database stages rather than releasing in between.
+Readers never take it — blocking `corpus-mcp`'s queries behind a two-hour
+embed would be worse than the bug. A lock whose pid is gone is taken over
+with a note naming the dead pid, and one older than 24h is taken over
+whatever its pid says, because pids are recycled and a permanently wedged
+corpus is the worse failure. Verified at the CLI: a live holder produces
+`another writer holds this corpus: embed running as pid 1, started 93s ago`
+and exit 1.
+
+**Still owed: the other half of the gate.** "No vector can outlive the chunk
+content it was computed from" needs the content-hash check in
+`write_embeddings`; the lock closes the reachable hole (two CLI processes on
+one machine) but proves nothing about a vector's provenance. Anything
+bypassing the CLI, or two machines against a shared file, is still
+unguarded. The box stays unticked until the hash lands.
+
+**Related: `index` re-parses every raw file every run — and it does not
+matter.** `index_raw_file` has no mtime, size, or hash check, so all ~57k
+documents are parsed and full-content-compared on each pass. Measured on the
+2026-08-14 no-op run, the whole index stage is **~1s warm** — it is nowhere
+near the floor under a no-op `update`, and the intuition that it was is
+wrong. Left alone deliberately: fixing it is not a flag, because `seen_ids`
+is a complete-enumeration set and the prune pass deletes any doc id missing
+from it, so skipping a file by mtime would delete its documents — and for
+Discourse one file is a whole thread. It would need a persisted
+`file → doc_ids` map per source. Not worth that for a second.
 
 **Gate:** starting `index --force` while an `embed` is mid-run either
 blocks or fails cleanly, and a test demonstrates that no vector can

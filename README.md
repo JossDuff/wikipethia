@@ -30,30 +30,42 @@ git clone https://github.com/JossDuff/wikipethia && cd wikipethia
 cargo build --release
 ```
 
-Build the corpus — three stages, each resumable and incremental:
+Build the corpus. One command, three stages (fetch → index → embed):
 
 ```bash
-# 1. Fetch the sources. The full forum crawl takes many hours: it holds to
-#    one request per second per host on purpose (these forums are public
-#    goods). Interrupting is safe — it resumes where it stopped.
-#    For a quick taste first: --source ethresearch --limit 50
-cargo run --release -p corpus-cli -- sync
-
-# 2. Parse into the search index (corpus.sqlite)
-cargo run --release -p corpus-cli -- index
-
-# 3. Compute embeddings — downloads a small local model (~130MB) on first
-#    run, then embeds on CPU. Interruptible: re-running embeds only what's
-#    missing.
-cargo run --release -p corpus-cli -- embed
+cargo run --release -p corpus-cli -- build
 ```
 
-Thereafter, one command runs all three stages incrementally — this is
-what a cron job on a server should call:
+Expect several hours. The forum crawls hold to one request per second per
+host on purpose — these forums are public goods — and that is the whole of
+the wall clock. Interrupting is safe: every stage is resumable and
+re-running picks up where it stopped. The embedding stage downloads a small
+model (~130MB) on its first run, then works on CPU.
+
+For a quick taste before committing to the full crawl:
 
 ```bash
-cargo run --release -p corpus-cli -- refresh
+cargo run --release -p corpus-cli -- build --source ethresearch
 ```
+
+Thereafter, keep it current with:
+
+```bash
+cargo run --release -p corpus-cli -- update
+```
+
+`update` runs the same three stages, but only over what has actually
+changed: it walks each forum's recent-activity listing until it reaches
+posts it already has, skips a repository whose head commit hasn't moved,
+and re-embeds only new text. A run with nothing new upstream takes about a
+minute across all ten sources — nearly all of it the deliberate
+one-request-per-second pacing — and prints one line per source saying so.
+This is the command to put on a timer; see "Keeping it current" below.
+
+`build` and `update` differ only in what they tell you; either one works at
+any time, and `refresh` still works as an alias for `update`. The three
+stages remain available separately (`sync`, `index`, `embed`) for surgical
+use — that's where `--force` lives.
 
 Try it:
 
@@ -70,6 +82,46 @@ claude mcp add wikipethia -- $(pwd)/target/release/corpus-mcp --db $(pwd)/corpus
 Then ask Ethereum questions — the model cites forum posts, EIPs, and specs
 with URLs and dates. To serve it over the network instead of stdio, see
 "Hosting it remotely" below.
+
+## Keeping it current
+
+`update` on a timer is the whole story. A systemd user timer, nightly:
+
+```ini
+# ~/.config/systemd/user/wikipethia-update.service
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/wikipethia
+ExecStart=/srv/wikipethia/corpus-cli update
+```
+
+```ini
+# ~/.config/systemd/user/wikipethia-update.timer
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+`systemctl --user enable --now wikipethia-update.timer`. The MCP server sees
+new documents live through SQLite's WAL, so nothing needs restarting. Only
+one writer may touch the corpus at a time; if a timer fires while you are
+running `index` or `embed` by hand, it exits immediately saying who holds it
+rather than corrupting the vectors.
+
+Two things an incremental update cannot see, both by design:
+
+- **A forum post edited in place**, in a thread that got no other activity.
+  Nothing upstream changes to signal it. `corpus sync --source <id> --full
+  --force` sweeps a source and refetches everything; it costs what the first
+  crawl cost, so it's a once-in-a-while thing, not a routine.
+- **A correction to an old blog article.** Both feeds are full archives
+  (632 items for the EF blog), and re-reading every article on every run
+  would cost minutes to find a change nobody made. A routine update compares
+  the newest 30; `corpus sync --source <id> --full` compares all of them.
+  New articles are always picked up wherever they sit in the feed.
 
 ## Why not just grep the text?
 

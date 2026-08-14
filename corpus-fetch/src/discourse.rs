@@ -56,13 +56,62 @@ pub struct TopicList {
     pub topics: Vec<TopicSummary>,
 }
 
-#[derive(Debug, Deserialize)]
+/// One listing entry.
+///
+/// Every optional field is `#[serde(default, deserialize_with = "null_as_default")]`
+/// rather than plain `#[serde(default)]`, which covers a *missing* key but not
+/// an explicit `null`. The difference is not cosmetic: a `null` in a
+/// non-`Option` field fails the whole `LatestPage` deserialize, which aborts
+/// the entire sync for that forum — one odd topic taking down the crawl.
+#[derive(Debug, Default, Deserialize)]
 pub struct TopicSummary {
     pub id: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub posts_count: u64,
+    /// When the newest post in this topic was written. The signal that a
+    /// thread has gained a reply since we last stored it.
+    #[serde(default)]
+    pub last_posted_at: Option<String>,
+    /// What `/latest` actually sorts by. It advances for reasons other than a
+    /// new post (a recategorisation, a staff bump), so it is the right key for
+    /// deciding how far back a page reaches and the wrong one for deciding
+    /// whether a topic's content changed.
+    #[serde(default)]
+    pub bumped_at: Option<String>,
+    /// Pinned topics are hoisted to the top of page 0 no matter how stale, so
+    /// their position carries no information about the walk's depth.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub pinned: bool,
+    /// High-water mark of post numbers, gaps included. Unlike `posts_count` it
+    /// never decreases, so the two disagree exactly when a post was deleted.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub highest_post_number: u64,
+}
+
+/// Read `null` as the type's default instead of failing.
+///
+/// `#[serde(default)]` alone does not do this — it applies when the key is
+/// absent, and a present-but-null value is still a type error.
+pub(crate) fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+impl TopicSummary {
+    /// The key `/latest` orders by, with a fallback for instances that omit
+    /// it. Empty when neither field is present, which sorts below every real
+    /// timestamp and so can only ever cause more work, never less.
+    pub fn sort_key(&self) -> &str {
+        self.bumped_at
+            .as_deref()
+            .or(self.last_posted_at.as_deref())
+            .unwrap_or_default()
+    }
 }
 
 /// All post IDs in the topic, in thread order. `post_stream.posts` holds only
