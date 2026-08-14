@@ -67,20 +67,23 @@ tier = "spec"
 # EELS — the executable execution-layer spec. `file_types = ["py"]` because
 # the spec IS Python here, not markdown quoting Python.
 #
-# The branch is fork-named and there is NO stable alternative: this repo has
-# no master/main, and its `mainnet` branch lags the tip by months. So the pin
-# below goes stale every hard fork, and sync warns when it stops being the
-# repo's default branch — when Amsterdam ships, update this line.
+# `branch = "default"` because this repo has NO stable branch to pin: no
+# master/main, a `mainnet` branch that lags the tip by months, and a
+# development branch named after the fork in progress (forks/amsterdam
+# today). A fixed pin would go stale at every hard fork, silently — the old
+# branch keeps existing, so sync would keep succeeding while learning
+# nothing new. Tracking the default branch needs no maintenance; sync logs
+# which branch that resolved to.
 #
 # paths excludes tests/ (2,694 files) and packages/ — only ~24% of this
 # repo's Python is spec.
 id = "executionspecs"
 kind = "repo"
 url = "https://github.com/ethereum/execution-specs"
-branch = "forks/amsterdam"
+branch = "default"
 paths = ["src/ethereum/forks"]
 file_types = ["py"]
-doc_url = "https://github.com/ethereum/execution-specs/blob/forks/amsterdam/{path}"
+doc_url = "https://github.com/ethereum/execution-specs/blob/HEAD/{path}"
 tier = "spec"
 
 [[sources]]
