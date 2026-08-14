@@ -218,6 +218,18 @@ fn validate(raw: RawSource) -> anyhow::Result<Source> {
                     raw.id
                 );
             }
+            // A tracking source whose doc_url names a fixed branch would
+            // sync fine forever while every citation points at a ref that
+            // freezes and is eventually deleted — silent, and invisible in
+            // any test. The two settings only make sense together.
+            if branch == corpus_fetch::TRACK_DEFAULT && !doc_url.contains("/blob/HEAD/") {
+                bail!(
+                    "sources.toml: {:?} tracks the default branch, so its doc_url must \
+                     use /blob/HEAD/ — a fixed branch there would freeze every citation \
+                     at the ref that was current today. Got {doc_url:?}",
+                    raw.id
+                );
+            }
             // Defaulting to markdown keeps every pre-existing source
             // byte-identical in behavior.
             let file_types = raw.file_types.clone().unwrap_or_else(|| vec!["md".into()]);
@@ -398,6 +410,29 @@ mod tests {
         "#;
         let err = Manifest::parse(two_feeds).unwrap_err().to_string();
         assert!(err.contains("shares a host"), "{err}");
+    }
+
+    #[test]
+    fn tracking_sources_must_use_a_head_doc_url() {
+        let toml = |branch: &str, doc_url: &str| {
+            format!(
+                "[[sources]]\nid = \"x\"\nkind = \"repo\"\n\
+                 url = \"https://github.com/o/r\"\nbranch = \"{branch}\"\n\
+                 paths = [\"src\"]\ndoc_url = \"{doc_url}\"\ntier = \"spec\"\n"
+            )
+        };
+        // A tracking source whose doc_url pins a branch would sync green
+        // forever while every citation froze at today's ref.
+        assert!(
+            Manifest::parse(&toml("default", "https://github.com/o/r/blob/forks/x/{path}")).is_err()
+        );
+        assert!(
+            Manifest::parse(&toml("default", "https://github.com/o/r/blob/HEAD/{path}")).is_ok()
+        );
+        // Pinned sources are unaffected — they may name any ref.
+        assert!(
+            Manifest::parse(&toml("master", "https://github.com/o/r/blob/master/{path}")).is_ok()
+        );
     }
 
     #[test]

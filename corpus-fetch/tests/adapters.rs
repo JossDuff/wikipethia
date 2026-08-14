@@ -123,6 +123,33 @@ fn repo_sync_prunes_files_removed_upstream() {
 }
 
 #[test]
+fn a_tarball_matching_nothing_refuses_to_wipe_the_local_mirror() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = repo_adapter(dir.path(), &["EIPS", "specs"]);
+    let (mut web, _) = repo_web();
+    adapter.sync(&mut web, None).unwrap();
+    assert!(dir.path().join("files/EIPS/eip-1.md").exists());
+
+    // Upstream restructures under the SAME configured paths: the new
+    // tarball has no EIPS/ or specs/ at all. execution-specs has already
+    // done exactly this once (src/ethereum/<fork> → src/ethereum/forks/
+    // <fork>), and with branch = "default" it can happen without anyone
+    // editing sources.toml. Pruning here would silently delete the source.
+    let mut web2 = FakeWeb::default();
+    web2.bytes
+        .insert(TARBALL.into(), fixture_bytes("repo_restructured.tar.gz"));
+    let err = adapter.sync(&mut web2, None).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("matched 0 files"), "{msg}");
+    assert!(msg.contains("paths"), "error must point at the likely cause: {msg}");
+
+    // Nothing was deleted, and dates.json survived.
+    assert!(dir.path().join("files/EIPS/eip-1.md").exists());
+    assert!(dir.path().join("files/specs/phase0/beacon-chain.md").exists());
+    assert!(dir.path().join("dates.json").exists());
+}
+
+#[test]
 fn repo_parse_frontmatter_and_spec_paths() {
     let dir = tempfile::tempdir().unwrap();
     let adapter = repo_adapter(dir.path(), &["EIPS", "specs"]);
