@@ -4,7 +4,10 @@
 use std::fs;
 use std::path::Path;
 
-use corpus_core::spec::{SpecConstant, constants, functions, functions_in_python};
+use corpus_core::spec::{
+    SpecConstant, constants, functions, functions_in_python, solidity_constants,
+    solidity_declarations,
+};
 
 fn fixture() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -175,4 +178,145 @@ fn python_function_bodies_stop_at_the_next_module_level_statement() {
     assert!(!fns[0].code.contains("X = 1"));
     // A bare .py file has no fences, so the markdown parser sees nothing.
     assert!(functions(src).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Solidity fences. The shapes below are copied from real ERC documents, not
+// invented — erc-1271's fence in particular is verbatim, mislabelled
+// `javascript` and all.
+// ---------------------------------------------------------------------------
+
+/// erc-1271, verbatim. Note the info string: `javascript`. 19 ingested
+/// EIP/ERC documents mislabel their Solidity this way and never tag a single
+/// fence `solidity`, so an info-string-only rule misses the exact document
+/// that motivated Solidity support.
+const ERC1271: &str = r#"
+## Specification
+
+```javascript
+pragma solidity ^0.5.0;
+
+contract ERC1271 {
+
+  // bytes4(keccak256("isValidSignature(bytes32,bytes)")
+  bytes4 constant internal MAGICVALUE = 0x1626ba7e;
+
+  /**
+   * @dev Should return whether the signature provided is valid
+   *
+   * MUST return the bytes4 magic value 0x1626ba7e when function passes.
+   */
+  function isValidSignature(
+    bytes32 _hash,
+    bytes memory _signature)
+    public
+    view
+    returns (bytes4 magicValue);
+}
+```
+
+Prose after the fence, with `function notReal(` inside it.
+"#;
+
+#[test]
+fn a_mislabelled_solidity_fence_is_still_read() {
+    let fns = solidity_declarations(ERC1271);
+    assert_eq!(fns.len(), 1, "one function declaration, got {fns:?}");
+    assert_eq!(fns[0].name, "isValidSignature");
+    assert_eq!(fns[0].language, "solidity", "must not be fenced as python");
+}
+
+#[test]
+fn a_declaration_carries_the_doc_comment_that_states_the_answer() {
+    let fns = solidity_declarations(ERC1271);
+    // The whole point: the magic value is in the comment, not the signature.
+    assert!(
+        fns[0].code.contains("MUST return the bytes4 magic value 0x1626ba7e"),
+        "{}",
+        fns[0].code
+    );
+    // And the declaration itself, which wraps across seven lines.
+    assert!(fns[0].code.contains("returns (bytes4 magicValue);"), "{}", fns[0].code);
+    // But not the closing brace of the enclosing contract.
+    assert!(!fns[0].code.trim_end().ends_with('}'), "{}", fns[0].code);
+}
+
+#[test]
+fn solidity_constants_carry_the_magic_value_and_its_visibility() {
+    let consts = solidity_constants(ERC1271);
+    assert_eq!(consts.len(), 1, "{consts:?}");
+    assert_eq!(consts[0].name, "MAGICVALUE");
+    assert_eq!(consts[0].value, "0x1626ba7e");
+    // Visibility matters to a reader deciding whether they can rely on it.
+    assert_eq!(consts[0].description.as_deref(), Some("bytes4 constant internal"));
+}
+
+#[test]
+fn prose_outside_a_fence_is_not_mistaken_for_a_declaration() {
+    // The trailing paragraph of ERC1271 contains "function notReal(".
+    let fns = solidity_declarations(ERC1271);
+    let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["isValidSignature"]);
+}
+
+#[test]
+fn a_javascript_fence_without_solidity_is_left_alone() {
+    // Sniffing for `function` shapes rather than `pragma solidity` would
+    // claim this, and every other JS example in the ERCs.
+    let js = r#"
+```javascript
+function transferHelper(token, to, amount) {
+  return token.methods.transfer(to, amount).send();
+}
+```
+"#;
+    assert!(solidity_declarations(js).is_empty());
+    assert!(solidity_constants(js).is_empty());
+}
+
+#[test]
+fn a_definition_with_a_body_ends_at_its_closing_brace() {
+    let src = r#"
+```solidity
+contract C {
+    function first() public pure returns (uint256) {
+        if (true) {
+            return 1;
+        }
+        return 2;
+    }
+
+    function second() public {}
+}
+```
+"#;
+    let fns = solidity_declarations(src);
+    let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["first", "second"]);
+    // Nested braces must not end the block early, and `second` must not be
+    // swallowed into `first`.
+    assert!(fns[0].code.contains("return 2;"), "{}", fns[0].code);
+    assert!(!fns[0].code.contains("second"), "{}", fns[0].code);
+}
+
+#[test]
+fn constant_is_matched_as_a_word_not_a_prefix() {
+    let src = r#"
+```solidity
+uint256 constantProduct = 1;
+uint256 public constant MAX_SUPPLY = 10_000;
+```
+"#;
+    let consts = solidity_constants(src);
+    let names: Vec<&str> = consts.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["MAX_SUPPLY"], "constantProduct is not a constant");
+}
+
+#[test]
+fn python_extraction_still_labels_itself_python() {
+    // The language tag exists so the renderer stops calling everything
+    // python; the python paths must actually say so.
+    let py = "```python\ndef f():\n    return 1\n```\n";
+    assert_eq!(functions(py)[0].language, "python");
+    assert_eq!(functions_in_python("def g():\n    return 2\n")[0].language, "python");
 }

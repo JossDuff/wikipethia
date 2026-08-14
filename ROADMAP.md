@@ -329,15 +329,40 @@ Open work items surfaced by that instrumentation, in value order:
 Two independent gaps in the same tool. Neither needs new plumbing;
 `corpus-core/src/spec.rs` parses on demand and both are extensions to it.
 
-**1. It walks past Solidity fences.** `spec.rs` reads constant tables and
-Python fences, so the ERCs' magic values are unreachable: "what does
-`isValidSignature` return" scores **0.00 fused** in the eval set even though
-the answer — `0x1626ba7e` — is sitting in `ercs/erc-1271`. The answer *is* a
-4-byte literal, so neither retrieval arm can help: FTS stems it apart and the
-vector side has nothing to grip. This is the highest-value item of the two —
-611 ERC documents put their interfaces in Solidity fences, so it lights up a
-whole class of "what exactly do I return / what's the selector" questions that
-the corpus currently cannot answer at all.
+**1. It walks past Solidity fences. — DONE 2026-08-14.** `spec.rs` gained
+`solidity_declarations` and `solidity_constants`; `lookup_spec` chains them
+onto the existing table and Python paths, and `SpecFunction` carries a
+`language` so the renderer stops fencing everything as python. Verified over
+JSON-RPC: `isValidSignature` returns erc-1271's declaration **with the doc
+comment that states "MUST return the bytes4 magic value 0x1626ba7e"**, then
+the reference implementation returning it, then erc-6066's NFT variant with
+its own `0x12edb34f`. `MAGICVALUE` resolves to `0x1626ba7e — bytes4 constant
+internal`.
+
+Detection is info-string **or** a `pragma solidity` content sniff, because
+**19 ingested EIP/ERC documents carry `pragma solidity` in a fence tagged
+`javascript` and never tag one `solidity`** — including erc-1271 itself, plus
+erc-3156 and erc-1822. An info-string-only rule would have missed the exact
+document that motivated the work. A Solidity fence with neither marker is
+still missed, deliberately: sniffing for `contract`/`function` shapes would
+start claiming the ERCs' JavaScript examples.
+
+**Correcting this item's original gate, which was wrong.** It said "the
+ERC-1271 eval question stops scoring 0.00". It cannot: `eval` calls
+`hybrid_search` and nothing else (`corpus-cli/src/eval.rs:106`), so it never
+reaches `spec.rs` or any MCP tool. That conflated the two layers CLAUDE.md
+warns are cheap to misread. Measured before and after: **lexical 0.333 /
+fused 0.477 over 33 questions, byte-identical** — the correct result, and the
+only thing `eval` can say here is "no regression". The real checks are a
+`lookup_spec` probe (done) and `agent-eval`, which is the only layer that can
+price whether the edited tool description actually steers a client to reach
+for it.
+
+**Cost to weigh:** common ERC method names now match across hundreds of
+documents. `transferFrom` returns 21k characters / 434 lines, capped at 40
+definitions with "27 more matched" in the footer. Bounded and self-describing,
+but a real increase — and an argument for item 2 below, since the cap is doing
+work that collapsing near-identical bodies should be doing instead.
 
 **2. It returns a dozen byte-identical bodies.** Measured: `lookup_spec
 calculate_base_fee_per_gas` with `fork = "cancun"` puts cancun first as
@@ -351,12 +376,13 @@ divergence **visible** instead of something the reader has to diff by eye.
 ROADMAP flagged the risk of this batch being spec-shaped; this is the shape it
 took.
 
-**Gate:** the ERC-1271 eval question stops scoring 0.00, and a `lookup_spec`
-call for an identifier the executable spec copies per fork returns one body
-per *distinct* implementation with its forks listed, not one per directory.
-Both are `eval`-measurable, so no `agent-eval` spend is needed to know whether
-they worked — though the token reduction on (2) is the kind of thing only
-`agent-eval` prices properly.
+**Gate (restated, since the first version measured the wrong layer):**
+`lookup_spec` returns erc-1271's magic value for `isValidSignature` — **met**
+— and a `lookup_spec` call for an identifier the executable spec copies per
+fork returns one body per *distinct* implementation with its forks listed,
+not one per directory — **still open**. Neither is visible to `eval`; both are
+probe-verifiable, and `agent-eval` is what prices whether a client actually
+reaches for the tool.
 
 ### [ ] M9 — Reranker
 

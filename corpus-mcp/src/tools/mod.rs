@@ -691,7 +691,7 @@ impl CorpusServer {
 
     #[tool(
         name = "lookup_spec",
-        description = "Look up an exact identifier in the canonical Ethereum specifications held in the local corpus: a constant's value (MAX_EFFECTIVE_BALANCE, MIN_SLASHING_PENALTY_QUOTIENT) or a spec function's Python body (process_deposit, get_validator_churn_limit). Use this INSTEAD of search_posts whenever the question names a specific spec identifier — free-text search stems identifiers apart and ranks forum discussion above the defining document; this tool reads the spec documents themselves and returns every definition with a citable URL. Matching is case-sensitive and substring-based on the identifier, which matters: forks often introduce suffixed variants rather than redefining a name (MAX_EFFECTIVE_BALANCE_ELECTRA), so a base-name query intentionally returns the variants too — compare the fork labels in the citations to pick the right one, and don't assume the newest fork redefines every constant. Pass fork (a spec directory name — consensus-layer forks like \"electra\" or \"phase0\", execution-layer forks like \"cancun\", \"prague\", \"osaka\") to put that fork's definitions first, which is usually essential for execution-layer identifiers: the executable spec keeps one near-identical copy per fork, so an unfiltered lookup returns two dozen variants of the same function; other forks' definitions still follow, because the value a fork actually uses is often inherited from an earlier one or lives under a suffixed name. Returns nothing for concepts or prose — for those use search_posts."
+        description = "Look up an exact identifier in the canonical Ethereum specifications held in the local corpus: a constant's value (MAX_EFFECTIVE_BALANCE, MIN_SLASHING_PENALTY_QUOTIENT), a spec function's Python body (process_deposit, get_validator_churn_limit), or an ERC's Solidity declaration and magic values (isValidSignature, permit, previewRedeem, MAGICVALUE). Reach for it on \"what exactly does this return / what is the selector / what value must I compare against\" questions: those answers are short literals like 0x1626ba7e that free-text search cannot retrieve at all, and the declaration comes back with the doc comment stating the MUST. Use this INSTEAD of search_posts whenever the question names a specific spec identifier — free-text search stems identifiers apart and ranks forum discussion above the defining document; this tool reads the spec documents themselves and returns every definition with a citable URL. Matching is case-sensitive and substring-based on the identifier, which matters: forks often introduce suffixed variants rather than redefining a name (MAX_EFFECTIVE_BALANCE_ELECTRA), so a base-name query intentionally returns the variants too — compare the fork labels in the citations to pick the right one, and don't assume the newest fork redefines every constant. Pass fork (a spec directory name — consensus-layer forks like \"electra\" or \"phase0\", execution-layer forks like \"cancun\", \"prague\", \"osaka\") to put that fork's definitions first, which is usually essential for execution-layer identifiers: the executable spec keeps one near-identical copy per fork, so an unfiltered lookup returns two dozen variants of the same function; other forks' definitions still follow, because the value a fork actually uses is often inherited from an earlier one or lives under a suffixed name. Returns nothing for concepts or prose — for those use search_posts."
     )]
     async fn lookup_spec(
         &self,
@@ -750,7 +750,13 @@ impl CorpusServer {
                 .map(|s| format!(" [status: {s}]"))
                 .unwrap_or_default();
             let in_fork = fork_needle.as_deref().is_some_and(|f| doc.id.contains(f));
-            for c in spec::constants(&doc.content) {
+            // Constant tables, plus Solidity `constant` state variables —
+            // the shape that carries an ERC's magic values and selectors,
+            // which no table in these documents ever states.
+            let constants = spec::constants(&doc.content)
+                .into_iter()
+                .chain(spec::solidity_constants(&doc.content));
+            for c in constants {
                 if !c.name.contains(name) {
                     continue;
                 }
@@ -763,11 +769,15 @@ impl CorpusServer {
                 ));
             }
             // A .py document IS Python; everything else is prose that may
-            // quote Python inside fences.
+            // quote Python or Solidity inside fences. The ERCs are the
+            // Solidity half and state their normative surface there.
             let functions = if doc.id.ends_with(".py") {
                 spec::functions_in_python(&doc.content)
             } else {
                 spec::functions(&doc.content)
+                    .into_iter()
+                    .chain(spec::solidity_declarations(&doc.content))
+                    .collect()
             };
             for f in functions {
                 if !f.name.contains(name) {
@@ -802,7 +812,10 @@ impl CorpusServer {
                     in_fork,
                     true,
                     f.name == name,
-                    format!("{}{label}{status}\n```python\n{code}\n```\n   {cite}", f.name),
+                    format!(
+                        "{}{label}{status}\n```{}\n{code}\n```\n   {cite}",
+                        f.name, f.language
+                    ),
                 ));
             }
         }

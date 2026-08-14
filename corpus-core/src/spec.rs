@@ -33,17 +33,23 @@ pub struct SpecConstant {
     pub description: Option<String>,
 }
 
-/// One top-level `def` from a ```python fence.
+/// One extracted routine: a top-level `def` from a ```python fence, or a
+/// `function` declaration from a Solidity one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpecFunction {
-    /// The identifier after `def`.
+    /// The identifier after `def` or `function`.
     pub name: String,
     /// The function's source: its `def` line through the line before the
-    /// next top-level `def` in the same fence (or the fence's end).
+    /// next top-level `def` in the same fence (or the fence's end). For
+    /// Solidity, the declaration and any doc comment immediately above it.
     pub code: String,
     /// The nearest heading above the fence, hashes stripped — carries the
     /// spec's own "Modified"/"New" labeling, e.g. "Modified `process_deposit`".
     pub heading: Option<String>,
+    /// Which language `code` is, for the fence the renderer wraps it in.
+    /// Labelling Solidity as python would be a small lie that costs a
+    /// reader real time.
+    pub language: &'static str,
 }
 
 /// Every constant-table row in `content`. Rows are recognized by shape —
@@ -203,6 +209,7 @@ pub fn functions_in_python(content: &str) -> Vec<SpecFunction> {
             name,
             code: lines[start..end].join("\n").trim_end().to_string(),
             heading: None,
+            language: "python",
         });
     }
     out
@@ -235,7 +242,209 @@ fn fence_functions(lines: &[&str], heading: Option<&str>) -> Vec<SpecFunction> {
                 name,
                 code: lines[start..end].join("\n").trim_end().to_string(),
                 heading: heading.map(str::to_string),
+                language: "python",
             })
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Solidity fences.
+//
+// The ERCs put their normative surface in Solidity, not Python or a constant
+// table, so none of the above reaches it. The case that forced this: asking
+// what `isValidSignature` returns scored 0.00 in the retrieval eval while the
+// answer — the magic value `0x1626ba7e` — sat in erc-1271's fence the whole
+// time. The answer IS a 4-byte literal, so neither retrieval arm can help:
+// FTS stems it apart and the vector side has nothing to grip.
+//
+// Scope is deliberately narrow: `function` declarations and `constant` state
+// variables. Events, errors, structs, and modifiers are not extracted — they
+// can be, on the same walk, when a question needs them.
+// ---------------------------------------------------------------------------
+
+/// Whether a fence holds Solidity: its info string says so, or its contents
+/// declare a `pragma solidity`.
+///
+/// The sniff is not belt-and-braces. Measured across the ingested EIPs and
+/// ERCs, **19 documents carry `pragma solidity` in a fence tagged
+/// `javascript` or `js` and never tag a single fence `solidity`** — among them
+/// erc-1271 (the magic-value case this exists for), erc-3156 (flash loans),
+/// and erc-1822 (proxies). An info-string-only rule would miss precisely the
+/// documents that motivated the feature.
+///
+/// A Solidity fence with neither marker is not detected. That is accepted:
+/// `pragma solidity` is a strong, self-describing signal, where sniffing for
+/// `contract`/`function` shapes would start claiming JavaScript fences.
+fn solidity_fence(info: &str, lines: &[&str]) -> bool {
+    matches!(info.split_whitespace().next(), Some("solidity" | "sol"))
+        || lines
+            .iter()
+            .any(|l| l.trim_start().starts_with("pragma solidity"))
+}
+
+/// Every Solidity fence in `content`, as (nearest heading above, lines).
+///
+/// Shared by [`solidity_declarations`] and [`solidity_constants`] because the
+/// fence walk — CommonMark tick counting, unclosed-fence flush, heading
+/// tracking — is fiddly enough that two copies would drift.
+fn solidity_fences(content: &str) -> Vec<(Option<String>, Vec<&str>)> {
+    let mut out = Vec::new();
+    let mut heading: Option<String> = None;
+    let mut fence: Option<(usize, String, Vec<&str>)> = None;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        match &mut fence {
+            None => {
+                if let Some(h) = trimmed.strip_prefix('#') {
+                    heading = Some(h.trim_start_matches('#').trim().to_string());
+                } else if let Some((ticks, info)) = fence_open(trimmed) {
+                    fence = Some((ticks, info.to_string(), Vec::new()));
+                }
+            }
+            Some((ticks, info, lines)) => {
+                if fence_close(trimmed, *ticks) {
+                    if solidity_fence(info, lines) {
+                        out.push((heading.clone(), std::mem::take(lines)));
+                    }
+                    fence = None;
+                } else {
+                    lines.push(line);
+                }
+            }
+        }
+    }
+    // An unclosed fence runs to end of input, same as in `functions`.
+    if let Some((_, info, lines)) = fence
+        && solidity_fence(&info, &lines)
+    {
+        out.push((heading, lines));
+    }
+    out
+}
+
+/// Every `function` declaration in every Solidity fence of `content`.
+///
+/// The extracted block runs from any doc comment immediately above the
+/// declaration through its terminating `;` or closing brace. The comment is
+/// not decoration — in erc-1271 the sentence "MUST return the bytes4 magic
+/// value 0x1626ba7e when function passes" lives there, and it is the answer.
+pub fn solidity_declarations(content: &str) -> Vec<SpecFunction> {
+    let mut out = Vec::new();
+    for (heading, lines) in solidity_fences(content) {
+        for (start, line) in lines.iter().enumerate() {
+            let Some(rest) = line.trim_start().strip_prefix("function ") else {
+                continue;
+            };
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if name.is_empty() {
+                continue;
+            }
+            let from = doc_comment_start(&lines, start);
+            let end = declaration_end(&lines, start);
+            out.push(SpecFunction {
+                name,
+                code: lines[from..end].join("\n").trim_end().to_string(),
+                heading: heading.clone(),
+                language: "solidity",
+            });
+        }
+    }
+    out
+}
+
+/// Every `constant` state variable in every Solidity fence of `content`,
+/// e.g. `bytes4 constant internal MAGICVALUE = 0x1626ba7e;` — the shape that
+/// actually carries an ERC's magic values and selectors.
+///
+/// `value` is the right-hand side; `description` is the type and modifiers,
+/// which say whether a reader can rely on it (`public` vs `internal`).
+pub fn solidity_constants(content: &str) -> Vec<SpecConstant> {
+    let mut out = Vec::new();
+    for (_, lines) in solidity_fences(content) {
+        for line in lines {
+            let trimmed = line.trim();
+            let Some(body) = trimmed.strip_suffix(';') else {
+                continue;
+            };
+            let Some((decl, value)) = body.split_once('=') else {
+                continue;
+            };
+            // `constant` as its own word, so `constantProduct` never matches.
+            let mut words = decl.split_whitespace();
+            if !decl.split_whitespace().any(|w| w == "constant") {
+                continue;
+            }
+            let Some(name) = words.next_back().map(str::to_string) else {
+                continue;
+            };
+            let value = value.trim();
+            if name.is_empty() || value.is_empty() {
+                continue;
+            }
+            let modifiers: Vec<&str> = decl.split_whitespace().collect();
+            let description = modifiers
+                .split_last()
+                .map(|(_, head)| head.join(" "))
+                .filter(|d| !d.is_empty());
+            out.push(SpecConstant {
+                name,
+                value: value.to_string(),
+                description,
+            });
+        }
+    }
+    out
+}
+
+/// Walk back from `at` over a contiguous doc comment, returning the line to
+/// start the extracted block at. Handles `///`, `//`, and `/** … */` blocks;
+/// stops at the first line that is neither, so an unrelated statement above
+/// is never dragged in.
+fn doc_comment_start(lines: &[&str], at: usize) -> usize {
+    let mut from = at;
+    while from > 0 {
+        let above = lines[from - 1].trim();
+        let is_comment = above.starts_with("///")
+            || above.starts_with("//")
+            || above.starts_with("/*")
+            || above.starts_with('*')
+            || above.ends_with("*/");
+        if !is_comment {
+            break;
+        }
+        from -= 1;
+    }
+    from
+}
+
+/// Where a declaration beginning at `start` ends: the line carrying its
+/// terminating `;` for an interface declaration, or the line closing its body
+/// for a definition.
+///
+/// Brace-counted rather than assuming one line, because ERC fences wrap long
+/// parameter lists across many lines — erc-1271's `isValidSignature` spans
+/// seven. The scan is bounded by the fence, so a malformed block costs the
+/// rest of that fence and nothing else.
+fn declaration_end(lines: &[&str], start: usize) -> usize {
+    let mut depth = 0i32;
+    for (i, line) in lines.iter().enumerate().skip(start) {
+        for c in line.chars() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth <= 0 {
+                        return i + 1;
+                    }
+                }
+                ';' if depth == 0 => return i + 1,
+                _ => {}
+            }
+        }
+    }
+    lines.len()
 }
