@@ -427,7 +427,7 @@ cited answer in under ten minutes using only public docs. Note this is
 unreachable until M8 publishes a downloadable corpus — today the path
 runs through a multi-hour crawl.
 
-### [ ] M13 — Execution-layer and process sources
+### [x] M13 — Execution-layer and process sources
 
 Four sources that close the corpus's two biggest content gaps: the
 execution layer (today only the consensus layer has specs) and the
@@ -471,6 +471,50 @@ source degrading another.
 above and nothing else; the README table matches; eval questions exist
 for each source with their recall recorded; and `lookup_spec` answers an
 execution-layer identifier the way it answers a consensus-layer one.
+
+**Gate passed 2026-08-14.** The sources landed earlier; what was missing was
+the measurement, and the box stayed unticked until it existed. Ten questions
+added for the five sources that had none — `executionspecs`, `executionapis`,
+`pm`, `ercs`, `efblog` — which was roughly 30% of the corpus, so every recall
+number before this was a number about the other five.
+
+| set | lexical | fused |
+|---|---|---|
+| the original 23 | 0.370 | 0.424 |
+| the 10 new | 0.250 | **0.600** |
+| all 33 | 0.333 | 0.477 |
+
+The original 23 did not move by a single question, which is the check that
+matters here: widening `paths` re-titled all 1,046 execution-spec documents
+and dropped their vectors, and nothing regressed when they came back.
+
+Two things worth reading off this rather than just the mean:
+
+- **The new questions score *higher* than the old ones** (0.600 vs 0.424
+  fused). Prediction was the opposite. These sources are standalone
+  documents with little internal competition; the forums are 53k documents
+  arguing with each other, and that is where recall actually goes to die.
+- **The lexical/fused gap is the widest in the suite** (0.250 → 0.600). The
+  semantic arm is carrying these almost entirely, which is what one would
+  expect from natural-language questions whose answers are literals BM25
+  stems apart.
+
+Four score 0.00 fused, and each names a different real gap: the Cancun
+`SELFDESTRUCT` rule (24 near-identical fork copies competing), the
+`engine_newPayload` SYNCING response ("syncing" is overloaded corpus-wide),
+ERC-1271's `0x1626ba7e` (the answer is a 4-byte literal — neither arm can
+reach it, and it is a candidate for extending `lookup_spec` past constant
+tables into Solidity interface blocks), and ERC-2612 `permit` (drowned by
+the 4337/7702 account-abstraction volume).
+
+**Also done here: `paths` widened from `src/ethereum/forks` to
+`src/ethereum`.** The per-fork modules call helpers that sat outside the
+filter, so `lookup_spec` could show a function body naming an identifier the
+corpus could not resolve — `calculate_blob_gas_price` returns
+`taylor_exponential(...)`, which was invisible. 18 files, and the dead end is
+closed (verified: `lookup_spec taylor_exponential` now returns the body and a
+citation). The fingerprint guard from the refresh work did its job — same head
+SHA, changed config, so the tarball was re-downloaded rather than skipped.
 
 ---
 

@@ -213,3 +213,105 @@ expect = ["consensusspecs/specs/electra/beacon-chain"]
 question = "What is the weak subjectivity period and how is it computed?"
 # https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/weak-subjectivity.md
 expect = ["consensusspecs/specs/phase0/weak-subjectivity"]
+
+# ---------------------------------------------------------------------------
+# Added 2026-08-14 for the five sources that had no coverage at all:
+# executionspecs, executionapis, pm, ercs, efblog — roughly 30% of the corpus,
+# so every recall number before this was a number about the other five.
+#
+# Written from knowledge first, then each `expect` and each stated answer was
+# checked against the raw file under data/ rather than against search results.
+# That order matters: a question reverse-engineered from what already ranks
+# well measures nothing. It also caught two errors — the blob helper is
+# `taylor_exponential`, not EIP-4844's `fake_exponential`, and a planned
+# question about BPO3 was unanswerable ("BPO3" appears nowhere in the notes).
+#
+# Several of these are expected to score 0 on free-text retrieval. #3, #4 and
+# #7 are the shape lookup_spec exists for, and #5/#6 sit in 600 transcript
+# files of overlapping fork chatter. A low honest baseline is the point.
+# ---------------------------------------------------------------------------
+
+[[questions]]
+# EIP-6780. Forums discuss it endlessly; the rule is a three-line conditional.
+# Answer: no, unless created in the same transaction. Balance always moves;
+# deletion only if the account is in created_accounts; beneficiary ==
+# originator burns the ether.
+question = "If a contract calls SELFDESTRUCT after Cancun, is its storage actually deleted?"
+expect = ["executionspecs/src/ethereum/forks/cancun/vm/instructions/system.py"]
+
+[[questions]]
+# Answer: calculate_blob_gas_price -> taylor_exponential(BLOB_MIN_GASPRICE,
+# excess_blob_gas, BLOB_BASE_FEE_UPDATE_FRACTION) — an integer Taylor series,
+# because the spec cannot use floating point. The helper itself only became
+# reachable when `paths` widened to src/ethereum (see sources.toml).
+question = "How does the execution spec turn excess blob gas into a blob gas price?"
+expect = ["executionspecs/src/ethereum/forks/cancun/vm/gas.py"]
+
+[[questions]]
+# Answer: version-dependent, and they differ exactly where a reader would
+# guess wrong. getBlobsV1 returns null for the WHOLE request if any blob is
+# missing; V2 returns a same-length, same-order array with null only at the
+# missing positions. Both support >=128 hashes, else -38004 Too large request.
+question = "If I ask an execution client for blobs and it only has some of them, what do I get back?"
+expect = ["executionapis/src/engine/osaka"]
+
+[[questions]]
+# Answer: {status: SYNCING, latestValidHash: null, validationError: null}.
+# One line inside numbered spec prose, and "syncing" is overloaded corpus-wide.
+question = "What should a client return from engine_newPayload when it doesn't have the parent block yet?"
+expect = ["executionapis/src/engine/paris"]
+
+[[questions]]
+# Answer: raised by Sean Anderson on ACDC #150 (background #149) to raise blob
+# counts without a full fork; deprioritized because PeerDAS should already
+# give ~8x capacity, so BPO was to be revisited only if a gradual post-PeerDAS
+# increase turned out to be needed. ROADMAP records this as the nuance that
+# lives ONLY in these notes — the Aug 2026 client test could not answer it.
+question = "Where did the idea of blob-parameter-only forks come from, and why weren't they done straight away?"
+expect = [
+    "pm/AllCoreDevs-CL-Meetings/call_150",
+    "pm/AllCoreDevs-CL-Meetings/call_149",
+]
+
+[[questions]]
+# Answer: Geth, Nethermind and Besu had the wrong deposit contract address
+# configured for Holesky — it should be 0x4242...4242 and they used mainnet's
+# or none (falling back to 0x0000...0000). Reth and Erigon were correct. The
+# network then failed to finalize.
+question = "What actually went wrong when Pectra was activated on Holesky?"
+expect = ["pm/Network-Upgrade-Archive/Pectra/holesky-postmortem"]
+
+[[questions]]
+# Answer: ERC-1271 isValidSignature(bytes32,bytes), returning the magic value
+# 0x1626ba7e. The answer IS a 4-byte literal — FTS stems it apart and the
+# vector side has nothing to grip.
+question = "How does a smart contract wallet prove it approved something, when it has no private key?"
+expect = ["ercs/erc-1271"]
+
+[[questions]]
+# Answer: convertToShares and convertToAssets MUST both always round down
+# towards 0 — the spec names these as the only ambiguous case and fixes it for
+# cross-implementation consistency; round-up is left to integrators (+1 wei).
+question = "Which way does an ERC-4626 vault have to round, and where is it genuinely ambiguous?"
+expect = ["ercs/erc-4626"]
+
+[[questions]]
+# Answer: ERC-2612 permit; the EIP-712 domain separator commits to name,
+# version, chainId and verifyingContract, plus a per-owner nonce. Extra
+# credit: the spec warns that caching DOMAIN_SEPARATOR at deployment rather
+# than rebuilding it per signature reintroduces cross-chain replay risk on a
+# chain split.
+question = "How can someone approve an ERC-20 spend without sending a transaction, and what stops the signature being replayed elsewhere?"
+expect = ["ercs/erc-2612"]
+
+[[questions]]
+# Deliberately paired with the Holesky postmortem above: the decision record
+# is in pm, the announcement is in efblog, and answering well needs both.
+# Answer: Holesky never usefully recovered from the failed Pectra activation;
+# Hoodi replaced it for validator testing (Mar 2025) and Holesky was shut down
+# (Sep 2025).
+question = "Why was Holesky shut down, and what replaced it?"
+expect = [
+    "efblog/en/2025/03/18/hoodi-holesky",
+    "efblog/en/2025/09/01/holesky-shutdown-announcement",
+]

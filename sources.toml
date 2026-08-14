@@ -75,13 +75,29 @@ tier = "spec"
 # nothing new. Tracking the default branch needs no maintenance; sync logs
 # which branch that resolved to.
 #
-# paths excludes tests/ (2,694 files) and packages/ — only ~24% of this
-# repo's Python is spec.
+# paths is the whole of src/ethereum, which excludes tests/ (2,694 files)
+# and packages/ — only ~24% of this repo's Python is spec.
+#
+# Widened from src/ethereum/forks (2026-08-14) because the per-fork modules
+# call helpers that live beside them, and a spec function whose body names an
+# identifier the corpus cannot resolve is a dead end for lookup_spec:
+# `calculate_blob_gas_price` returns `taylor_exponential(...)`, which was in
+# src/ethereum/utils/numeric.py and therefore invisible. Also brings in
+# crypto/ (kzg, blake2, elliptic_curve — the precompiles) and the top-level
+# state.py, merkle_patricia_trie.py, and exceptions.py, all of which the fork
+# modules import constantly.
+#
+# Named as one directory rather than three because the files that matter most
+# sit loose at the top of src/ethereum/ and `paths` entries are directory
+# prefixes. `file_types = ["py"]` already drops assets/ and py.typed, so the
+# broader prefix costs ~17 files against 1,028 already ingested. The tradeoff
+# accepted: a new non-spec Python subtree under src/ethereum/ would be
+# ingested silently, where the old narrow prefix would have excluded it.
 id = "executionspecs"
 kind = "repo"
 url = "https://github.com/ethereum/execution-specs"
 branch = "default"
-paths = ["src/ethereum/forks"]
+paths = ["src/ethereum"]
 file_types = ["py"]
 doc_url = "https://github.com/ethereum/execution-specs/blob/HEAD/{path}"
 tier = "spec"
