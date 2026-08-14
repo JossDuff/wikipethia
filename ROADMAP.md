@@ -321,6 +321,42 @@ Open work items surfaced by that instrumentation, in value order:
    equally valid alternative source (the MAX_EB "modest proposal" thread
    instead of EIP-7251) score 0. Widening `expect` to source-sets would
    measure what a reader actually needs.
+3. **`lookup_spec` surface gaps** (both found 2026-08-14 by exercising the
+   tool and by M13's new eval questions — see below).
+
+### [ ] `lookup_spec` — Solidity interfaces, and collapsing per-fork duplicates
+
+Two independent gaps in the same tool. Neither needs new plumbing;
+`corpus-core/src/spec.rs` parses on demand and both are extensions to it.
+
+**1. It walks past Solidity fences.** `spec.rs` reads constant tables and
+Python fences, so the ERCs' magic values are unreachable: "what does
+`isValidSignature` return" scores **0.00 fused** in the eval set even though
+the answer — `0x1626ba7e` — is sitting in `ercs/erc-1271`. The answer *is* a
+4-byte literal, so neither retrieval arm can help: FTS stems it apart and the
+vector side has nothing to grip. This is the highest-value item of the two —
+611 ERC documents put their interfaces in Solidity fences, so it lights up a
+whole class of "what exactly do I return / what's the selector" questions that
+the corpus currently cannot answer at all.
+
+**2. It returns a dozen byte-identical bodies.** Measured: `lookup_spec
+calculate_base_fee_per_gas` with `fork = "cancun"` puts cancun first as
+designed and then emits **13 more copies of the same function**, identical
+down to the docstring, one per fork directory. For a spec-engineering client
+that is thousands of wasted tokens per lookup, on the source that has 24
+near-identical fork trees. Collapse identical bodies and name the forks that
+share one — *"identical in london, paris, shanghai, cancun, prague, osaka,
+bpo1–5, amsterdam, arrow_glacier, gray_glacier"* — which also makes genuine
+divergence **visible** instead of something the reader has to diff by eye.
+ROADMAP flagged the risk of this batch being spec-shaped; this is the shape it
+took.
+
+**Gate:** the ERC-1271 eval question stops scoring 0.00, and a `lookup_spec`
+call for an identifier the executable spec copies per fork returns one body
+per *distinct* implementation with its forks listed, not one per directory.
+Both are `eval`-measurable, so no `agent-eval` spend is needed to know whether
+they worked — though the token reduction on (2) is the kind of thing only
+`agent-eval` prices properly.
 
 ### [ ] M9 — Reranker
 
