@@ -41,17 +41,45 @@ pub struct RepoAdapter {
     pub dates: std::sync::OnceLock<HashMap<String, String>>,
 }
 
-/// "https://codeload.github.com/{owner}/{repo}/tar.gz/refs/heads/{branch}"
+/// The `branch` value that means "whatever this repo's default branch is",
+/// rather than a fixed name. Written in sources.toml as `branch = "default"`.
+///
+/// It exists for `ethereum/execution-specs`, which has no stable branch at
+/// all: it names its development branch after the fork in progress
+/// (`forks/amsterdam`), has no `master`/`main`, and its `mainnet` branch
+/// lags by months. A fixed pin there goes stale at every hard fork, and the
+/// failure is silent — the old branch keeps existing, so sync keeps
+/// succeeding while the corpus quietly stops learning anything new.
+pub const TRACK_DEFAULT: &str = "default";
+
+/// The git ref to fetch, as GitHub URLs want it. Tracking sources use
+/// `HEAD`, which GitHub resolves to the default branch for codeload
+/// tarballs, commit feeds, and blob URLs alike — so nothing has to be
+/// resolved ahead of time or persisted for the offline index step.
+fn git_ref(branch: &str) -> &str {
+    if branch == TRACK_DEFAULT { "HEAD" } else { branch }
+}
+
+/// "https://codeload.github.com/{owner}/{repo}/tar.gz/refs/heads/{branch}",
+/// or `tar.gz/HEAD` when tracking the default branch — `refs/heads/HEAD`
+/// is not a ref and 404s.
 fn tarball_url(repo_url: &str, branch: &str) -> String {
     let ownerrepo = repo_url
         .trim_start_matches("https://github.com/")
         .trim_end_matches('/');
-    format!("https://codeload.github.com/{ownerrepo}/tar.gz/refs/heads/{branch}")
+    match git_ref(branch) {
+        "HEAD" => format!("https://codeload.github.com/{ownerrepo}/tar.gz/HEAD"),
+        r => format!("https://codeload.github.com/{ownerrepo}/tar.gz/refs/heads/{r}"),
+    }
 }
 
 /// "https://github.com/{owner}/{repo}/commits/{branch}/{relpath}.atom"
 fn commits_atom_url(repo_url: &str, branch: &str, relpath: &str) -> String {
-    format!("{repo_url}/commits/{branch}/{}.atom", percent_encode_path(relpath))
+    format!(
+        "{repo_url}/commits/{}/{}.atom",
+        git_ref(branch),
+        percent_encode_path(relpath)
+    )
 }
 
 /// Percent-encode a repo-relative path for use in a URL, leaving the `/`
@@ -165,10 +193,14 @@ impl RepoAdapter {
         let Some(default) = json_string_field(&body, "default_branch") else {
             return;
         };
-        if default != self.branch {
+        if self.branch == TRACK_DEFAULT {
+            // No drift is possible — but say which branch that resolved to,
+            // so the sync log records what was actually ingested.
+            eprintln!("sync {}: tracking default branch {default:?}", self.source_id);
+        } else if default != self.branch {
             eprintln!(
                 "warn: {} pins branch {:?} but {}'s default is now {:?} — the pin may be \
-                 frozen; update sources.toml if upstream moved on",
+                 frozen; set `branch = \"default\"` to track it, or update the pin",
                 self.source_id, self.branch, self.repo_url, default
             );
         }
@@ -238,7 +270,9 @@ impl crate::Adapter for RepoAdapter {
         self.warn_if_branch_drifted(fetcher);
         eprintln!(
             "sync {}: downloading {} tarball ({})…",
-            self.source_id, self.branch, self.repo_url
+            self.source_id,
+            if self.branch == TRACK_DEFAULT { "default-branch" } else { &self.branch },
+            self.repo_url
         );
         let bytes = fetcher.get_bytes(&tarball_url(&self.repo_url, &self.branch))?;
         eprintln!(
@@ -776,6 +810,33 @@ mod tests {
         assert_eq!(parse_loose_date("14:00 UTC"), None);
         assert_eq!(parse_loose_date("2023/13/45"), None);
         assert_eq!(parse_loose_date(""), None);
+    }
+
+    #[test]
+    fn tracking_the_default_branch_uses_head_everywhere() {
+        // GitHub resolves HEAD to the default branch for codeload
+        // tarballs and commit feeds alike (verified against the live
+        // endpoints), so nothing has to be resolved before fetching.
+        assert_eq!(
+            tarball_url("https://github.com/ethereum/execution-specs", TRACK_DEFAULT),
+            "https://codeload.github.com/ethereum/execution-specs/tar.gz/HEAD"
+        );
+        assert_eq!(
+            commits_atom_url("https://github.com/ethereum/execution-specs", TRACK_DEFAULT, "src/a.py"),
+            "https://github.com/ethereum/execution-specs/commits/HEAD/src/a.py.atom"
+        );
+        // `refs/heads/HEAD` is not a ref — the tracking case must not go
+        // through the pinned-branch URL shape.
+        assert!(!tarball_url("https://github.com/o/r", TRACK_DEFAULT).contains("refs/heads"));
+        // Pinned branches are untouched, slashes and all.
+        assert_eq!(
+            tarball_url("https://github.com/ethereum/execution-specs", "forks/amsterdam"),
+            "https://codeload.github.com/ethereum/execution-specs/tar.gz/refs/heads/forks/amsterdam"
+        );
+        assert_eq!(
+            commits_atom_url("https://github.com/ethereum/pm", "master", "Meeting 1.md"),
+            "https://github.com/ethereum/pm/commits/master/Meeting%201.md.atom"
+        );
     }
 
     #[test]

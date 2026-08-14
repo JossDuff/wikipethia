@@ -136,28 +136,26 @@ differently, and only one of the three is a Discourse problem:
   updates, and one that scrolls out of the feed window is unreachable even
   in principle. Re-fetch when the feed's `<updated>` timestamp or content
   hash for an item changes.
-- **Repo — branch tracking.** `execution-specs` has no stable branch: it
-  names its development branch after the fork in progress
-  (`forks/amsterdam`), has no `master`/`main`, and its `mainnet` branch
-  lags by months. Every hard fork silently strands our pin — a
-  frozen-but-existing branch keeps syncing successfully while receiving
-  nothing new. M13 shipped a *warning* (one `api.github.com/repos/{o}/{r}`
-  request per sync, comparing `default_branch` against the pin), which
-  turns silence into a visible nudge but still needs a human.
+- **Repo — branch tracking. DONE (2026-08-14).** `execution-specs` has no
+  stable branch: it names its development branch after the fork in progress
+  (`forks/amsterdam`), has no `master`/`main`, and its `mainnet` branch lags
+  by months. A fixed pin went stale at every hard fork, silently — the old
+  branch keeps existing, so sync kept succeeding while the corpus quietly
+  stopped learning anything new.
 
-  The fix is to let a source opt into tracking: `branch = "default"`,
-  resolved per sync through that same API field. Two things must move
-  together, and the second is easy to miss — **`doc_url` hardcodes the
-  branch too**
-  (`.../blob/forks/amsterdam/{path}`), so auto-tracking without a
-  `{branch}` placeholder would leave every citation pointing at a stale
-  ref. Keep explicit pins the default: reproducibility is worth more for
-  repos that have a stable branch, and only execution-specs needs this.
+  `branch = "default"` now means "track the default branch". It maps to the
+  git ref `HEAD`, which GitHub resolves for codeload tarballs, commit feeds,
+  and blob URLs alike — verified against all three live endpoints. That
+  matters more than it sounds: because `HEAD` works in the *citation* URL
+  too (`.../blob/HEAD/{path}`), nothing has to be resolved before fetching
+  or persisted for the offline index step, which is what made this a
+  20-line change instead of a `{branch}`-placeholder plumbing job. Sync
+  still calls the repos API once, now only to log which branch `HEAD`
+  resolved to, so the log records what was actually ingested.
 
-  (GitHub also offers `api.github.com/repos/{o}/{r}/tarball` with no ref,
-  which serves the default branch directly — but it redirects and gives no
-  way to record *which* ref was fetched, so resolving the name first and
-  keeping the existing codeload URL is the better shape.)
+  Explicit pins remain the default for every other source: reproducibility
+  is worth more where a stable branch exists, and the drift warning still
+  fires for them.
 
 **Gate:** three checks, one per adapter kind — a reply posted to a known
 forum topic appears in search after the next scheduled run; an edited
