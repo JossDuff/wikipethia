@@ -46,10 +46,11 @@ sources.toml    the manifest — source of truth for what is in the corpus
 cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo run -p corpus-cli -- sync [--source <id>] [--limit N]    # no --source = all sources
+cargo run -p corpus-cli -- build [--source <id>]     # clone day: sync + index + embed
+cargo run -p corpus-cli -- update [--source <id>]    # same three stages, incrementally
+cargo run -p corpus-cli -- sync [--source <id>] [--limit N] [--full] [--force]
 cargo run -p corpus-cli -- index [--source <id>] [--force]
 cargo run -p corpus-cli -- embed [--force]
-cargo run -p corpus-cli -- refresh [--source <id>]   # sync + index + embed
 cargo run -p corpus-cli -- search "<query>" [--limit N]
 cargo run -p corpus-cli -- dedup [--threshold 0.95] [--source <id>]
 cargo run -p corpus-cli -- eval                      # retrieval: recall@10
@@ -57,6 +58,20 @@ cargo run -p corpus-cli -- agent-eval [--limit N] [--model haiku]
 cargo run -p corpus-cli -- agent-eval --regrade <dir>   # re-score, no spend
 cargo run -p corpus-mcp -- [--db <path>] [--http <addr> [--allow-host <name>]]
 ```
+
+`build` and `update` are the same pipeline; they differ in what they report,
+and `update` is the one meant for a timer. `refresh` is a kept alias for
+`update`. Every stage is incremental, so either is safe to run at any time.
+
+`sync --full` widens an incremental walk to every page; `sync --force`
+refetches regardless of what is on disk. Together they are the only way to
+see a post edited in place — that moves no upstream timestamp — and they
+cost what the first crawl cost. Not a routine.
+
+`index` and `embed` take an advisory lock on the database (a `meta` row).
+A second writer fails fast rather than interleaving: `chunks.id` has no
+`AUTOINCREMENT`, so rowid reuse can otherwise attach a vector to text it was
+not computed from, silently. Readers, including `corpus-mcp`, never take it.
 
 `agent-eval` spawns a headless Claude Code session per question and consumes
 real usage (API credit or plan allowance, depending on how the `claude` CLI

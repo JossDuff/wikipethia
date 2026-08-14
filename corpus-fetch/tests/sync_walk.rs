@@ -57,6 +57,75 @@ impl FakeFetcher {
     }
 }
 
+/// A forum of `pages` × 30 topics, every one of them last active on
+/// `bumped_at`, plus a topic payload for each so any of them can be fetched.
+///
+/// Built in code rather than committed because the interesting cases need
+/// more topics than the stop threshold (60), and sixty near-identical
+/// fixtures would say less than the loop that generates them.
+fn quiet_forum(pages: u32, bumped_at: &str) -> (FakeFetcher, Rc<RefCell<Vec<String>>>) {
+    let mut responses = HashMap::new();
+    responses.insert(
+        about_url(BASE),
+        serde_json::json!({"about": {"stats": {"topics_count": pages * 30}}}),
+    );
+    for page in 0..pages {
+        let topics: Vec<Value> = (0..30)
+            .map(|i| {
+                let id = page as u64 * 30 + i + 1000;
+                serde_json::json!({
+                    "id": id,
+                    "title": format!("Topic {id}"),
+                    "posts_count": 1,
+                    "highest_post_number": 1,
+                    "bumped_at": bumped_at,
+                    "last_posted_at": bumped_at,
+                    "pinned": false,
+                })
+            })
+            .collect();
+        for topic in &topics {
+            let id = topic["id"].as_u64().unwrap();
+            responses.insert(
+                topic_url(BASE, id),
+                serde_json::json!({
+                    "id": id,
+                    "title": format!("Topic {id}"),
+                    "posts_count": 1,
+                    "highest_post_number": 1,
+                    "last_posted_at": bumped_at,
+                    "post_stream": {
+                        "stream": [id * 10],
+                        "posts": [{
+                            "id": id * 10, "post_type": 1, "post_number": 1,
+                            "username": "a", "created_at": bumped_at, "raw": "hi"
+                        }]
+                    }
+                }),
+            );
+        }
+        let more = (page + 1 < pages).then(|| format!("/latest?page={}", page + 1));
+        responses.insert(
+            latest_url(BASE, page),
+            serde_json::json!({"topic_list": {"more_topics_url": more, "topics": topics}}),
+        );
+    }
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let fetcher = FakeFetcher {
+        responses,
+        requests: Rc::clone(&requests),
+    };
+    (fetcher, requests)
+}
+
+fn pages_requested(requests: &Rc<RefCell<Vec<String>>>) -> usize {
+    requests
+        .borrow()
+        .iter()
+        .filter(|u| u.contains("/latest.json"))
+        .count()
+}
+
 impl Fetcher for FakeFetcher {
     fn get_json(&mut self, url: &str) -> Result<Value, FetchError> {
         self.requests.borrow_mut().push(url.to_string());
@@ -79,9 +148,12 @@ impl Fetcher for FakeFetcher {
 
 fn opts(dir: &Path, limit: Option<usize>) -> SyncOptions {
     SyncOptions {
+        source_id: "testforum".into(),
         base_url: BASE.to_string(),
         data_dir: dir.to_path_buf(),
         limit,
+        full: false,
+        force: false,
     }
 }
 
@@ -213,4 +285,199 @@ fn an_empty_topics_page_terminates_the_walk() {
     };
     let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
     assert_eq!(stats, corpus_fetch::SyncStats::default());
+}
+
+// ---------------------------------------------------------------------------
+// Incrementality: what the walk does on the second and every later run.
+//
+// Before the checkpoint existed, a topic file on disk answered both "do I
+// have this?" and "is it current?" — so a thread was frozen at first fetch no
+// matter how many replies it gained. These cover the new answer to the second
+// question, and the cost of asking it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_reply_to_a_stored_topic_is_refetched_next_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut fetcher, _) = FakeFetcher::for_forum();
+    sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+
+    // Someone replies to 426: the listing's counters move, and (as on the
+    // live forum) the topic payload's move with them.
+    let (mut fetcher, requests) = FakeFetcher::for_forum();
+    let bump = |topic: &mut Value| {
+        topic["posts_count"] = serde_json::json!(7);
+        topic["highest_post_number"] = serde_json::json!(10);
+        topic["last_posted_at"] = serde_json::json!("2026-08-14T00:00:00.000Z");
+    };
+    let mut page0 = fixture("latest_page_0.json");
+    bump(&mut page0["topic_list"]["topics"][0]);
+    fetcher.responses.insert(latest_url(BASE, 0), page0);
+    let mut topic = fixture("topic_426.json");
+    bump(&mut topic);
+    fetcher.responses.insert(topic_url(BASE, 426), topic);
+
+    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    assert_eq!(stats.updated, 1, "426 gained a reply");
+    assert_eq!(stats.fetched, 0, "nothing is new");
+    assert_eq!(stats.skipped, 2, "the other two are untouched");
+    assert!(
+        requests.borrow().iter().any(|u| u.contains("/t/426")),
+        "the changed topic must be refetched"
+    );
+    assert!(
+        !requests.borrow().iter().any(|u| u.contains("/t/7095")),
+        "an unchanged topic must not be"
+    );
+    assert_eq!(read_topic(dir.path(), 426)["posts_count"], 7);
+}
+
+#[test]
+fn an_incremental_walk_stops_once_it_is_reading_old_news() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut fetcher, _) = quiet_forum(10, "2026-01-01T00:00:00.000Z");
+    sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+
+    // Nothing has happened since. The walk must give up early rather than
+    // page through all ten — that difference is ~236 pages per run on the
+    // real forums.
+    let (mut fetcher, requests) = quiet_forum(10, "2026-01-01T00:00:00.000Z");
+    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    assert!(stats.stopped_early, "the checkpoint must end the walk");
+    assert_eq!(stats.fetched, 0);
+    assert_eq!(stats.updated, 0);
+    assert_eq!(
+        pages_requested(&requests),
+        2,
+        "60 quiet topics is two pages' worth, and then it stops"
+    );
+}
+
+#[test]
+fn a_pinned_topic_at_the_top_does_not_end_the_walk() {
+    let dir = tempfile::tempdir().unwrap();
+    // Page 0 opens with a pinned announcement that has been stale for years —
+    // the live shape of ethresear.ch, where topic 8 sits above everything.
+    // Counting it toward the stop would end every walk at its first entry.
+    let (mut fetcher, _) = quiet_forum(3, "2026-01-01T00:00:00.000Z");
+    let mut page0 = fetcher.responses[&latest_url(BASE, 0)].clone();
+    page0["topic_list"]["topics"][0]["pinned"] = serde_json::json!(true);
+    page0["topic_list"]["topics"][0]["bumped_at"] = serde_json::json!("2017-08-17T22:57:31.812Z");
+    fetcher.responses.insert(latest_url(BASE, 0), page0.clone());
+    sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+
+    let (mut fetcher, requests) = quiet_forum(3, "2026-06-01T00:00:00.000Z");
+    fetcher.responses.insert(latest_url(BASE, 0), page0);
+    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    assert!(
+        pages_requested(&requests) > 1,
+        "the walk must get past the pinned entry, got {} page(s)",
+        pages_requested(&requests)
+    );
+    assert!(stats.updated > 0, "the genuinely newer topics were reached");
+}
+
+#[test]
+fn an_interrupted_walk_leaves_the_checkpoint_unadvanced() {
+    let dir = tempfile::tempdir().unwrap();
+    // --limit sees an arbitrary prefix of the listing. Recording its
+    // high-water mark would tell the next run that everything below is
+    // covered, when the walk never reached it.
+    let (mut fetcher, _) = quiet_forum(4, "2026-01-01T00:00:00.000Z");
+    sync(&mut fetcher, &opts(dir.path(), Some(5))).unwrap();
+    assert!(
+        !dir.path().join("sync.json").exists(),
+        "a capped run has not covered the listing and must claim nothing"
+    );
+
+    // Proof it matters: the next uncapped run still reaches everything.
+    let (mut fetcher, _) = quiet_forum(4, "2026-01-01T00:00:00.000Z");
+    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    assert_eq!(stats.fetched, 115, "the 115 topics the capped run never saw");
+    assert!(dir.path().join("sync.json").exists());
+}
+
+#[test]
+fn an_unreadable_checkpoint_degrades_to_a_full_walk() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut fetcher, _) = quiet_forum(3, "2026-01-01T00:00:00.000Z");
+    sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    fs::write(dir.path().join("sync.json"), "{ truncated").unwrap();
+
+    // Failing safe means doing more work, never less: a checkpoint that
+    // cannot be read must not be believed.
+    let (mut fetcher, requests) = quiet_forum(3, "2026-01-01T00:00:00.000Z");
+    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    assert!(!stats.stopped_early);
+    assert_eq!(pages_requested(&requests), 3, "every page is walked again");
+    assert_eq!(stats.skipped, 90, "but nothing is refetched");
+}
+
+#[test]
+fn full_widens_the_walk_and_force_refetches_what_it_finds() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut fetcher, _) = quiet_forum(3, "2026-01-01T00:00:00.000Z");
+    sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+
+    // --full alone: every page is read, nothing is refetched. This is the
+    // sweep for a topic the incremental walk would never reach.
+    let (mut fetcher, requests) = quiet_forum(3, "2026-01-01T00:00:00.000Z");
+    let full = SyncOptions {
+        full: true,
+        ..opts(dir.path(), None)
+    };
+    let stats = sync(&mut fetcher, &full).unwrap();
+    assert_eq!(pages_requested(&requests), 3);
+    assert_eq!(stats.skipped, 90);
+    assert_eq!(stats.updated, 0);
+
+    // --force as well: the recovery path for posts edited in place, which
+    // move none of the counters the staleness check can see.
+    let (mut fetcher, _) = quiet_forum(3, "2026-01-01T00:00:00.000Z");
+    let sweep = SyncOptions {
+        full: true,
+        force: true,
+        ..opts(dir.path(), None)
+    };
+    let stats = sync(&mut fetcher, &sweep).unwrap();
+    assert_eq!(stats.updated, 90, "every topic rewritten from upstream");
+    assert_eq!(stats.skipped, 0);
+}
+
+#[test]
+fn a_null_in_the_listing_does_not_abort_the_walk() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut fetcher, _) = FakeFetcher::for_forum();
+    // `#[serde(default)]` covers an absent key, not a present null — and a
+    // null in a non-Option field fails the whole page, taking the forum's
+    // entire sync with it.
+    let mut page0 = fixture("latest_page_0.json");
+    page0["topic_list"]["topics"][0]["highest_post_number"] = Value::Null;
+    page0["topic_list"]["topics"][0]["pinned"] = Value::Null;
+    page0["topic_list"]["topics"][0]["last_posted_at"] = Value::Null;
+    fetcher.responses.insert(latest_url(BASE, 0), page0);
+
+    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    assert_eq!(stats.fetched, 3, "every topic still landed");
+}
+
+#[test]
+fn a_stored_topic_with_a_null_timestamp_is_not_refetched_for_ever() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut fetcher, _) = FakeFetcher::for_forum();
+    sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+
+    // A parse failure counts as stale, so a null here would mean one topic
+    // refetched on every run from now on — spending the rate limit silently,
+    // since each refetch looks like ordinary work.
+    let path = dir.path().join("topics/426.json");
+    let mut stored: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    stored["last_posted_at"] = Value::Null;
+    fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+
+    let (mut fetcher, requests) = FakeFetcher::for_forum();
+    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    assert_eq!(stats.updated, 0, "a null timestamp is unknown, not ancient");
+    assert!(!requests.borrow().iter().any(|u| u.contains("/t/426")));
+    assert_eq!(stats.skipped, 3);
 }

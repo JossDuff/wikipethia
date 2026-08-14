@@ -15,4 +15,4 @@ pub use client::{Clock, HttpClient, RealClock};
 pub use error::FetchError;
 pub use feed::FeedAdapter;
 pub use repo::{RepoAdapter, TRACK_DEFAULT};
-pub use sync::{Fetcher, SyncOptions, SyncStats, sync, sync_topic};
+pub use sync::{Fetcher, SyncIntent, SyncOptions, SyncState, SyncStats, sync, sync_topic};

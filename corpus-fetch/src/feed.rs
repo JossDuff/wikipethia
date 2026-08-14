@@ -15,7 +15,16 @@ use serde_json::{Map, Value, json};
 
 use crate::error::FetchError;
 use crate::html::html_to_text;
-use crate::sync::{Fetcher, SyncStats, progress_note, write_atomic, write_atomic_bytes};
+use crate::sync::{
+    Fetcher, SyncIntent, SyncStats, progress_note, write_atomic, write_atomic_bytes,
+};
+
+/// How far down a feed a routine sync looks for edits. Feeds are newest
+/// first, so this is "the newest N articles".
+///
+/// Corrections land within days of publication; an article untouched for a
+/// year is not about to change. `--full` covers the rest when it matters.
+const RECHECK_RECENT: usize = 30;
 use crate::xml;
 
 pub struct FeedAdapter {
@@ -168,11 +177,27 @@ impl crate::Adapter for FeedAdapter {
         Ok(paths)
     }
 
-    fn sync(
-        &self,
-        fetcher: &mut dyn Fetcher,
-        limit: Option<usize>,
-    ) -> Result<SyncStats, FetchError> {
+    /// Re-derive recent items and write only what changed.
+    ///
+    /// The old rule — a file on disk means done — meant an article corrected
+    /// after publication kept its first version forever. There is no cheaper
+    /// signal to use instead: `items` parses RSS 2.0, and neither real feed
+    /// carries a per-item `updated`, so the content itself is the only thing
+    /// that can be compared.
+    ///
+    /// For a feed whose descriptions are teasers that means one request per
+    /// item compared, and **both real feeds turn out to be full archives
+    /// rather than truncated windows** — 632 items for the EF blog, 174 for
+    /// vitalik.eth.limo. Comparing every one of them is free for the first
+    /// (its descriptions carry the whole article) and three minutes of
+    /// rate-limited fetching for the second, on every run, for ever.
+    ///
+    /// So a routine sync compares the newest [`RECHECK_RECENT`] items, where
+    /// corrections realistically land, and `--full` compares the lot. An item
+    /// with no local copy is always fetched wherever it sits in the feed, so
+    /// this bounds edit detection only — never discovery.
+    fn sync(&self, fetcher: &mut dyn Fetcher, opts: &SyncIntent) -> Result<SyncStats, FetchError> {
+        let limit = opts.limit;
         let feed_xml = fetcher.get_text(&self.feed_url)?;
         fs::create_dir_all(self.data_dir.join("posts")).map_err(|source| FetchError::Io {
             path: self.data_dir.join("posts"),
@@ -185,8 +210,8 @@ impl crate::Adapter for FeedAdapter {
         let started = Instant::now();
         let mut stats = SyncStats::default();
         let mut failed = 0usize;
-        for item in items {
-            if limit.is_some_and(|l| stats.fetched + stats.skipped >= l) {
+        for (position, item) in items.into_iter().enumerate() {
+            if limit.is_some_and(|l| stats.processed() >= l) {
                 break;
             }
             let link = rebase(&self.feed_url, &item.link);
@@ -196,10 +221,36 @@ impl crate::Adapter for FeedAdapter {
                 continue;
             }
             let dest = self.data_dir.join("posts").join(format!("{slug}.json"));
-            if dest.exists() {
+            let known = dest.exists();
+            // Deep in a full archive, already stored, and comparing it would
+            // cost a request: leave it alone. This is what keeps a routine
+            // sync from re-reading years of articles to find corrections
+            // nobody made.
+            //
+            // The `is_full_content` clause matters — for a feed that carries
+            // whole articles in its descriptions (the EF blog) the corrected
+            // text is already in the XML just parsed, so comparing costs
+            // nothing and there is no reason to go on serving stale text.
+            // Position alone would have skipped it anyway.
+            let needs_a_request = !item.description.as_deref().is_some_and(is_full_content);
+            if known
+                && needs_a_request
+                && !opts.full
+                && !opts.force
+                && position >= RECHECK_RECENT
+            {
                 stats.skipped += 1;
                 continue;
             }
+            // The stored wrapper is the comparison basis — no sidecar state,
+            // and an unparseable one simply reads as absent and gets rewritten.
+            let stored: Option<Value> = if opts.force {
+                None
+            } else {
+                fs::read_to_string(&dest)
+                    .ok()
+                    .and_then(|text| serde_json::from_str(&text).ok())
+            };
             // Full-content descriptions (EF-blog style) save a fetch; teaser
             // or empty descriptions (vitalik style) need the page itself.
             // The rebased URL is tried first (feeds outlive their domains);
@@ -231,24 +282,35 @@ impl crate::Adapter for FeedAdapter {
             let Some((html, final_url)) = fetched else {
                 continue;
             };
-            write_atomic(
-                &dest,
-                &json!({
-                    "title": item.title,
-                    "url": final_url,
-                    "published": item.published.clone().unwrap_or_default(),
-                    "author": item.author,
-                    "html": html,
-                }),
-            )?;
+            let wrapper = json!({
+                "title": item.title,
+                "url": final_url,
+                "published": item.published.clone().unwrap_or_default(),
+                "author": item.author,
+                "html": html,
+            });
+            // Compare the whole wrapper, not just the article body: a
+            // corrected title, a fixed byline, and a re-dated post are all
+            // edits the corpus should pick up, and they cost nothing extra
+            // to notice here.
+            if stored.as_ref() == Some(&wrapper) {
+                stats.skipped += 1;
+                continue;
+            }
+            write_atomic(&dest, &wrapper)?;
             if item.published.is_none() {
                 // Empty published silently breaks the "weigh the dates"
                 // retrieval invariant — make it visible at sync time.
                 eprintln!("warn: {slug} has no usable pubDate — published will be empty");
             }
-            stats.fetched += 1;
+            if known {
+                stats.updated += 1;
+            } else {
+                stats.fetched += 1;
+            }
             eprintln!(
-                "fetch {slug}{}",
+                "{} {slug}{}",
+                if known { "update" } else { "fetch " },
                 progress_note(Some(total), &stats, started.elapsed())
             );
         }

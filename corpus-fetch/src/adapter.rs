@@ -14,7 +14,7 @@ use corpus_core::{CoreError, Document};
 use serde_json::Value;
 
 use crate::error::FetchError;
-use crate::sync::{Fetcher, SyncOptions, SyncStats, sync, sync_topic};
+use crate::sync::{Fetcher, SyncIntent, SyncOptions, SyncStats, sync, sync_topic};
 
 pub trait Adapter {
     /// Raw files on disk ready to parse, sorted for deterministic indexing.
@@ -22,8 +22,16 @@ pub trait Adapter {
     fn raw_files(&self) -> Result<Vec<PathBuf>, FetchError>;
 
     /// Fetch (or refresh) the source's raw material to disk, resumably.
-    fn sync(&self, fetcher: &mut dyn Fetcher, limit: Option<usize>)
-    -> Result<SyncStats, FetchError>;
+    ///
+    /// `opts` carries the caller's intent, not the source's mechanics: how
+    /// much to look at (`limit`, `full`) and whether to trust what is already
+    /// on disk (`force`). What each kind does with that is its own business —
+    /// a repo has no listing to widen, so `full` means nothing to it.
+    fn sync(
+        &self,
+        fetcher: &mut dyn Fetcher,
+        opts: &SyncIntent,
+    ) -> Result<SyncStats, FetchError>;
 
     /// Parse one raw file into documents. The default reads the file as
     /// JSON and delegates to [`Adapter::parse`]; kinds whose raw files are
@@ -54,11 +62,14 @@ pub struct DiscourseAdapter {
 }
 
 impl DiscourseAdapter {
-    fn options(&self, limit: Option<usize>) -> SyncOptions {
+    fn options(&self, intent: &SyncIntent) -> SyncOptions {
         SyncOptions {
+            source_id: self.source_id.clone(),
             base_url: self.base_url.clone(),
             data_dir: self.data_dir.clone(),
-            limit,
+            limit: intent.limit,
+            full: intent.full,
+            force: intent.force,
         }
     }
 
@@ -67,8 +78,13 @@ impl DiscourseAdapter {
         &self,
         fetcher: &mut dyn Fetcher,
         topic_id: u64,
+        force: bool,
     ) -> Result<SyncStats, FetchError> {
-        sync_topic(fetcher, &self.options(None), topic_id)
+        let intent = SyncIntent {
+            force,
+            ..SyncIntent::default()
+        };
+        sync_topic(fetcher, &self.options(&intent), topic_id)
     }
 }
 
@@ -87,12 +103,8 @@ impl Adapter for DiscourseAdapter {
         Ok(paths)
     }
 
-    fn sync(
-        &self,
-        fetcher: &mut dyn Fetcher,
-        limit: Option<usize>,
-    ) -> Result<SyncStats, FetchError> {
-        sync(fetcher, &self.options(limit))
+    fn sync(&self, fetcher: &mut dyn Fetcher, opts: &SyncIntent) -> Result<SyncStats, FetchError> {
+        sync(fetcher, &self.options(opts))
     }
 
     fn parse(&self, raw: &Value) -> Result<Vec<Document>, CoreError> {
