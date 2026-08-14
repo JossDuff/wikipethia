@@ -310,19 +310,31 @@ client test:
   immediately found what it was built to find: **citation dropout**, below.
 - No install story, no health/diagnostics surface, no adopter docs.
 
-Open work items surfaced by that instrumentation, in value order:
+Open work items surfaced by that instrumentation, **re-ordered 2026-08-14
+after the opus run below**:
 
-1. **Citation dropout** (from M11's baseline): some answers use the tools
-   correctly and then cite nothing — FOCIL and the `lookup_spec` questions
-   score 0 not because retrieval failed but because the answer carried no
-   URL. An instructions-layer fix, and the cheapest measurable win
-   available: edit, then `agent-eval --limit --model haiku` for cents.
-2. **Single-doc expects understate the agent layer**: answers citing an
-   equally valid alternative source (the MAX_EB "modest proposal" thread
-   instead of EIP-7251) score 0. Widening `expect` to source-sets would
-   measure what a reader actually needs.
-3. **`lookup_spec` surface gaps** (both found 2026-08-14 by exercising the
-   tool and by M13's new eval questions — see below).
+1. **Single-doc expects understate the agent layer.** Now the top item, and
+   the evidence is no longer anecdotal: of the eight questions scoring 0.00
+   strict on opus, **all eight cited real, on-topic sources — just not the
+   ones named in `expect`**, and none of the eight is a retrieval or
+   citation failure. Read individually: "Why does Ethereum have blobs?"
+   cited EIP-4844 itself and Vitalik's blobs post where the expect names the
+   EthMagicians thread; PeerDAS cited EIP-7594, `fulu/das-core.md` and the
+   Fusaka announcement where the expect names the 2023 design post; "lean
+   Ethereum" cited the EF blog announcement. In several of these the model's
+   sourcing is arguably *better* than the expect. Widening `expect` to
+   source-sets is the single change that would make this suite measure what a
+   reader needs.
+2. ~~**Citation dropout**~~ — **did not reproduce, 2026-08-14.** M11 found
+   answers that used the tools correctly and then cited nothing. On the opus
+   run, **0 of 33 answers carried zero URLs**; the eight zero-scorers cited
+   between 3 and 21 each. Nothing was done to fix this between M11 and now,
+   so the most likely explanation is that dropout was a property of the model
+   M11 measured (sonnet) rather than an instructions-layer gap. Worth
+   re-checking if a cheaper model is ever the default; not worth an
+   instructions edit aimed at a symptom that is not currently present.
+3. **`lookup_spec` surface gaps** — Solidity fences **done** 2026-08-14 (see
+   below); collapsing per-fork duplicates still open.
 
 ### [ ] `lookup_spec` — Solidity interfaces, and collapsing per-fork duplicates
 
@@ -469,6 +481,40 @@ retrieval eval as new cases.
 
 **Gate:** the harness runs over questions.toml, emits a per-question
 report, and a baseline is recorded alongside the retrieval numbers.
+
+**Second baseline — opus, 33 questions, 2026-08-14, $16.66, 0 failures.**
+
+| set | strict | thread |
+|---|---|---|
+| all 33 | **0.693** | **0.709** |
+| the original 23 | 0.603 | 0.627 |
+| ↳ same 23 on sonnet (M11) | 0.298 | 0.312 |
+| the 10 added at M13 | 0.900 | 0.900 |
+
+The middle two rows are the only clean comparison in the table — same
+questions, same corpus-shaped harness, different model — and the score
+**doubles**. Read that as a caution about the M11 baseline rather than a
+victory: 0.298 was substantially a statement about sonnet, and any future
+number needs its model named beside it.
+
+The 0.900 on the M13 additions is the sharpest divergence this suite has
+produced. The same ten questions score **0.600 fused on retrieval**, and all
+four that score 0.00 there come back at 1.00 here — Cancun `SELFDESTRUCT`,
+`engine_newPayload`'s SYNCING reply, ERC-1271's magic value, and ERC-2612
+`permit`. Two got there via `lookup_spec` (the ERC-1271 session called it on
+`isValidSignature` directly), two by reformulating into `search_posts`. This
+is the divergence CLAUDE.md says is information, not contradiction, and it is
+the strongest evidence yet that low retrieval recall on a spec identifier is a
+ranking artefact rather than a corpus gap.
+
+One inversion, worth keeping because it is self-inflicted: "how does the
+execution spec turn excess blob gas into a blob gas price" scores **1.00
+fused on retrieval and 0.00 here** — the answer cited EIP-4844, EIP-7691, and
+`src/ethereum/utils/numeric.py`, the file the same day's `paths` widening made
+citable, rather than the single `cancun/vm/gas.py` the expect names. The better
+answer scored zero. Exhibit A for item 1 above.
+
+`lookup_spec` was reached for in 9 of 33 sessions.
 
 ### [ ] M12 — Adoption kit
 
