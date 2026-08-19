@@ -214,3 +214,66 @@ fn delete_document_removes_docs_chunks_and_search_hits() {
     assert!(store.get("ethresearch/b").unwrap().is_some());
     assert!(!store.delete_document("ethresearch/a").unwrap());
 }
+
+/// The pipeline-safety invariant: **no vector may outlive the chunk content
+/// it was computed from.**
+///
+/// The hazard is rowid aliasing, not a missing row. `chunks.id` has no
+/// `AUTOINCREMENT`, so a delete-then-reinsert hands the same rowid to
+/// different text — and `embed` is slow enough for a concurrent `index` to do
+/// exactly that between reading a chunk and writing its vector. A write keyed
+/// on rowid alone then attaches the vector to text it does not describe, with
+/// no error anywhere: semantic search simply returns confidently wrong
+/// neighbours for ever.
+///
+/// This asserts the reuse actually happens before checking the guard, so the
+/// test cannot quietly degrade into "we wrote to a rowid that was gone".
+#[test]
+fn a_vector_cannot_outlive_the_chunk_content_it_was_computed_from() {
+    use corpus_core::store::EmbeddedChunk;
+
+    let mut store = Store::open_in_memory().unwrap();
+    store.ensure_embedding_space("fake", 4, false).unwrap();
+
+    let mut original = doc("racy");
+    original.content = format!("the original text. {}", "padding to clear the floor. ".repeat(10));
+    store.upsert(std::slice::from_ref(&original)).unwrap();
+
+    // What `embed` would read, then spend minutes turning into a vector.
+    let read = store.chunks_missing_embedding(64).unwrap();
+    assert_eq!(read.len(), 1);
+    let rowid = read[0].rowid;
+    let content_when_read = read[0].content.clone();
+
+    // Meanwhile `index --force` rewrites the document: chunks deleted and
+    // reinserted, and SQLite reuses the freed rowid for different text.
+    let mut edited = original.clone();
+    edited.content = format!("completely different text. {}", "other padding here. ".repeat(10));
+    store.upsert_forced(std::slice::from_ref(&edited)).unwrap();
+
+    let after = store.chunks_missing_embedding(64).unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].rowid, rowid, "the rowid must be reused — otherwise this test proves nothing");
+    assert_ne!(after[0].content, content_when_read);
+
+    // The stale vector is refused rather than silently misattached.
+    let stale = vec![EmbeddedChunk {
+        rowid,
+        content: &content_when_read,
+        vector: vec![1.0, 0.0, 0.0, 0.0],
+    }];
+    assert_eq!(store.write_embeddings(&stale).unwrap(), 0);
+    assert_eq!(store.embedding_count().unwrap(), 0);
+    // Still missing, so the next pass re-reads the current text: self-healing.
+    assert_eq!(store.missing_embedding_count().unwrap(), 1);
+
+    // And the vector for the text that IS there lands normally.
+    let fresh = vec![EmbeddedChunk {
+        rowid: after[0].rowid,
+        content: &after[0].content,
+        vector: vec![0.0, 1.0, 0.0, 0.0],
+    }];
+    assert_eq!(store.write_embeddings(&fresh).unwrap(), 1);
+    assert_eq!(store.embedding_count().unwrap(), 1);
+    assert_eq!(store.missing_embedding_count().unwrap(), 0);
+}

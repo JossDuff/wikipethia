@@ -142,6 +142,27 @@ fn is_full_content(description: &str) -> bool {
     description.len() > 1000 && (description.contains("<p") || description.contains("<div"))
 }
 
+/// Whether this run will look at an item at all, as opposed to leaving a
+/// stored copy alone because comparing it would cost a request nobody asked
+/// for. The single home of the skip rule: the sync loop and the progress
+/// denominator both read it, so they cannot drift into disagreeing about how
+/// much work a run contains.
+///
+/// Never skips an item with no local copy — discovery is unbounded at any
+/// depth in the feed, and only edit detection is windowed.
+fn will_examine(
+    known: bool,
+    has_full_content: bool,
+    position: usize,
+    opts: &SyncIntent,
+) -> bool {
+    // A full-content description carries any correction in the XML already
+    // parsed, so comparing it costs nothing and there is no reason to go on
+    // serving stale text. Neither real feed does this today (see `sync`).
+    let needs_a_request = !has_full_content;
+    !(known && needs_a_request && !opts.full && !opts.force && position >= RECHECK_RECENT)
+}
+
 /// Rebase an item link onto the feed's own origin. Feeds that moved domains
 /// keep emitting legacy hostnames (vitalik.ca is dead DNS; the live site is
 /// vitalik.eth.limo) — the feed's origin is the one address we know is
@@ -187,10 +208,18 @@ impl crate::Adapter for FeedAdapter {
     ///
     /// For a feed whose descriptions are teasers that means one request per
     /// item compared, and **both real feeds turn out to be full archives
-    /// rather than truncated windows** — 632 items for the EF blog, 174 for
-    /// vitalik.eth.limo. Comparing every one of them is free for the first
-    /// (its descriptions carry the whole article) and three minutes of
-    /// rate-limited fetching for the second, on every run, for ever.
+    /// rather than truncated windows** — 634 items for the EF blog, 174 for
+    /// vitalik.eth.limo. Comparing every one of them would be minutes of
+    /// rate-limited fetching on every run, for ever.
+    ///
+    /// **Both** feeds, measured 2026-08-19: an earlier version of this comment
+    /// claimed the EF blog's descriptions carried whole articles and that
+    /// comparing it was therefore free. They do not — all 634 are ~330-char
+    /// teasers, so [`is_full_content`] fires for neither real feed today and
+    /// the EF blog costs the same 30 requests per routine sync that vitalik
+    /// does. The branch is kept because it is a property of the feed, not of
+    /// the adapter, and a feed that starts serving full content should stop
+    /// costing requests the moment it does.
     ///
     /// So a routine sync compares the newest [`RECHECK_RECENT`] items, where
     /// corrections realistically land, and `--full` compares the lot. An item
@@ -206,9 +235,34 @@ impl crate::Adapter for FeedAdapter {
         write_atomic_bytes(&self.data_dir.join("feed.xml"), feed_xml.as_bytes())?;
 
         let items = items(&feed_xml);
-        let total = items.len() as u64;
+        let posts_dir = self.data_dir.join("posts");
+        // How many items this run will actually look at — the feed's length
+        // is the wrong denominator for a routine sync, which examines the
+        // newest RECHECK_RECENT plus whatever it has never seen and leaves
+        // the rest untouched. Feeding `progress_note` the full 634 made it
+        // project the observed pace across ~600 items that were about to be
+        // skipped in microseconds: "~1h36m left" for ~11s of real work.
+        // One `stat` per item, no requests.
+        let planned = items
+            .iter()
+            .enumerate()
+            .filter(|(position, item)| {
+                let slug = slug(&rebase(&self.feed_url, &item.link));
+                !slug.is_empty()
+                    && will_examine(
+                        posts_dir.join(format!("{slug}.json")).exists(),
+                        item.description.as_deref().is_some_and(is_full_content),
+                        *position,
+                        opts,
+                    )
+            })
+            .count() as u64;
         let started = Instant::now();
         let mut stats = SyncStats::default();
+        // Skips of items this run actually compared, as opposed to the
+        // out-of-window ones it declined to look at. Only the former belong
+        // in the progress numerator, or it would climb past `planned`.
+        let mut examined_skips = 0usize;
         let mut failed = 0usize;
         for (position, item) in items.into_iter().enumerate() {
             if limit.is_some_and(|l| stats.processed() >= l) {
@@ -220,25 +274,14 @@ impl crate::Adapter for FeedAdapter {
                 eprintln!("skip: unusable link {link:?}");
                 continue;
             }
-            let dest = self.data_dir.join("posts").join(format!("{slug}.json"));
+            let dest = posts_dir.join(format!("{slug}.json"));
             let known = dest.exists();
-            // Deep in a full archive, already stored, and comparing it would
-            // cost a request: leave it alone. This is what keeps a routine
-            // sync from re-reading years of articles to find corrections
-            // nobody made.
-            //
-            // The `is_full_content` clause matters — for a feed that carries
-            // whole articles in its descriptions (the EF blog) the corrected
-            // text is already in the XML just parsed, so comparing costs
-            // nothing and there is no reason to go on serving stale text.
-            // Position alone would have skipped it anyway.
-            let needs_a_request = !item.description.as_deref().is_some_and(is_full_content);
-            if known
-                && needs_a_request
-                && !opts.full
-                && !opts.force
-                && position >= RECHECK_RECENT
-            {
+            if !will_examine(
+                known,
+                item.description.as_deref().is_some_and(is_full_content),
+                position,
+                opts,
+            ) {
                 stats.skipped += 1;
                 continue;
             }
@@ -295,6 +338,7 @@ impl crate::Adapter for FeedAdapter {
             // to notice here.
             if stored.as_ref() == Some(&wrapper) {
                 stats.skipped += 1;
+                examined_skips += 1;
                 continue;
             }
             write_atomic(&dest, &wrapper)?;
@@ -308,10 +352,20 @@ impl crate::Adapter for FeedAdapter {
             } else {
                 stats.fetched += 1;
             }
+            // Progress counts only what this run examined, against what it
+            // planned to examine — `stats.skipped` also carries the
+            // out-of-window items, which would push the numerator past
+            // `planned` and print percentages over 100.
+            let progress = SyncStats {
+                fetched: stats.fetched,
+                updated: stats.updated,
+                skipped: examined_skips,
+                ..SyncStats::default()
+            };
             eprintln!(
                 "{} {slug}{}",
                 if known { "update" } else { "fetch " },
-                progress_note(Some(total), &stats, started.elapsed())
+                progress_note(Some(planned), &progress, started.elapsed())
             );
         }
         if failed > 0 {

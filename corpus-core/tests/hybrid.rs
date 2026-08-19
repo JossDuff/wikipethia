@@ -2,7 +2,7 @@
 //! No model, no network — semantic neighborhoods are constructed from
 //! keyword buckets so "car" and "automobile" land on the same axis.
 
-use corpus_core::store::ChunkToEmbed;
+use corpus_core::store::{ChunkToEmbed, EmbeddedChunk};
 use corpus_core::{CoreError, Document, Embedder, Store};
 use serde_json::Map;
 
@@ -79,9 +79,20 @@ fn embed_all(store: &mut Store, embedder: &impl Embedder) {
             .collect();
         let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
         let vectors = embedder.embed(&refs).unwrap();
-        let rows: Vec<(i64, Vec<f32>)> =
-            batch.iter().map(|c| c.rowid).zip(vectors).collect();
-        store.write_embeddings(&rows).unwrap();
+        let rows: Vec<EmbeddedChunk<'_>> = batch
+            .iter()
+            .zip(vectors)
+            .map(|(c, vector)| EmbeddedChunk {
+                rowid: c.rowid,
+                content: &c.content,
+                vector,
+            })
+            .collect();
+        assert_eq!(
+            store.write_embeddings(&rows).unwrap(),
+            rows.len(),
+            "nothing else is writing here, so every vector should land"
+        );
     }
 }
 

@@ -22,10 +22,13 @@
 //!
 //! # What it does not do
 //!
-//! It does not make a vector prove it belongs to the text it came from. Two
+//! It does not make a vector prove it belongs to the text it came from — two
 //! writers on *different machines* against a shared file, or anything that
-//! bypasses the CLI, are still unguarded — the real fix for that is a content
-//! hash checked at `write_embeddings` time. This closes the reachable hole.
+//! bypasses the CLI, reach the write path with this lock uncontended. That is
+//! now covered separately, and on the data rather than on the process:
+//! [`crate::store::Store::write_embeddings`] re-checks each chunk's content
+//! before inserting its vector and drops the ones that moved. This lock
+//! closes the reachable hole cheaply; that check closes the rest.
 //!
 //! Readers never take it. `corpus-mcp` opens the database read/write but only
 //! reads, and blocking queries behind a two-hour embed would be a worse bug

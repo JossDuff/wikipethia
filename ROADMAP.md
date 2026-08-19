@@ -138,11 +138,20 @@ incremental. README carries a systemd timer.
 - **Feed.** Items are re-derived and compared against the stored wrapper —
   title, byline, date, and body — and written only when they differ. There is
   no per-item `<updated>` in either real feed to shortcut with. Note both
-  feeds turned out to be **full archives, not truncated windows** (632 items
+  feeds turned out to be **full archives, not truncated windows** (634 items
   for the EF blog, 174 for vitalik), so comparing all of them costs minutes
-  per run on the teaser-description feed; a routine sync compares the newest
-  30 and `--full` compares the lot. Discovery is never bounded — an item with
-  no local copy is fetched wherever it sits.
+  per run; a routine sync compares the newest 30 and `--full` compares the
+  lot. Discovery is never bounded — an item with no local copy is fetched
+  wherever it sits.
+
+  **Corrected 2026-08-19.** This entry, and `feed.rs` with it, claimed the EF
+  blog's descriptions carried whole articles, making its comparison free and
+  vitalik's the only one costing requests. Measured against the live feed:
+  **all 634 EF-blog descriptions are ~330-char teasers** and `is_full_content`
+  fires for neither real feed, so both cost 30 requests per routine sync. The
+  30s attributed to the EF blog in the gate timing below was always request
+  time, not parsing. Behaviour was never wrong — the windowed skip covers
+  it — but the stated reason was.
 
 **Two limits, stated rather than papered over.** A post edited in place in a
 thread with *no* other activity moves nothing upstream and stays invisible
@@ -207,7 +216,7 @@ was wrong.
 has not regressed. Watch for near-duplicates between blog posts and their
 ethresear.ch cross-posts; flag anything above ~0.95 cosine at ingest.
 
-### [ ] Pipeline safety: index and embed can corrupt each other
+### [x] Pipeline safety: index and embed can corrupt each other
 
 **Found the hard way, 2026-08-13.** `embed` and `index` share one SQLite
 file with no lock and no warning. SQLite reuses rowids after deletion, so:
@@ -246,12 +255,28 @@ corpus is the worse failure. Verified at the CLI: a live holder produces
 `another writer holds this corpus: embed running as pid 1, started 93s ago`
 and exit 1.
 
-**Still owed: the other half of the gate.** "No vector can outlive the chunk
-content it was computed from" needs the content-hash check in
-`write_embeddings`; the lock closes the reachable hole (two CLI processes on
-one machine) but proves nothing about a vector's provenance. Anything
-bypassing the CLI, or two machines against a shared file, is still
-unguarded. The box stays unticked until the hash lands.
+**Done 2026-08-19 — the provenance check shipped, and the gate passes.**
+`write_embeddings` now takes `EmbeddedChunk { rowid, content, vector }` and,
+inside one IMMEDIATE transaction, inserts a vector only where the chunk still
+holds the text that vector was computed from. Mismatches are dropped, not
+written; the chunk then still reads as missing an embedding, so the next pass
+re-reads the current text and embeds that — self-healing, no repair command.
+`corpus embed` reports drops and bails if two consecutive batches land
+nothing, which is a concurrent writer rather than anything self-healing.
+
+**Verbatim content, not a hash.** The candidate list below said "content
+hash… at the cost of a hash column". The column turned out to be avoidable:
+the embed loop already holds the text it embedded, so the check binds it back
+and compares against `chunks.content` on a primary-key point lookup. That
+costs a few kilobytes re-bound on a path dominated by the embedder, and buys
+an exact answer instead of a collision probability — no migration, no stored
+column, no third thing to keep in sync.
+
+The test is `a_vector_cannot_outlive_the_chunk_content_it_was_computed_from`
+(`corpus-core/tests/store.rs`). It asserts the rowid is **actually reused**
+after a delete-and-reinsert before checking the guard, so it exercises real
+aliasing rather than degrading into "we wrote to a rowid that was gone" —
+which is the shape this bug would take if the test were written carelessly.
 
 **Related: `index` re-parses every raw file every run — and it does not
 matter.** `index_raw_file` has no mtime, size, or hash check, so all ~57k
@@ -264,8 +289,9 @@ from it, so skipping a file by mtime would delete its documents — and for
 Discourse one file is a whole thread. It would need a persisted
 `file → doc_ids` map per source. Not worth that for a second.
 
-**Gate:** starting `index --force` while an `embed` is mid-run either
-blocks or fails cleanly, and a test demonstrates that no vector can
+**Gate: passed 2026-08-19.** Starting `index --force` while an `embed` is
+mid-run fails cleanly (`another writer holds this corpus: embed running as
+pid 1, started 93s ago`, exit 1), and a test demonstrates that no vector can
 outlive the chunk content it was computed from.
 
 ### [ ] M8 — Contribution workflow
@@ -313,8 +339,43 @@ client test:
 Open work items surfaced by that instrumentation, **re-ordered 2026-08-14
 after the opus run below**:
 
-1. **Single-doc expects understate the agent layer.** Now the top item, and
-   the evidence is no longer anecdotal: of the eight questions scoring 0.00
+1. ~~**Single-doc expects understate the agent layer.**~~ **DONE 2026-08-19 —
+   and the effect is measured, not asserted.** `questions.toml` gained
+   `expect_any`: groups of interchangeable sources, each group worth one
+   credit earned by any member. `expect` is untouched and still all-of, so
+   every question that does not use the new field scores exactly as before
+   and both recorded baselines stay comparable (verified: `--regrade` of
+   `baseline-m11` and `full-opus` reproduces 0.298/0.312 and 0.693/0.709 to
+   three decimals).
+
+   Seven questions widened, from the recorded opus run's actual citations
+   rather than from memory. Re-scoring **the same answers** under the new
+   expects:
+
+   | | strict | thread |
+   |---|---|---|
+   | opus 33q, single-doc expects | 0.693 | 0.709 |
+   | opus 33q, `expect_any` | **0.875** | **0.881** |
+
+   Read that as the size of the measurement defect, **not as an improvement
+   to the corpus or the server** — nothing about retrieval changed, and the
+   answers are byte-identical. 0.18 of what looked like failure was the
+   ruler. Retrieval moves the same way and means the same thing: fused
+   0.477 → **0.518**, lexical 0.303 → **0.348** over the same 33 questions.
+
+   **The overfitting risk is real and was managed, not ignored.** Widening
+   expects to match what one run cited would make the suite unfalsifiable.
+   Only independently canonical sources were added — the EIP that specifies
+   a mechanism, the consensus spec that implements it, the EF's own
+   announcement — and two candidates were deliberately **refused**: the
+   excess-blob-gas question was widened across EELS fork copies but *not* to
+   EIP-4844 or `numeric.py` (it exists to measure whether the executable
+   spec is reachable, which widening would erase), and the L2-types question
+   was left alone (0.20 strict there is genuine partial coverage of a survey
+   question, not a metric artefact). `parse_questions` also rejects an id
+   appearing in both fields, which would silently double-weight it.
+
+   *Original entry, kept for the record:* of the eight questions scoring 0.00
    strict on opus, **all eight cited real, on-topic sources — just not the
    ones named in `expect`**, and none of the eight is a retrieval or
    citation failure. Read individually: "Why does Ethereum have blobs?"
@@ -325,6 +386,7 @@ after the opus run below**:
    sourcing is arguably *better* than the expect. Widening `expect` to
    source-sets is the single change that would make this suite measure what a
    reader needs.
+
 2. ~~**Citation dropout**~~ — **did not reproduce, 2026-08-14.** M11 found
    answers that used the tools correctly and then cited nothing. On the opus
    run, **0 of 33 answers carried zero URLs**; the eight zero-scorers cited
@@ -336,7 +398,7 @@ after the opus run below**:
 3. **`lookup_spec` surface gaps** — Solidity fences **done** 2026-08-14 (see
    below); collapsing per-fork duplicates still open.
 
-### [ ] `lookup_spec` — Solidity interfaces, and collapsing per-fork duplicates
+### [x] `lookup_spec` — Solidity interfaces, and collapsing per-fork duplicates
 
 Two independent gaps in the same tool. Neither needs new plumbing;
 `corpus-core/src/spec.rs` parses on demand and both are extensions to it.
@@ -376,25 +438,51 @@ definitions with "27 more matched" in the footer. Bounded and self-describing,
 but a real increase — and an argument for item 2 below, since the cap is doing
 work that collapsing near-identical bodies should be doing instead.
 
-**2. It returns a dozen byte-identical bodies.** Measured: `lookup_spec
-calculate_base_fee_per_gas` with `fork = "cancun"` puts cancun first as
-designed and then emits **13 more copies of the same function**, identical
-down to the docstring, one per fork directory. For a spec-engineering client
-that is thousands of wasted tokens per lookup, on the source that has 24
-near-identical fork trees. Collapse identical bodies and name the forks that
-share one — *"identical in london, paris, shanghai, cancun, prague, osaka,
-bpo1–5, amsterdam, arrow_glacier, gray_glacier"* — which also makes genuine
-divergence **visible** instead of something the reader has to diff by eye.
-ROADMAP flagged the risk of this batch being spec-shaped; this is the shape it
-took.
+**2. It returns a dozen byte-identical bodies. — DONE 2026-08-19.** Was:
+`lookup_spec calculate_base_fee_per_gas` with `fork = "cancun"` put cancun
+first as designed and then emitted **13 more copies of the same function**,
+identical down to the docstring, one per fork directory.
 
-**Gate (restated, since the first version measured the wrong layer):**
-`lookup_spec` returns erc-1271's magic value for `isValidSignature` — **met**
-— and a `lookup_spec` call for an identifier the executable spec copies per
-fork returns one body per *distinct* implementation with its forks listed,
-not one per directory — **still open**. Neither is visible to `eval`; both are
-probe-verifiable, and `agent-eval` is what prices whether a client actually
-reaches for the tool.
+`lookup_spec` now groups by the definition rather than by the document.
+Identical bodies collapse to one, cited from the fork-preferred document,
+followed by `identical in 13 other documents: amsterdam, arrow_glacier,
+bpo1…` — fork names via `format::fork_label`, falling back to the doc id for
+fork-agnostic documents so nothing is ever named ambiguously.
+
+Measured, same call: **29,721 chars / 926 lines → 2,398 / 69**, a 92%
+reduction. The legibility win is the bigger one:
+`lookup_spec calculate_excess_blob_gas` now shows **three** distinct
+implementations — one shared by amsterdam/osaka/bpo1–5, and cancun and prague
+each on their own — where before it was nine near-identical blocks a reader
+had to diff by eye.
+
+Grouping is on the **untruncated** source, not the rendered block: a long
+function's rendered form carries a `get_post_context doc_id=…` hint naming
+its own document, so grouping on rendered text would have made every fork's
+copy unique and defeated the collapse on exactly the functions where it saves
+most.
+
+**Correcting this item's other claim.** It said the `MAX_DEFINITIONS` cap "is
+doing work that collapsing near-identical bodies should be doing instead",
+citing `transferFrom` at 21k chars. Collapsing does **not** help there and
+should not: those 40+ definitions come from different ERCs with genuinely
+different signatures, so they are distinct definitions, not duplicates.
+Measured after: `transferFrom` 22,038 chars, `isValidSignature` 11,123 —
+essentially unchanged, which is the correct result. Only byte-identical
+bodies merge, deliberately; merging "near-identical" ones would hide exactly
+the divergence this feature exists to expose. The cap is still doing real
+work on the ERC-method case and has no better mechanism waiting for it.
+
+**Gate (restated, since the first version measured the wrong layer): passed
+2026-08-19.** `lookup_spec` returns erc-1271's magic value for
+`isValidSignature` — met — and a `lookup_spec` call for an identifier the
+executable spec copies per fork returns one body per *distinct*
+implementation with its forks listed, not one per directory — met, probed
+over JSON-RPC against the live corpus. Neither is visible to `eval`
+(confirmed again: lexical/fused unchanged either side of this change, because
+`eval` calls `hybrid_search` and never reaches `spec.rs`); `agent-eval` is
+what prices whether a client actually reaches for the tool, and the tool
+description changed here, so it is due a run.
 
 ### [ ] M9 — Reranker
 
@@ -515,6 +603,110 @@ citable, rather than the single `cancun/vm/gas.py` the expect names. The better
 answer scored zero. Exhibit A for item 1 above.
 
 `lookup_spec` was reached for in 9 of 33 sessions.
+
+### Third baseline — opus, 33 questions, 2026-08-19, $17.14, 0 failures
+
+**strict 0.889 / thread 0.897**, 261 tool calls. And the headline number is
+the least interesting thing in it, because the eval set changed in the same
+batch. The only honest way to read it is the 2×2 — both runs scored under
+both rulers, on identical stored answers:
+
+| run | old ruler (single-doc) | new ruler (`expect_any`) |
+|---|---|---|
+| Aug-14 answers | 0.693 / 0.709 | 0.875 / 0.881 |
+| Aug-19 answers | **0.677 / 0.695** | **0.889 / 0.897** |
+
+Read down the columns, not across the diagonal. **The system did not
+measurably improve.** On the old ruler it went *down* 0.016; on the new
+ruler it went up 0.014. The two rulers disagree on the sign, which is what
+run-to-run variance across 33 stochastic sessions looks like. The entire
+0.693 → 0.889 headline is the ruler, and quoting it as progress would be a
+self-graded win.
+
+That is not a disappointing result, it is the expected one: nothing in this
+batch targeted answer quality. The corpus grew 0.2%, `lookup_spec` got
+cheaper to read, and a provenance check landed. None of that should move an
+answer-citation metric, and it didn't.
+
+One behavioural change did show up, and it is the one the tool-description
+edit was aimed at: **`lookup_spec` was reached for in 14 of 33 sessions, up
+from 9**. Suggestive at n=33 rather than conclusive, but it is the right
+direction and the only number here that plausibly reflects a change we made.
+
+| tool | Aug-14 | Aug-19 |
+|---|---|---|
+| `search_posts` | 107 calls / 31 sessions | 104 / 32 |
+| `get_post_context` | 114 / 30 | 117 / 32 |
+| `lookup_spec` | 31 / 9 | 35 / **14** |
+| `get_topic` | 3 / 3 | 5 / 5 |
+
+The three questions still below 1.00 strict are the known coverage cases,
+unchanged in character: the validator-services synthesis (0.00, 12 all-of
+expects, documented as an indefinite floor), the L2 taxonomy (0.40), and
+L1 privacy (0.43). Each wants breadth no single citation set satisfies.
+
+---
+
+**RESOLVED 2026-08-19 — was blocked on an rmcp bug, not the CLI.** Kept in
+full because the diagnosis took most of a day and the failure mode is one
+this project will meet again.
+
+Claude Code 2.1.236 cannot run `agent-eval` against rmcp **3.0.0**. A
+headless (`-p`) session connects the server and loads its instructions
+string, but no `mcp__wikipethia__*` tool is ever registered, and `ToolSearch`
+cannot find them either (`select:mcp__wikipethia__search_posts` → "No matching
+deferred tools found").
+
+**Root cause: rmcp 3.0.0 advertises a protocol it cannot serve.** The client
+opens a *separate probe connection* and asks `server/discover`; rmcp answers
+`supportedVersions: [… "2026-07-28"]`. The client believes it, drops the
+`initialize` handshake, and sends `tools/list` with that version in `_meta`.
+rmcp replies — correctly shaped — and the client rejects every reply, retries
+at 0.5s/1s/2s, and gives up. Proven by rewriting exactly one string in a
+proxy: strip `"2026-07-28"` from 3.0.0's advertised list and all five tools
+register; put it back and none do. **rmcp 3.1.3 fixes it** (`corpus-mcp`
+now requires it) — five tools register against the real binary, and the
+2-question smoke went from 0.00/0.00 with 0 tool calls to 1.00/1.00 with 19.
+
+**This was never today's bug, and never the corpus.** rmcp has been pinned at
+3.0.0 since Aug 7; the Aug-14 baseline made 255 tool calls; CLI 2.1.233
+(Aug 17) already fails. Claude Code introduced the probe between Aug 14 and
+Aug 17, and wikipethia was silently toolless in *every* Claude Code session
+for five days — agent-eval is merely where it became visible, because it
+spends money to find out.
+
+**What the diagnosis had to eliminate first**, since "our tools are missing"
+has many likelier causes: the server (`tools/list` returns all 5 in 0.24s
+cold), our schemas (those exact 5, replayed by a Python server, register
+5-of-5), the CLI itself (a minimal Python MCP server registers fine), the
+server name, rmcp's `resultType` field, response latency (1-2ms, and the
+retries come *after* success), and the CLI version (2.1.233-236 identical).
+The decisive clue only appeared after logging *every* connection: the
+`server/discover` probe runs on its own, and a truncating (`"w"`-mode) proxy
+log had been overwriting it with the second conversation.
+
+A 2-question opus smoke ($0.82) scored 0.00/0.00 with **zero tool calls** —
+both answers came from pretraining, and one said so.
+
+**The harness could not see this, which is the part worth fixing.** The
+status guard checks `server_status == "connected"`, and the status *is*
+`connected`. A full sweep would have completed, reported `0 failed`, and
+recorded a confident 0.000 against the 0.693 baseline — a catastrophic
+corpus regression caused by nothing, for $17.
+
+Two guards added, so it cannot happen quietly again:
+
+- `probe_tools_reachable` spends **one** session before the sweep proving a
+  headless client can actually *call* a corpus tool, and aborts with the
+  diagnosis if not. It probes on the configured model rather than a cheap
+  tier, so "too weak to call a tool" is never confusable with "no tools".
+  Verified: the sweep now stops after one probe with exit 1.
+- The summary carries `tool_calls` and `valid`, and a run where nothing ever
+  called the corpus exits non-zero with "NOT A BASELINE" rather than
+  printing means that look recordable.
+
+The recorded baselines above stay valid — they were measured when this
+worked. They simply cannot be reproduced until the CLI does.
 
 ### [ ] M12 — Adoption kit
 

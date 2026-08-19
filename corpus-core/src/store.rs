@@ -154,6 +154,28 @@ pub struct ChunkToEmbed {
     pub content: String,
 }
 
+/// A computed vector together with the exact text it was computed from.
+///
+/// The pairing is the point. `chunks.id` has no `AUTOINCREMENT`, so SQLite
+/// reuses a rowid the moment the row holding it is deleted — and embedding
+/// is slow enough (minutes to hours) that a concurrent `index` can delete a
+/// chunk and reinsert a different one at the same rowid while its vector is
+/// still being computed. Writing that vector back by rowid alone silently
+/// attaches it to text it does not describe, and nothing downstream can tell:
+/// semantic search just returns confidently wrong neighbours, for ever.
+///
+/// Carrying `content` lets [`Store::write_embeddings`] re-check the row it is
+/// about to write against and drop the vector if the text moved underneath it.
+pub struct EmbeddedChunk<'a> {
+    /// `chunks.id`, which is also the `chunks_vec` rowid.
+    pub rowid: i64,
+    /// The `chunks.content` this vector belongs to — what the write is
+    /// checked against. `corpus embed` hands exactly this text to the
+    /// embedder, so for it the two are the same string.
+    pub content: &'a str,
+    pub vector: Vec<f32>,
+}
+
 pub struct Store {
     conn: Connection,
     /// Whether the lazily-created vector table exists in this file.
@@ -746,18 +768,58 @@ impl Store {
         Ok(n as usize)
     }
 
-    /// Store vectors for the given chunk rowids, in one transaction.
-    pub fn write_embeddings(&mut self, rows: &[(i64, Vec<f32>)]) -> Result<(), CoreError> {
-        let tx = self.conn.transaction()?;
+    /// Store vectors for the given chunks, in one transaction, **only where
+    /// the chunk still holds the text the vector was computed from**. Returns
+    /// how many were written; the rest are dropped.
+    ///
+    /// This is the invariant that makes a vector's provenance checkable: no
+    /// vector can outlive the chunk content it was computed from. The
+    /// advisory lock in [`crate::lock`] already stops two CLI processes from
+    /// interleaving, but it proves nothing about a vector already in hand —
+    /// anything bypassing the CLI, or two machines against a shared file,
+    /// reaches this path with the lock uncontended. Here the check is on the
+    /// data itself, so it holds regardless of who else is writing.
+    ///
+    /// The comparison is the content verbatim rather than a hash of it. A
+    /// hash would need a schema migration and a stored column to be worth
+    /// anything, and would trade an exact answer for a collision probability
+    /// to save re-binding a couple of kilobytes on a path that is already
+    /// dominated by the embedder. `chunks.id` is the primary key, so the
+    /// re-check is a point lookup.
+    ///
+    /// A dropped vector is not an error and needs no repair: its chunk still
+    /// reads as missing an embedding, so the next pass re-reads the current
+    /// text and embeds that instead. Callers should notice a batch that wrote
+    /// nothing, though — see the stall guard in `corpus-cli`.
+    pub fn write_embeddings(&mut self, rows: &[EmbeddedChunk<'_>]) -> Result<usize, CoreError> {
+        use rusqlite::{OptionalExtension, TransactionBehavior};
+
+        // IMMEDIATE, so the re-check and the insert cannot straddle another
+        // writer's commit: a deferred transaction takes its write lock at the
+        // first INSERT, which is after the SELECT that vouched for the row.
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut written = 0usize;
         {
-            let mut stmt = tx
+            let mut unchanged = tx
+                .prepare_cached("SELECT 1 FROM chunks WHERE id = ?1 AND content = ?2")?;
+            let mut insert = tx
                 .prepare_cached("INSERT INTO chunks_vec (rowid, embedding) VALUES (?1, ?2)")?;
-            for (rowid, vector) in rows {
-                stmt.execute(params![rowid, vec_blob(vector)])?;
+            for row in rows {
+                let still_there = unchanged
+                    .query_row(params![row.rowid, row.content], |_| Ok(()))
+                    .optional()?
+                    .is_some();
+                if !still_there {
+                    continue;
+                }
+                insert.execute(params![row.rowid, vec_blob(&row.vector)])?;
+                written += 1;
             }
         }
         tx.commit()?;
-        Ok(())
+        Ok(written)
     }
 
     /// Hybrid retrieval: reciprocal rank fusion over the BM25 ranking and

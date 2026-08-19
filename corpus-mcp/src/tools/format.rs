@@ -52,6 +52,32 @@ pub fn date(published: &str) -> &str {
     published.get(..10).unwrap_or(published)
 }
 
+/// The fork a spec document belongs to, as a short display label — the
+/// segment after `forks/` (execution-specs) or after `specs/`
+/// (consensus-specs), with `_features/<name>` kept whole because the segment
+/// alone would label every experimental spec `_features`.
+///
+/// A display convenience for grouping, never a lookup key: `None` for
+/// documents with no fork in their path (the EIPs and ERCs are fork-agnostic)
+/// and the caller falls back to the doc id, which is always unambiguous. It
+/// reads the same "a fork is a path segment" shape the `fork` parameter
+/// already matches on, so the two cannot disagree about what a fork is.
+pub fn fork_label(doc_id: &str) -> Option<&str> {
+    let segments: Vec<&str> = doc_id.split('/').collect();
+    // `forks` before `specs`, not "whichever comes first". A path can carry
+    // both (`.../specs/forks/london/...`), and reading the earlier segment
+    // there labels every fork `forks`. The explicit marker wins.
+    let at = segments
+        .iter()
+        .position(|s| *s == "forks")
+        .or_else(|| segments.iter().position(|s| *s == "specs"))?;
+    match segments.get(at + 1)? {
+        // specs/_features/eip6914/... — the fork name is the one below.
+        s if *s == "_features" => segments.get(at + 2).copied(),
+        s => Some(s),
+    }
+}
+
 /// One line, at most `max_chars` characters, `…` when shortened.
 pub fn excerpt(text: &str, max_chars: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -227,5 +253,30 @@ mod tests {
         // A thread position wins over a stray status field.
         meta.insert("status".into(), json!("Draft"));
         assert_eq!(post_label(&meta), "reply #7");
+    }
+
+    #[test]
+    fn fork_labels_for_the_real_doc_id_shapes() {
+        // execution-specs: the fork sits under `forks/`.
+        assert_eq!(
+            fork_label("executionspecs/src/ethereum/forks/cancun/vm/gas.py"),
+            Some("cancun")
+        );
+        // consensus-specs: directly under `specs/`.
+        assert_eq!(
+            fork_label("consensusspecs/specs/electra/beacon-chain"),
+            Some("electra")
+        );
+        // `_features` alone would label every experimental spec the same.
+        assert_eq!(
+            fork_label("consensusspecs/specs/_features/eip6914/beacon-chain"),
+            Some("eip6914")
+        );
+        // Both markers present: `forks` wins, or every fork reads "forks".
+        assert_eq!(fork_label("specs/forks/london/fork"), Some("london"));
+        // Fork-agnostic documents have none, and the caller falls back to
+        // the doc id rather than inventing a label.
+        assert_eq!(fork_label("eips/eip-1271"), None);
+        assert_eq!(fork_label("ethresearch/post/1"), None);
     }
 }

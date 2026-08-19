@@ -14,16 +14,29 @@ expect = ["eips/eip-7251"]
 question = "What is the current account abstraction flow on Ethereum?"
 # Canonical EthMagicians threads for the EIPs Joss's answer names:
 # t/7160 ERC-4337 (vbuterin), t/19923 EIP-7702 (vbuterin), t/27617 EIP-8141
-expect = [
-    "ethmagicians/post/21055",
-    "ethmagicians/post/48140",
-    "ethmagicians/post/66767",
+#
+# ANY-OF (2026-08-19), the cleanest case in the set: still three credits, one
+# per mechanism, but each is earned by either the thread that argued it or
+# the EIP/ERC that specifies it. The opus run cited all three specifications
+# and scored 0.00 strict for naming the standards instead of their threads.
+expect_any = [
+    ["ethmagicians/post/21055", "ercs/erc-4337"],
+    ["ethmagicians/post/48140", "eips/eip-7702"],
+    ["ethmagicians/post/66767", "eips/eip-8141"],
 ]
 
 [[questions]]
 question = "Why does Ethereum have blobs?"
+# ANY-OF (2026-08-19). A "why" question about blobs is answered equally well
+# by the EthMagicians thread that argued it, the EIP that specifies it, or
+# Vitalik's explainer. The opus agent-eval run cited the latter two and
+# scored 0.00 — a defect in the measure, not the answer.
 # https://ethereum-magicians.org/t/eip-4844-shard-blob-transactions/8430
-expect = ["ethmagicians/post/23602"]
+expect_any = [[
+    "ethmagicians/post/23602",
+    "eips/eip-4844",
+    "vitalik/general/2024/03/28/blobs",
+]]
 
 [[questions]]
 question = "What benefit do native rollups bring to Ethereum?"
@@ -42,7 +55,11 @@ question = "What is PBS?"
 # question better than the original expect (vbuterin's fee-market design
 # post, t/9725 post 26652, kept here for the record).
 # https://ethresear.ch/t/epbs-design-constraints/18728
-expect = ["ethresearch/post/45970"]
+# ANY-OF (2026-08-19). This expect has already been revised once (see above),
+# which is itself the signal that no single post owns the definition: the
+# ePBS-constraints OP and the "why enshrine PBS" OP both open by explaining
+# what PBS is. The opus run cited the second.
+expect_any = [["ethresearch/post/45970", "ethresearch/post/39462"]]
 
 [[questions]]
 question = "What are the services a validator participates in?"
@@ -89,8 +106,14 @@ expect = [
 
 [[questions]]
 question = "How does PeerDAS scale blob throughput beyond EIP-4844?"
+# ANY-OF (2026-08-19): the 2023 design post, the EIP, and the consensus spec
+# are three faces of the same answer. The opus run cited the latter two.
 # https://ethresear.ch/t/peerdas-a-simpler-das-approach-using-battle-tested-p2p-components/16541
-expect = ["ethresearch/post/41277"]
+expect_any = [[
+    "ethresearch/post/41277",
+    "eips/eip-7594",
+    "consensusspecs/specs/fulu/das-core",
+]]
 
 [[questions]]
 question = "Why enshrine PBS in-protocol (ePBS) instead of keeping MEV-Boost?"
@@ -102,7 +125,14 @@ question = "What is lean Ethereum and what are its main pillars?"
 # ethresear.ch expects only; blog.ethereum.org/2025/07/31/lean-ethereum and
 # leanroadmap.org join at M7.
 # t/25369, t/25374
-expect = ["ethresearch/post/61091", "ethresearch/post/61106"]
+# ANY-OF (2026-08-19): the EF's own announcement states the pillars as
+# authoritatively as either research post. The opus run cited it and scored
+# 0.00. Now one credit for any of the three, not two credits for two posts.
+expect_any = [[
+    "ethresearch/post/61091",
+    "ethresearch/post/61106",
+    "efblog/en/2025/07/31/lean-ethereum",
+]]
 
 [[questions]]
 question = "What does \"The Extremely Lean Chain\" propose, and how does it provide validator privacy?"
@@ -116,7 +146,16 @@ question = "What would be the tradeoffs of adding a new commitment scheme or era
 # commitment scheme…") — Joss agreed it's the better answer than the OP
 # (t/21370 post 52013, kept here for the record).
 # https://ethresear.ch/t/faster-block-blob-propagation-in-ethereum/21370/27
-expect = ["ethresearch/post/52648"]
+# ANY-OF (2026-08-19). The original single expect is about propagation, and
+# the opus run cited four posts that address the question as asked — the
+# tradeoffs of alternative commitment schemes and erasure codes — more
+# directly than it does. Keeping it, adding them.
+expect_any = [[
+    "ethresearch/post/52648",
+    "ethresearch/post/35615",
+    "ethresearch/post/59496",
+    "ethresearch/post/31762",
+]]
 
 [[questions]]
 question = "What are all the different types of L2s and what are their tradeoffs?"
@@ -245,7 +284,18 @@ expect = ["executionspecs/src/ethereum/forks/cancun/vm/instructions/system.py"]
 # because the spec cannot use floating point. The helper itself only became
 # reachable when `paths` widened to src/ethereum (see sources.toml).
 question = "How does the execution spec turn excess blob gas into a blob gas price?"
-expect = ["executionspecs/src/ethereum/forks/cancun/vm/gas.py"]
+# ANY-OF (2026-08-19): the question names no fork, and EELS keeps a copy of
+# calculate_blob_gas_price per fork — citing prague's is not more wrong than
+# citing cancun's. Deliberately NOT widened to EIP-4844 or numeric.py: the
+# question asks what the *execution spec* does, which is the thing this
+# question was added to measure, and numeric.py is a generic helper that
+# does not answer it alone.
+expect_any = [[
+    "executionspecs/src/ethereum/forks/cancun/vm/gas.py",
+    "executionspecs/src/ethereum/forks/prague/vm/gas.py",
+    "executionspecs/src/ethereum/forks/osaka/vm/gas.py",
+    "executionspecs/src/ethereum/forks/amsterdam/vm/gas.py",
+]]
 
 [[questions]]
 # Answer: version-dependent, and they differ exactly where a reader would
