@@ -138,11 +138,20 @@ incremental. README carries a systemd timer.
 - **Feed.** Items are re-derived and compared against the stored wrapper —
   title, byline, date, and body — and written only when they differ. There is
   no per-item `<updated>` in either real feed to shortcut with. Note both
-  feeds turned out to be **full archives, not truncated windows** (632 items
+  feeds turned out to be **full archives, not truncated windows** (634 items
   for the EF blog, 174 for vitalik), so comparing all of them costs minutes
-  per run on the teaser-description feed; a routine sync compares the newest
-  30 and `--full` compares the lot. Discovery is never bounded — an item with
-  no local copy is fetched wherever it sits.
+  per run; a routine sync compares the newest 30 and `--full` compares the
+  lot. Discovery is never bounded — an item with no local copy is fetched
+  wherever it sits.
+
+  **Corrected 2026-08-19.** This entry, and `feed.rs` with it, claimed the EF
+  blog's descriptions carried whole articles, making its comparison free and
+  vitalik's the only one costing requests. Measured against the live feed:
+  **all 634 EF-blog descriptions are ~330-char teasers** and `is_full_content`
+  fires for neither real feed, so both cost 30 requests per routine sync. The
+  30s attributed to the EF blog in the gate timing below was always request
+  time, not parsing. Behaviour was never wrong — the windowed skip covers
+  it — but the stated reason was.
 
 **Two limits, stated rather than papered over.** A post edited in place in a
 thread with *no* other activity moves nothing upstream and stays invisible

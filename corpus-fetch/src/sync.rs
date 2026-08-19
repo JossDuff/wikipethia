@@ -414,6 +414,12 @@ fn topic_total(fetcher: &mut dyn Fetcher, base: &str) -> Option<u64> {
 /// moved since the checkpoint — so it reports position instead of a percentage
 /// that could never reach 100: `  [page 4, 97 checked, 12s]`. Empty when there
 /// is neither a total nor a page count.
+///
+/// `total` is a contract, not just a label: the ETA projects the observed
+/// per-request pace across `total - processed`, so a caller that passes a
+/// denominator larger than the work it intends to do gets an ETA inflated by
+/// exactly that ratio. [`FeedAdapter::sync`] passes the number of items it
+/// will examine rather than the feed's length for this reason.
 pub(crate) fn progress_note(total: Option<u64>, stats: &SyncStats, elapsed: Duration) -> String {
     let Some(total) = total else {
         if stats.pages == 0 {
@@ -428,9 +434,25 @@ pub(crate) fn progress_note(total: Option<u64>, stats: &SyncStats, elapsed: Dura
     };
     let processed = stats.processed() as u64;
     let pct = processed * 100 / total.max(1);
-    let eta = if stats.fetched > 0 && total > processed {
-        let per_fetch = elapsed.as_secs_f64() / stats.fetched as f64;
-        let left = human_duration(per_fetch * (total - processed) as f64);
+    // Pace is per *request*, so the divisor must count everything that cost
+    // one. Dividing by `fetched` alone attributed an updating run's whole
+    // elapsed time to its handful of new items: the 2026-08-19 EF-blog sync
+    // (2 fetched, 17 updated in 19s) reported "~1h36m left" against a true
+    // ~11s, because 19s/2 became the per-item rate. Skips are excluded from
+    // the divisor deliberately — they are a `stat` call, not a request — and
+    // callers keep them out of `total` too, so the projection below stays
+    // over work that will actually be done.
+    //
+    // Known residual, in the safe direction: a feed item that IS compared and
+    // turns out unchanged costs a request but lands in `skipped`, so a feed
+    // whose window is mostly unchanged paces on too few items and over-states
+    // its ETA — measured at ~1m against a true ~27s. Over-stating shrinks as
+    // the run proceeds and never tells an operator a long run is nearly done,
+    // which is the failure that would actually cost someone something.
+    let worked = (stats.fetched + stats.updated) as u64;
+    let eta = if worked > 0 && total > processed {
+        let per_item = elapsed.as_secs_f64() / worked as f64;
+        let left = human_duration(per_item * (total - processed) as f64);
         format!(", ~{left} left")
     } else {
         String::new()
@@ -500,6 +522,33 @@ mod tests {
             skipped,
             ..SyncStats::default()
         }
+    }
+
+    /// The EF-blog shape: a sync that mostly *updates* costs one request per
+    /// updated item, so those items must set the pace. Dividing by `fetched`
+    /// alone reported ~1h36m here against a true ~11s.
+    #[test]
+    fn progress_note_paces_on_updates_not_just_fetches() {
+        let stats = SyncStats {
+            fetched: 2,
+            updated: 17,
+            ..SyncStats::default()
+        };
+        // 19 requests in 19s = 1s each; 13 of 32 items left ≈ 13s.
+        let note = progress_note(Some(32), &stats, Duration::from_secs(19));
+        assert_eq!(note, "  [19/32, 59%, ~13s left]");
+    }
+
+    /// An update-only run still gets an ETA — before this, `fetched == 0`
+    /// suppressed it entirely for the commonest routine-sync shape.
+    #[test]
+    fn progress_note_shows_an_eta_when_nothing_is_newly_fetched() {
+        let stats = SyncStats {
+            updated: 10,
+            ..SyncStats::default()
+        };
+        let note = progress_note(Some(100), &stats, Duration::from_secs(20));
+        assert_eq!(note, "  [10/100, 10%, ~3m left]");
     }
 
     #[test]

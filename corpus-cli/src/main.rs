@@ -64,7 +64,11 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Search the corpus lexically (BM25 over FTS5).
+    /// Search the corpus (hybrid: BM25 over FTS5 fused with vector similarity).
+    ///
+    /// Hybrid since M4, though this said "lexically" until 2026-08-19 — which
+    /// silently turns any CLI attempt to A/B the two arms into fused-vs-fused.
+    /// `eval` is the surface that reports them separately.
     Search {
         query: String,
         /// Database file to search.
