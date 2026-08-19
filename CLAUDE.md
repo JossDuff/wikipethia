@@ -139,6 +139,22 @@ surface. Run `cargo run -p corpus-cli -- eval` before and after any change to
 chunking, ranking, or embeddings, and report the recall delta. A retrieval change
 without an eval run is not a finished change.
 
+Two ways to express what should surface, and the difference is load-bearing:
+
+- `expect` is **all-of** — every id is a separate credit. Use it when the
+  question genuinely needs all of them (a survey, an enumeration).
+- `expect_any` is a list of **groups**, each worth one credit earned by any
+  single member. Use it when several sources answer the question equally
+  well — a mechanism's EthMagicians thread, its EIP, and its consensus spec
+  are one answer in three places, and demanding a specific one measures
+  nothing but which we happened to write down.
+
+Widening an expect changes the ruler, so a score that moves because of it is
+**not** an improvement — say so explicitly when reporting. And only add
+sources that are independently canonical: widening to whatever a run happened
+to cite makes the suite unfalsifiable, which is the one failure mode this set
+cannot recover from.
+
 Add a case to the eval set whenever a real query returns something wrong.
 
 Two layers measure different things, and both are cheap to misread:

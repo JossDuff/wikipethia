@@ -339,8 +339,43 @@ client test:
 Open work items surfaced by that instrumentation, **re-ordered 2026-08-14
 after the opus run below**:
 
-1. **Single-doc expects understate the agent layer.** Now the top item, and
-   the evidence is no longer anecdotal: of the eight questions scoring 0.00
+1. ~~**Single-doc expects understate the agent layer.**~~ **DONE 2026-08-19 —
+   and the effect is measured, not asserted.** `questions.toml` gained
+   `expect_any`: groups of interchangeable sources, each group worth one
+   credit earned by any member. `expect` is untouched and still all-of, so
+   every question that does not use the new field scores exactly as before
+   and both recorded baselines stay comparable (verified: `--regrade` of
+   `baseline-m11` and `full-opus` reproduces 0.298/0.312 and 0.693/0.709 to
+   three decimals).
+
+   Seven questions widened, from the recorded opus run's actual citations
+   rather than from memory. Re-scoring **the same answers** under the new
+   expects:
+
+   | | strict | thread |
+   |---|---|---|
+   | opus 33q, single-doc expects | 0.693 | 0.709 |
+   | opus 33q, `expect_any` | **0.875** | **0.881** |
+
+   Read that as the size of the measurement defect, **not as an improvement
+   to the corpus or the server** — nothing about retrieval changed, and the
+   answers are byte-identical. 0.18 of what looked like failure was the
+   ruler. Retrieval moves the same way and means the same thing: fused
+   0.477 → **0.518**, lexical 0.303 → **0.348** over the same 33 questions.
+
+   **The overfitting risk is real and was managed, not ignored.** Widening
+   expects to match what one run cited would make the suite unfalsifiable.
+   Only independently canonical sources were added — the EIP that specifies
+   a mechanism, the consensus spec that implements it, the EF's own
+   announcement — and two candidates were deliberately **refused**: the
+   excess-blob-gas question was widened across EELS fork copies but *not* to
+   EIP-4844 or `numeric.py` (it exists to measure whether the executable
+   spec is reachable, which widening would erase), and the L2-types question
+   was left alone (0.20 strict there is genuine partial coverage of a survey
+   question, not a metric artefact). `parse_questions` also rejects an id
+   appearing in both fields, which would silently double-weight it.
+
+   *Original entry, kept for the record:* of the eight questions scoring 0.00
    strict on opus, **all eight cited real, on-topic sources — just not the
    ones named in `expect`**, and none of the eight is a retrieval or
    citation failure. Read individually: "Why does Ethereum have blobs?"
@@ -351,6 +386,7 @@ after the opus run below**:
    sourcing is arguably *better* than the expect. Widening `expect` to
    source-sets is the single change that would make this suite measure what a
    reader needs.
+
 2. ~~**Citation dropout**~~ — **did not reproduce, 2026-08-14.** M11 found
    answers that used the tools correctly and then cited nothing. On the opus
    run, **0 of 33 answers carried zero URLs**; the eight zero-scorers cited

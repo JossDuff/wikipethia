@@ -60,9 +60,16 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
     }
 
     let store = Store::open(&config.db)?;
-    let expected_urls: Vec<Vec<String>> = resolve_expected_docs(&store, &questions)?
+    let expected_urls: Vec<ExpectedUrls> = resolve_expected_docs(&store, &questions)?
         .into_iter()
-        .map(|docs| docs.into_iter().map(|d| d.url).collect())
+        .map(|docs| ExpectedUrls {
+            required: docs.required.into_iter().map(|d| d.url).collect(),
+            alternatives: docs
+                .alternatives
+                .into_iter()
+                .map(|group| group.into_iter().map(|d| d.url).collect())
+                .collect(),
+        })
         .collect();
 
     let out_dir = match &config.out_dir {
@@ -108,7 +115,12 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
         let row = json!({
             "question": q.question,
             "expect": q.expect,
-            "expected_urls": urls,
+            "expect_any": q.expect_any,
+            // Two keys, not one nested shape: `expected_urls` keeps the exact
+            // meaning it had, so --regrade still reads pre-2026-08-19 runs
+            // (baseline-m11, full-opus) and reproduces their numbers.
+            "expected_urls": urls.required,
+            "expected_url_groups": urls.alternatives,
             "strict": strict,
             "thread": thread,
             "cost_usd": run.cost_usd,
@@ -167,10 +179,21 @@ fn regrade(dir: &Path) -> anyhow::Result<()> {
     for path in &entries {
         let row: Value = serde_json::from_str(&fs::read_to_string(path)?)?;
         let answer = row["answer"].as_str().unwrap_or("");
-        let urls: Vec<String> = row["expected_urls"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-            .unwrap_or_default();
+        let strings = |v: &Value| -> Vec<String> {
+            v.as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default()
+        };
+        // `expected_url_groups` is absent from runs recorded before
+        // 2026-08-19 and reads as empty, so those artifacts regrade to
+        // exactly the numbers they were published with.
+        let urls = ExpectedUrls {
+            required: strings(&row["expected_urls"]),
+            alternatives: row["expected_url_groups"]
+                .as_array()
+                .map(|groups| groups.iter().map(strings).collect())
+                .unwrap_or_default(),
+        };
         let (strict, thread) = grade(answer, &urls);
         strict_total += strict;
         thread_total += thread;
@@ -483,26 +506,53 @@ fn parse_stream_line(line: &str) -> Option<StreamEvent> {
 /// URL from the same topic counts — a client that cites a thread's OP
 /// after finding it via a reply has served the reader; this is the column
 /// doc-id recall@10 structurally cannot measure (the M9 lesson).
-pub fn grade(answer: &str, expected_urls: &[String]) -> (f64, f64) {
-    if expected_urls.is_empty() {
+/// One question's expected URLs, in the two scoring shapes.
+///
+/// `required` is all-of — every URL is wanted and counts separately.
+/// `alternatives` is any-of — each group is one credit that any single
+/// member earns, for questions where several sources answer equally well.
+#[derive(Default)]
+pub struct ExpectedUrls {
+    pub required: Vec<String>,
+    pub alternatives: Vec<Vec<String>>,
+}
+
+impl ExpectedUrls {
+    fn credits(&self) -> usize {
+        self.required.len() + self.alternatives.len()
+    }
+}
+
+/// Citation recall of an answer, strict and thread-level.
+///
+/// Strict wants the expected document itself; thread also accepts any post
+/// in the same thread, since a client that lands on a reply can recover the
+/// original with `get_topic` and has demonstrably found the right discussion.
+pub fn grade(answer: &str, expected: &ExpectedUrls) -> (f64, f64) {
+    let credits = expected.credits();
+    if credits == 0 {
         return (0.0, 0.0);
     }
     let cited = cited_urls(answer);
-    let strict = expected_urls
-        .iter()
-        .filter(|u| cited.contains(u.trim_end_matches('/')))
-        .count();
-    let thread = expected_urls
-        .iter()
-        .filter(|u| {
-            cited.contains(u.trim_end_matches('/'))
-                || thread_prefix(u).is_some_and(|p| {
-                    cited.iter().any(|c| *c == p || c.starts_with(&format!("{p}/")))
-                })
-        })
-        .count();
-    let n = expected_urls.len() as f64;
-    (strict as f64 / n, thread as f64 / n)
+    let hit = |u: &String| cited.contains(u.trim_end_matches('/'));
+    let hit_thread = |u: &String| {
+        hit(u)
+            || thread_prefix(u).is_some_and(|p| {
+                cited.iter().any(|c| *c == p || c.starts_with(&format!("{p}/")))
+            })
+    };
+    let score = |f: &dyn Fn(&String) -> bool| {
+        let required = expected.required.iter().filter(|u| f(u)).count();
+        // Any one member satisfies a group; citing three is not worth more
+        // than citing one, because they are alternatives, not a checklist.
+        let alternatives = expected
+            .alternatives
+            .iter()
+            .filter(|group| group.iter().any(f))
+            .count();
+        (required + alternatives) as f64 / credits as f64
+    };
+    (score(&hit), score(&hit_thread))
 }
 
 /// Every URL cited in the answer, normalized (trailing slash and trailing
@@ -554,6 +604,13 @@ fn thread_prefix(url: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn required(urls: &[&str]) -> ExpectedUrls {
+        ExpectedUrls {
+            required: urls.iter().map(|s| s.to_string()).collect(),
+            alternatives: Vec::new(),
+        }
+    }
+
     #[test]
     fn thread_prefixes_only_for_forum_post_urls() {
         assert_eq!(
@@ -578,7 +635,7 @@ mod tests {
     fn strict_credit_requires_the_exact_url_not_a_prefix() {
         // The bug the extraction rewrite fixes: expected OP /1 must NOT be
         // credited by a citation of reply /12.
-        let expected = vec!["https://ethresear.ch/t/native-rollups/21517/1".to_string()];
+        let expected = required(&["https://ethresear.ch/t/native-rollups/21517/1"]);
         let (strict, thread) =
             grade("See https://ethresear.ch/t/native-rollups/21517/12 here.", &expected);
         assert_eq!(strict, 0.0, "prefix must not earn strict credit");
@@ -587,12 +644,55 @@ mod tests {
 
     #[test]
     fn grading_gives_thread_credit_without_strict_credit() {
-        let expected = vec!["https://ethresear.ch/t/native-rollups/21517/1".to_string()];
+        let expected = required(&["https://ethresear.ch/t/native-rollups/21517/1"]);
         let answer = "See https://ethresear.ch/t/native-rollups/21517/34 for details.";
         assert_eq!(grade(answer, &expected), (0.0, 1.0));
         let answer = "See https://ethresear.ch/t/native-rollups/21517/1.";
         assert_eq!(grade(answer, &expected), (1.0, 1.0));
         assert_eq!(grade("no links here", &expected), (0.0, 0.0));
+    }
+
+    /// The measurement fix this field exists for: several sources answer
+    /// "why does Ethereum have blobs?" equally well, and the opus run cited
+    /// the EIP where `expect` named the forum thread — scoring 0.00 for a
+    /// good answer. Any member of the group now earns the credit.
+    #[test]
+    fn an_alternatives_group_is_satisfied_by_any_member() {
+        let expected = ExpectedUrls {
+            required: Vec::new(),
+            alternatives: vec![vec![
+                "https://ethereum-magicians.org/t/eip-4844/8430/1".to_string(),
+                "https://eips.ethereum.org/EIPS/eip-4844".to_string(),
+            ]],
+        };
+        assert_eq!(grade("see https://eips.ethereum.org/EIPS/eip-4844", &expected), (1.0, 1.0));
+        // Citing both is not worth more than citing one — they are
+        // alternatives, not a checklist.
+        assert_eq!(
+            grade(
+                "https://eips.ethereum.org/EIPS/eip-4844 and \
+                 https://ethereum-magicians.org/t/eip-4844/8430/1",
+                &expected
+            ),
+            (1.0, 1.0)
+        );
+        assert_eq!(grade("https://example.com/unrelated", &expected), (0.0, 0.0));
+        // Thread credit still reaches a group member through its thread.
+        let (strict, thread) =
+            grade("https://ethereum-magicians.org/t/eip-4844/8430/17", &expected);
+        assert_eq!((strict, thread), (0.0, 1.0));
+    }
+
+    /// Required and group credits share one denominator.
+    #[test]
+    fn required_and_alternatives_are_scored_together() {
+        let expected = ExpectedUrls {
+            required: vec!["https://a.io/x".to_string()],
+            alternatives: vec![vec!["https://b.io/y".to_string(), "https://c.io/z".to_string()]],
+        };
+        assert_eq!(grade("https://a.io/x https://c.io/z", &expected), (1.0, 1.0));
+        assert_eq!(grade("https://a.io/x", &expected).0, 0.5);
+        assert_eq!(grade("https://b.io/y", &expected).0, 0.5);
     }
 
     #[test]
@@ -612,7 +712,7 @@ mod tests {
     fn citation_matching_ignores_trailing_slash() {
         let (strict, _) = grade(
             "see https://eips.ethereum.org/EIPS/eip-4844/ here",
-            &["https://eips.ethereum.org/EIPS/eip-4844".to_string()],
+            &required(&["https://eips.ethereum.org/EIPS/eip-4844"]),
         );
         assert_eq!(strict, 1.0);
     }
