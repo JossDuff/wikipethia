@@ -26,22 +26,58 @@ use format::{
     fork_label, post_label, spec_status, truncate_block, window,
 };
 
-/// How to name the other documents sharing a definition: their fork labels
-/// where they have one, else the doc id itself.
+/// The "identical in …" line for a definition, or `None` when there is
+/// genuinely nothing else to name.
 ///
-/// Fork names are what a reader reasons about ("identical in london, paris,
-/// shanghai…"), and they are far shorter than the ids — which is half the
-/// point, since the whole exercise is to stop spending thousands of tokens
-/// restating one function. Documents with no fork in their path keep their
-/// id, so nothing is ever named ambiguously.
-fn shared_by(doc_ids: &[String]) -> String {
-    let mut names: Vec<&str> = doc_ids
+/// Three things this has to get right, because the line is a factual claim a
+/// model will repeat:
+///
+/// 1. **Never name the cited document itself.** A document that declares one
+///    identifier twice with the same body (erc-7417 does, for `balanceOf` and
+///    `transferFrom`) pushes its own id into the group, which rendered as
+///    "identical in 1 other document: ercs/erc-7417" *while being cited from
+///    erc-7417*. That is a plain falsehood about how widely a definition is
+///    shared — exactly the claim this feature exists to make trustworthy.
+/// 2. **Count what is listed.** Fork labels are deduped, so counting raw
+///    entries printed "identical in 3 other documents: electra" whenever two
+///    files under one fork carried the same definition.
+/// 3. **Never name two documents the same way.** Where labels would collide,
+///    fall back to doc ids for the whole line rather than emit a list the
+///    reader cannot map back onto the count.
+fn shared_by(also: &[String], cited: &str) -> Option<String> {
+    let mut others: Vec<&str> = also
         .iter()
-        .map(|id| fork_label(id).unwrap_or(id.as_str()))
+        .map(String::as_str)
+        .filter(|id| *id != cited)
         .collect();
+    others.sort_unstable();
+    others.dedup();
+    if others.is_empty() {
+        return None;
+    }
+    let labels: Vec<&str> = others
+        .iter()
+        .map(|id| fork_label(id).unwrap_or(id))
+        .collect();
+    let mut distinct = labels.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    // Fork names are what a reader reasons about, and far shorter than ids —
+    // but only while they still name one document each. They must also differ
+    // from the CITED document's own label: "cited from …/cancun/fork,
+    // identical in cancun" reads as a document agreeing with itself, which is
+    // the falsehood this whole function exists to avoid.
+    let cited_label = fork_label(cited);
+    let usable =
+        distinct.len() == labels.len() && !labels.iter().any(|l| Some(*l) == cited_label);
+    let mut names = if usable { labels } else { others };
     names.sort_unstable();
-    names.dedup();
-    names.join(", ")
+    Some(format!(
+        "identical in {} other document{}: {}",
+        names.len(),
+        if names.len() == 1 { "" } else { "s" },
+        names.join(", "),
+    ))
 }
 
 /// One distinct spec definition, and every document that carries it verbatim.
@@ -968,13 +1004,8 @@ impl CorpusServer {
             // Identical elsewhere: name the forks rather than repeat the body.
             // This is the line that turns "24 near-identical blocks the reader
             // must diff by eye" into "these forks agree, that one differs".
-            if !d.also.is_empty() {
-                out.push_str(&format!(
-                    "   identical in {} other document{}: {}\n",
-                    d.also.len(),
-                    if d.also.len() == 1 { "" } else { "s" },
-                    shared_by(&d.also),
-                ));
+            if let Some(line) = shared_by(&d.also, &d.doc_id) {
+                out.push_str(&format!("   {line}\n"));
             }
         }
         if shown < total {
@@ -1255,6 +1286,83 @@ mod tests {
         let shared = out.find("identical in 2 other documents").unwrap();
         let divergent = out.find("return 2").unwrap();
         assert!(divergent > shared, "divergent body listed separately:\n{out}");
+    }
+
+    /// A document that declares one identifier twice with the same body used
+    /// to report *itself* as another document that agrees — cited from
+    /// erc-7417 and then "identical in 1 other document: ercs/erc-7417".
+    /// The line is a factual claim a model will repeat, so it must never
+    /// overstate how widely a definition is shared.
+    #[test]
+    fn a_document_is_never_listed_as_agreeing_with_itself() {
+        let mut store = Store::open_in_memory().unwrap();
+        // One fence, the same declaration twice — erc-7417's real shape.
+        let content = "# Spec\n\n```solidity\npragma solidity ^0.8.0;\n\
+             function widgetOf(address a) external view returns (uint256);\n\
+             function widgetOf(address a) external view returns (uint256);\n```\n";
+        store
+            .upsert(&[Document {
+                id: "ercs/erc-7417".into(),
+                source: "ercs".into(),
+                url: "https://example.com/erc-7417".into(),
+                title: "spec".into(),
+                author: None,
+                published: "2026-01-01T00:00:00Z".into(),
+                content: content.into(),
+                meta: Map::new(),
+            }])
+            .unwrap();
+        store.upsert_source("ercs", "https://example.com", "spec").unwrap();
+        let out = CorpusServer::new(store, None)
+            .unwrap()
+            .lookup_spec_impl(LookupSpecParams { name: "widgetOf".into(), fork: None })
+            .unwrap();
+        assert!(
+            !out.contains("identical in"),
+            "a document cannot agree with itself:\n{out}"
+        );
+    }
+
+    /// The count and the names must describe the same set. Fork labels are
+    /// deduped, so counting raw entries printed "identical in 2 other
+    /// documents: cancun" when two files under one fork shared a definition.
+    #[test]
+    fn the_count_matches_the_names_when_fork_labels_collide() {
+        let body = "# Fork\n\n```python\ndef widget_fee(x: Uint) -> Uint:\n    return 1\n```\n";
+        let mut store = Store::open_in_memory().unwrap();
+        let doc = |id: &str| Document {
+            id: id.into(),
+            source: "specs".into(),
+            url: format!("https://example.com/{id}"),
+            title: "spec doc".into(),
+            author: None,
+            published: "2026-01-01T00:00:00Z".into(),
+            content: body.into(),
+            meta: Map::new(),
+        };
+        // Two DIFFERENT documents, both under forks/cancun — one label.
+        store
+            .upsert(&[
+                doc("specs/forks/cancun/fork"),
+                doc("specs/forks/cancun/vm/gas"),
+                doc("specs/forks/prague/fork"),
+            ])
+            .unwrap();
+        store.upsert_source("specs", "https://example.com", "spec").unwrap();
+        let out = CorpusServer::new(store, None)
+            .unwrap()
+            .lookup_spec_impl(LookupSpecParams { name: "widget_fee".into(), fork: None })
+            .unwrap();
+        let line = out
+            .lines()
+            .find(|l| l.contains("identical in"))
+            .expect("all three share one body");
+        // Two labels would collapse to one "cancun", so it falls back to ids.
+        assert!(line.contains("identical in 2 other documents"), "{line}");
+        assert!(
+            line.contains("specs/forks/cancun/vm/gas"),
+            "colliding labels must fall back to doc ids: {line}"
+        );
     }
 
     /// Three fork directories: two carrying a byte-identical function and one

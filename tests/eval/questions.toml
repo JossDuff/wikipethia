@@ -19,7 +19,6 @@ question = "What is the current account abstraction flow on Ethereum?"
 # per mechanism, but each is earned by either the thread that argued it or
 # the EIP/ERC that specifies it. The opus run cited all three specifications
 # and scored 0.00 strict for naming the standards instead of their threads.
-expect = []
 expect_any = [
     ["ethmagicians/post/21055", "ercs/erc-4337"],
     ["ethmagicians/post/48140", "eips/eip-7702"],
@@ -33,7 +32,6 @@ question = "Why does Ethereum have blobs?"
 # Vitalik's explainer. The opus agent-eval run cited the latter two and
 # scored 0.00 — a defect in the measure, not the answer.
 # https://ethereum-magicians.org/t/eip-4844-shard-blob-transactions/8430
-expect = []
 expect_any = [[
     "ethmagicians/post/23602",
     "eips/eip-4844",
@@ -61,7 +59,6 @@ question = "What is PBS?"
 # which is itself the signal that no single post owns the definition: the
 # ePBS-constraints OP and the "why enshrine PBS" OP both open by explaining
 # what PBS is. The opus run cited the second.
-expect = []
 expect_any = [["ethresearch/post/45970", "ethresearch/post/39462"]]
 
 [[questions]]
@@ -112,7 +109,6 @@ question = "How does PeerDAS scale blob throughput beyond EIP-4844?"
 # ANY-OF (2026-08-19): the 2023 design post, the EIP, and the consensus spec
 # are three faces of the same answer. The opus run cited the latter two.
 # https://ethresear.ch/t/peerdas-a-simpler-das-approach-using-battle-tested-p2p-components/16541
-expect = []
 expect_any = [[
     "ethresearch/post/41277",
     "eips/eip-7594",
@@ -132,7 +128,6 @@ question = "What is lean Ethereum and what are its main pillars?"
 # ANY-OF (2026-08-19): the EF's own announcement states the pillars as
 # authoritatively as either research post. The opus run cited it and scored
 # 0.00. Now one credit for any of the three, not two credits for two posts.
-expect = []
 expect_any = [[
     "ethresearch/post/61091",
     "ethresearch/post/61106",
@@ -155,7 +150,6 @@ question = "What would be the tradeoffs of adding a new commitment scheme or era
 # the opus run cited four posts that address the question as asked — the
 # tradeoffs of alternative commitment schemes and erasure codes — more
 # directly than it does. Keeping it, adding them.
-expect = []
 expect_any = [[
     "ethresearch/post/52648",
     "ethresearch/post/35615",
@@ -296,7 +290,6 @@ question = "How does the execution spec turn excess blob gas into a blob gas pri
 # question asks what the *execution spec* does, which is the thing this
 # question was added to measure, and numeric.py is a generic helper that
 # does not answer it alone.
-expect = []
 expect_any = [[
     "executionspecs/src/ethereum/forks/cancun/vm/gas.py",
     "executionspecs/src/ethereum/forks/prague/vm/gas.py",

@@ -279,5 +279,4 @@ mod tests {
         assert_eq!(fork_label("eips/eip-1271"), None);
         assert_eq!(fork_label("ethresearch/post/1"), None);
     }
-
 }

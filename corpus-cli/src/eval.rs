@@ -26,6 +26,12 @@ pub struct Question {
     /// Full document ids expected in the top [`K`], e.g.
     /// `ethresearch/post/1249`. **All-of**: every id counts separately, so a
     /// question with three expects scores 1/3 for each one found.
+    ///
+    /// Optional so a question can use `expect_any` alone, as that field's
+    /// doc comment promises. Without the default, serde rejected the file
+    /// before `parse_questions` could run its own checks, and every widened
+    /// question had to carry a placeholder `expect = []`.
+    #[serde(default)]
     pub expect: Vec<String>,
     /// Groups of interchangeable sources. **Any-of**: each inner group is
     /// worth one credit, earned by finding *any* one of its members.
@@ -303,6 +309,15 @@ mod tests {
         let q = &parse_questions(text).unwrap()[0];
         assert_eq!(q.expect_any.len(), 1);
         assert_eq!(q.all_ids().count(), 2);
+
+        // `expect` omitted entirely, which is what the doc comment promises
+        // and what every widened question in questions.toml now does. Without
+        // `#[serde(default)]` on `expect`, serde rejected the whole file
+        // before any of the validation below could run.
+        let groups_only = "[[questions]]\nquestion = \"q\"\nexpect_any = [[\"a\"]]";
+        let q = &parse_questions(groups_only).unwrap()[0];
+        assert!(q.expect.is_empty());
+        assert_eq!(recall(q, &ids(&["a"])), 1.0);
 
         // An empty group can never be satisfied — it would silently cap the
         // question below 1.00 for ever, which is the failure this guards.
