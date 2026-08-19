@@ -216,7 +216,7 @@ was wrong.
 has not regressed. Watch for near-duplicates between blog posts and their
 ethresear.ch cross-posts; flag anything above ~0.95 cosine at ingest.
 
-### [ ] Pipeline safety: index and embed can corrupt each other
+### [x] Pipeline safety: index and embed can corrupt each other
 
 **Found the hard way, 2026-08-13.** `embed` and `index` share one SQLite
 file with no lock and no warning. SQLite reuses rowids after deletion, so:
@@ -255,12 +255,28 @@ corpus is the worse failure. Verified at the CLI: a live holder produces
 `another writer holds this corpus: embed running as pid 1, started 93s ago`
 and exit 1.
 
-**Still owed: the other half of the gate.** "No vector can outlive the chunk
-content it was computed from" needs the content-hash check in
-`write_embeddings`; the lock closes the reachable hole (two CLI processes on
-one machine) but proves nothing about a vector's provenance. Anything
-bypassing the CLI, or two machines against a shared file, is still
-unguarded. The box stays unticked until the hash lands.
+**Done 2026-08-19 — the provenance check shipped, and the gate passes.**
+`write_embeddings` now takes `EmbeddedChunk { rowid, content, vector }` and,
+inside one IMMEDIATE transaction, inserts a vector only where the chunk still
+holds the text that vector was computed from. Mismatches are dropped, not
+written; the chunk then still reads as missing an embedding, so the next pass
+re-reads the current text and embeds that — self-healing, no repair command.
+`corpus embed` reports drops and bails if two consecutive batches land
+nothing, which is a concurrent writer rather than anything self-healing.
+
+**Verbatim content, not a hash.** The candidate list below said "content
+hash… at the cost of a hash column". The column turned out to be avoidable:
+the embed loop already holds the text it embedded, so the check binds it back
+and compares against `chunks.content` on a primary-key point lookup. That
+costs a few kilobytes re-bound on a path dominated by the embedder, and buys
+an exact answer instead of a collision probability — no migration, no stored
+column, no third thing to keep in sync.
+
+The test is `a_vector_cannot_outlive_the_chunk_content_it_was_computed_from`
+(`corpus-core/tests/store.rs`). It asserts the rowid is **actually reused**
+after a delete-and-reinsert before checking the guard, so it exercises real
+aliasing rather than degrading into "we wrote to a rowid that was gone" —
+which is the shape this bug would take if the test were written carelessly.
 
 **Related: `index` re-parses every raw file every run — and it does not
 matter.** `index_raw_file` has no mtime, size, or hash check, so all ~57k
@@ -273,8 +289,9 @@ from it, so skipping a file by mtime would delete its documents — and for
 Discourse one file is a whole thread. It would need a persisted
 `file → doc_ids` map per source. Not worth that for a second.
 
-**Gate:** starting `index --force` while an `embed` is mid-run either
-blocks or fails cleanly, and a test demonstrates that no vector can
+**Gate: passed 2026-08-19.** Starting `index --force` while an `embed` is
+mid-run fails cleanly (`another writer holds this corpus: embed running as
+pid 1, started 93s ago`, exit 1), and a test demonstrates that no vector can
 outlive the chunk content it was computed from.
 
 ### [ ] M8 — Contribution workflow

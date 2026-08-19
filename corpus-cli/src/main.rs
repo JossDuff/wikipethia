@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use corpus_core::{Embedder, Store, WriterLock};
+use corpus_core::{Embedder, Store, WriterLock, store::EmbeddedChunk};
 use corpus_embed::{DIM, FastEmbedder, MODEL_ID};
 use corpus_fetch::{Adapter, HttpClient, SyncIntent};
 
@@ -562,6 +562,7 @@ fn embed(db: &Path, force: bool) -> anyhow::Result<()> {
         return Ok(());
     }
     let mut done = 0usize;
+    let mut stalled = 0usize;
     let started = std::time::Instant::now();
     let mut last_note = std::time::Instant::now();
     loop {
@@ -575,13 +576,45 @@ fn embed(db: &Path, force: bool) -> anyhow::Result<()> {
             .collect();
         let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
         let vectors = embedder.embed(&refs)?;
-        let rows: Vec<(i64, Vec<f32>)> = batch
+        let rows: Vec<EmbeddedChunk<'_>> = batch
             .iter()
-            .map(|c| c.rowid)
             .zip(vectors)
+            .map(|(c, vector)| EmbeddedChunk {
+                rowid: c.rowid,
+                content: &c.content,
+                vector,
+            })
             .collect();
-        store.write_embeddings(&rows)?;
-        done += rows.len();
+        // Vectors whose chunk changed underneath them are dropped rather than
+        // written against text they do not describe. Those chunks still read
+        // as missing, so the next batch re-reads and re-embeds them — but a
+        // batch that lands nothing at all twice running is not self-healing,
+        // it is a loop, so say what it means and stop.
+        let written = store.write_embeddings(&rows)?;
+        if written < rows.len() {
+            eprintln!(
+                "note: {} of {} vectors dropped — their chunks changed mid-embed; \
+                 re-reading them next batch",
+                rows.len() - written,
+                rows.len()
+            );
+        }
+        if written == 0 {
+            stalled += 1;
+            if stalled >= 2 {
+                bail!(
+                    "embed made no progress across two batches of {} chunks — every \
+                     vector was rejected because its chunk changed while being \
+                     embedded. Something else is writing to {} concurrently; stop it \
+                     and re-run.",
+                    rows.len(),
+                    db.display()
+                );
+            }
+            continue;
+        }
+        stalled = 0;
+        done += written;
         // Rate and ETA, throttled: a full embed runs long enough that
         // "how much longer" is the question, not "is it moving".
         if last_note.elapsed().as_secs() >= 5 || done == total {
