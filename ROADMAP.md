@@ -604,14 +604,86 @@ answer scored zero. Exhibit A for item 1 above.
 
 `lookup_spec` was reached for in 9 of 33 sessions.
 
-**BLOCKED 2026-08-19 — `agent-eval` cannot run on Claude Code 2.1.236.** A
-headless (`-p`) session connects the MCP server and loads its instructions
-string, but the CLI never registers the tool *schemas*: no `mcp__wikipethia__*`
-appears in the session's tool list, and `ToolSearch` cannot find them either
-(`select:mcp__wikipethia__search_posts` → "No matching deferred tools found").
-Reproduced with and without `--allowedTools`, with explicit tool names, with
-a server-level allow, and with `--tools ""`. Nothing on our side: the same
-binary and database answer JSON-RPC probes in under 0.1s.
+### Third baseline — opus, 33 questions, 2026-08-19, $17.14, 0 failures
+
+**strict 0.889 / thread 0.897**, 261 tool calls. And the headline number is
+the least interesting thing in it, because the eval set changed in the same
+batch. The only honest way to read it is the 2×2 — both runs scored under
+both rulers, on identical stored answers:
+
+| run | old ruler (single-doc) | new ruler (`expect_any`) |
+|---|---|---|
+| Aug-14 answers | 0.693 / 0.709 | 0.875 / 0.881 |
+| Aug-19 answers | **0.677 / 0.695** | **0.889 / 0.897** |
+
+Read down the columns, not across the diagonal. **The system did not
+measurably improve.** On the old ruler it went *down* 0.016; on the new
+ruler it went up 0.014. The two rulers disagree on the sign, which is what
+run-to-run variance across 33 stochastic sessions looks like. The entire
+0.693 → 0.889 headline is the ruler, and quoting it as progress would be a
+self-graded win.
+
+That is not a disappointing result, it is the expected one: nothing in this
+batch targeted answer quality. The corpus grew 0.2%, `lookup_spec` got
+cheaper to read, and a provenance check landed. None of that should move an
+answer-citation metric, and it didn't.
+
+One behavioural change did show up, and it is the one the tool-description
+edit was aimed at: **`lookup_spec` was reached for in 14 of 33 sessions, up
+from 9**. Suggestive at n=33 rather than conclusive, but it is the right
+direction and the only number here that plausibly reflects a change we made.
+
+| tool | Aug-14 | Aug-19 |
+|---|---|---|
+| `search_posts` | 107 calls / 31 sessions | 104 / 32 |
+| `get_post_context` | 114 / 30 | 117 / 32 |
+| `lookup_spec` | 31 / 9 | 35 / **14** |
+| `get_topic` | 3 / 3 | 5 / 5 |
+
+The three questions still below 1.00 strict are the known coverage cases,
+unchanged in character: the validator-services synthesis (0.00, 12 all-of
+expects, documented as an indefinite floor), the L2 taxonomy (0.40), and
+L1 privacy (0.43). Each wants breadth no single citation set satisfies.
+
+---
+
+**RESOLVED 2026-08-19 — was blocked on an rmcp bug, not the CLI.** Kept in
+full because the diagnosis took most of a day and the failure mode is one
+this project will meet again.
+
+Claude Code 2.1.236 cannot run `agent-eval` against rmcp **3.0.0**. A
+headless (`-p`) session connects the server and loads its instructions
+string, but no `mcp__wikipethia__*` tool is ever registered, and `ToolSearch`
+cannot find them either (`select:mcp__wikipethia__search_posts` → "No matching
+deferred tools found").
+
+**Root cause: rmcp 3.0.0 advertises a protocol it cannot serve.** The client
+opens a *separate probe connection* and asks `server/discover`; rmcp answers
+`supportedVersions: [… "2026-07-28"]`. The client believes it, drops the
+`initialize` handshake, and sends `tools/list` with that version in `_meta`.
+rmcp replies — correctly shaped — and the client rejects every reply, retries
+at 0.5s/1s/2s, and gives up. Proven by rewriting exactly one string in a
+proxy: strip `"2026-07-28"` from 3.0.0's advertised list and all five tools
+register; put it back and none do. **rmcp 3.1.3 fixes it** (`corpus-mcp`
+now requires it) — five tools register against the real binary, and the
+2-question smoke went from 0.00/0.00 with 0 tool calls to 1.00/1.00 with 19.
+
+**This was never today's bug, and never the corpus.** rmcp has been pinned at
+3.0.0 since Aug 7; the Aug-14 baseline made 255 tool calls; CLI 2.1.233
+(Aug 17) already fails. Claude Code introduced the probe between Aug 14 and
+Aug 17, and wikipethia was silently toolless in *every* Claude Code session
+for five days — agent-eval is merely where it became visible, because it
+spends money to find out.
+
+**What the diagnosis had to eliminate first**, since "our tools are missing"
+has many likelier causes: the server (`tools/list` returns all 5 in 0.24s
+cold), our schemas (those exact 5, replayed by a Python server, register
+5-of-5), the CLI itself (a minimal Python MCP server registers fine), the
+server name, rmcp's `resultType` field, response latency (1-2ms, and the
+retries come *after* success), and the CLI version (2.1.233-236 identical).
+The decisive clue only appeared after logging *every* connection: the
+`server/discover` probe runs on its own, and a truncating (`"w"`-mode) proxy
+log had been overwriting it with the second conversation.
 
 A 2-question opus smoke ($0.82) scored 0.00/0.00 with **zero tool calls** —
 both answers came from pretraining, and one said so.
