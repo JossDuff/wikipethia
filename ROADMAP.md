@@ -362,7 +362,7 @@ after the opus run below**:
 3. **`lookup_spec` surface gaps** — Solidity fences **done** 2026-08-14 (see
    below); collapsing per-fork duplicates still open.
 
-### [ ] `lookup_spec` — Solidity interfaces, and collapsing per-fork duplicates
+### [x] `lookup_spec` — Solidity interfaces, and collapsing per-fork duplicates
 
 Two independent gaps in the same tool. Neither needs new plumbing;
 `corpus-core/src/spec.rs` parses on demand and both are extensions to it.
@@ -402,25 +402,51 @@ definitions with "27 more matched" in the footer. Bounded and self-describing,
 but a real increase — and an argument for item 2 below, since the cap is doing
 work that collapsing near-identical bodies should be doing instead.
 
-**2. It returns a dozen byte-identical bodies.** Measured: `lookup_spec
-calculate_base_fee_per_gas` with `fork = "cancun"` puts cancun first as
-designed and then emits **13 more copies of the same function**, identical
-down to the docstring, one per fork directory. For a spec-engineering client
-that is thousands of wasted tokens per lookup, on the source that has 24
-near-identical fork trees. Collapse identical bodies and name the forks that
-share one — *"identical in london, paris, shanghai, cancun, prague, osaka,
-bpo1–5, amsterdam, arrow_glacier, gray_glacier"* — which also makes genuine
-divergence **visible** instead of something the reader has to diff by eye.
-ROADMAP flagged the risk of this batch being spec-shaped; this is the shape it
-took.
+**2. It returns a dozen byte-identical bodies. — DONE 2026-08-19.** Was:
+`lookup_spec calculate_base_fee_per_gas` with `fork = "cancun"` put cancun
+first as designed and then emitted **13 more copies of the same function**,
+identical down to the docstring, one per fork directory.
 
-**Gate (restated, since the first version measured the wrong layer):**
-`lookup_spec` returns erc-1271's magic value for `isValidSignature` — **met**
-— and a `lookup_spec` call for an identifier the executable spec copies per
-fork returns one body per *distinct* implementation with its forks listed,
-not one per directory — **still open**. Neither is visible to `eval`; both are
-probe-verifiable, and `agent-eval` is what prices whether a client actually
-reaches for the tool.
+`lookup_spec` now groups by the definition rather than by the document.
+Identical bodies collapse to one, cited from the fork-preferred document,
+followed by `identical in 13 other documents: amsterdam, arrow_glacier,
+bpo1…` — fork names via `format::fork_label`, falling back to the doc id for
+fork-agnostic documents so nothing is ever named ambiguously.
+
+Measured, same call: **29,721 chars / 926 lines → 2,398 / 69**, a 92%
+reduction. The legibility win is the bigger one:
+`lookup_spec calculate_excess_blob_gas` now shows **three** distinct
+implementations — one shared by amsterdam/osaka/bpo1–5, and cancun and prague
+each on their own — where before it was nine near-identical blocks a reader
+had to diff by eye.
+
+Grouping is on the **untruncated** source, not the rendered block: a long
+function's rendered form carries a `get_post_context doc_id=…` hint naming
+its own document, so grouping on rendered text would have made every fork's
+copy unique and defeated the collapse on exactly the functions where it saves
+most.
+
+**Correcting this item's other claim.** It said the `MAX_DEFINITIONS` cap "is
+doing work that collapsing near-identical bodies should be doing instead",
+citing `transferFrom` at 21k chars. Collapsing does **not** help there and
+should not: those 40+ definitions come from different ERCs with genuinely
+different signatures, so they are distinct definitions, not duplicates.
+Measured after: `transferFrom` 22,038 chars, `isValidSignature` 11,123 —
+essentially unchanged, which is the correct result. Only byte-identical
+bodies merge, deliberately; merging "near-identical" ones would hide exactly
+the divergence this feature exists to expose. The cap is still doing real
+work on the ERC-method case and has no better mechanism waiting for it.
+
+**Gate (restated, since the first version measured the wrong layer): passed
+2026-08-19.** `lookup_spec` returns erc-1271's magic value for
+`isValidSignature` — met — and a `lookup_spec` call for an identifier the
+executable spec copies per fork returns one body per *distinct*
+implementation with its forks listed, not one per directory — met, probed
+over JSON-RPC against the live corpus. Neither is visible to `eval`
+(confirmed again: lexical/fused unchanged either side of this change, because
+`eval` calls `hybrid_search` and never reaches `spec.rs`); `agent-eval` is
+what prices whether a client actually reaches for the tool, and the tool
+description changed here, so it is due a run.
 
 ### [ ] M9 — Reranker
 

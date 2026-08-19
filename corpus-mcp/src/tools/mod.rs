@@ -5,6 +5,7 @@
 
 pub mod format;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use corpus_core::{CoreError, Embedder, Store, spec};
@@ -22,8 +23,49 @@ use serde_json::Value;
 use format::{
     FUNCTION_MAX_CHARS, INDEX_EXCERPT_CHARS, MAX_CONTEXT, MAX_DEFINITIONS, MAX_LIMIT,
     NEIGHBOR_MAX_CHARS, OP_MAX_CHARS, REPLY_PAGE, RESULT_EXCERPT_CHARS, citation, date, excerpt,
-    post_label, spec_status, truncate_block, window,
+    fork_label, post_label, spec_status, truncate_block, window,
 };
+
+/// How to name the other documents sharing a definition: their fork labels
+/// where they have one, else the doc id itself.
+///
+/// Fork names are what a reader reasons about ("identical in london, paris,
+/// shanghai…"), and they are far shorter than the ids — which is half the
+/// point, since the whole exercise is to stop spending thousands of tokens
+/// restating one function. Documents with no fork in their path keep their
+/// id, so nothing is ever named ambiguously.
+fn shared_by(doc_ids: &[String]) -> String {
+    let mut names: Vec<&str> = doc_ids
+        .iter()
+        .map(|id| fork_label(id).unwrap_or(id.as_str()))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names.join(", ")
+}
+
+/// One distinct spec definition, and every document that carries it verbatim.
+///
+/// `lookup_spec` groups by the definition rather than by the document because
+/// the executable spec keeps one near-identical copy per fork directory —
+/// 14 byte-identical bodies for `calculate_base_fee_per_gas` before this.
+struct Definition {
+    /// In the fork the caller asked for. Sorted first.
+    in_fork: bool,
+    /// A function rather than a constant; constants sort first.
+    is_fn: bool,
+    /// The identifier matched exactly, rather than as a substring of a
+    /// suffixed variant like `MAX_EFFECTIVE_BALANCE_ELECTRA`.
+    exact: bool,
+    /// The rendered definition, without its citation.
+    body: String,
+    /// The document this body is cited from — the fork-preferred one when
+    /// the group has one, since a truncated body's continuation hint names it.
+    doc_id: String,
+    cite: String,
+    /// Other documents carrying a byte-identical definition.
+    also: Vec<String>,
+}
 
 /// Clone is cheap by design — Arc bumps plus the instructions string. The
 /// HTTP transport's handler factory clones one shared server per session
@@ -691,7 +733,7 @@ impl CorpusServer {
 
     #[tool(
         name = "lookup_spec",
-        description = "Look up an exact identifier in the canonical Ethereum specifications held in the local corpus: a constant's value (MAX_EFFECTIVE_BALANCE, MIN_SLASHING_PENALTY_QUOTIENT), a spec function's Python body (process_deposit, get_validator_churn_limit), or an ERC's Solidity declaration and magic values (isValidSignature, permit, previewRedeem, MAGICVALUE). Reach for it on \"what exactly does this return / what is the selector / what value must I compare against\" questions: those answers are short literals like 0x1626ba7e that free-text search cannot retrieve at all, and the declaration comes back with the doc comment stating the MUST. Use this INSTEAD of search_posts whenever the question names a specific spec identifier — free-text search stems identifiers apart and ranks forum discussion above the defining document; this tool reads the spec documents themselves and returns every definition with a citable URL. Matching is case-sensitive and substring-based on the identifier, which matters: forks often introduce suffixed variants rather than redefining a name (MAX_EFFECTIVE_BALANCE_ELECTRA), so a base-name query intentionally returns the variants too — compare the fork labels in the citations to pick the right one, and don't assume the newest fork redefines every constant. Pass fork (a spec directory name — consensus-layer forks like \"electra\" or \"phase0\", execution-layer forks like \"cancun\", \"prague\", \"osaka\") to put that fork's definitions first, which is usually essential for execution-layer identifiers: the executable spec keeps one near-identical copy per fork, so an unfiltered lookup returns two dozen variants of the same function; other forks' definitions still follow, because the value a fork actually uses is often inherited from an earlier one or lives under a suffixed name. Returns nothing for concepts or prose — for those use search_posts."
+        description = "Look up an exact identifier in the canonical Ethereum specifications held in the local corpus: a constant's value (MAX_EFFECTIVE_BALANCE, MIN_SLASHING_PENALTY_QUOTIENT), a spec function's Python body (process_deposit, get_validator_churn_limit), or an ERC's Solidity declaration and magic values (isValidSignature, permit, previewRedeem, MAGICVALUE). Reach for it on \"what exactly does this return / what is the selector / what value must I compare against\" questions: those answers are short literals like 0x1626ba7e that free-text search cannot retrieve at all, and the declaration comes back with the doc comment stating the MUST. Use this INSTEAD of search_posts whenever the question names a specific spec identifier — free-text search stems identifiers apart and ranks forum discussion above the defining document; this tool reads the spec documents themselves and returns every definition with a citable URL. Matching is case-sensitive and substring-based on the identifier, which matters: forks often introduce suffixed variants rather than redefining a name (MAX_EFFECTIVE_BALANCE_ELECTRA), so a base-name query intentionally returns the variants too — compare the fork labels in the citations to pick the right one, and don't assume the newest fork redefines every constant. Definitions that are byte-identical across fork directories are returned ONCE, followed by a line naming the other forks that share them (\"identical in 13 other documents: amsterdam, bpo1, …\") — so a fork listed there is not missing, it simply agrees. Read two separate blocks for the same identifier as a real divergence between those forks, and the fork labels as the authoritative list of who has which version. Pass fork (a spec directory name — consensus-layer forks like \"electra\" or \"phase0\", execution-layer forks like \"cancun\", \"prague\", \"osaka\") to put that fork's copy first and cite it directly; other forks' definitions still follow, because the value a fork actually uses is often inherited from an earlier one or lives under a suffixed name. Returns nothing for concepts or prose — for those use search_posts."
     )]
     async fn lookup_spec(
         &self,
@@ -736,9 +778,66 @@ impl CorpusServer {
         }
         let docs = store.docs_containing(name, &spec_sources).map_err(internal)?;
 
-        // (in_fork, kind_is_function, exact, doc index, rendered block)
+        // One entry per *distinct definition*, not per document. The
+        // executable spec keeps a near-identical copy of each function per
+        // fork directory, so an unfiltered lookup used to emit the same body
+        // two dozen times: `calculate_base_fee_per_gas` returned 29,721
+        // characters across 926 lines, of which 14 copies were byte-identical
+        // down to the docstring. Collapsing them is not only cheaper — it is
+        // what makes genuine divergence *visible*, instead of something the
+        // reader has to find by diffing near-identical blocks by eye.
+        //
+        // `body` is the whole rendered definition minus its citation, so it
+        // is the grouping key: anything textually identical merges, anything
+        // that differs at all stays its own entry. No fork-order table, no
+        // inheritance model — the text decides, which is the same reason M10
+        // declined to resolve fork inheritance.
         let fork_needle = p.fork.as_deref().map(|f| format!("/{f}/"));
-        let mut blocks: Vec<(bool, bool, bool, String)> = Vec::new();
+        let mut blocks: Vec<Definition> = Vec::new();
+        let mut by_key: HashMap<String, usize> = HashMap::new();
+        let mut push_keyed = |in_fork: bool,
+                              is_fn: bool,
+                              exact: bool,
+                              key: String,
+                              body: String,
+                              doc_id: &str,
+                              cite: String| {
+            match by_key.get(&key) {
+                Some(&at) => {
+                    let d: &mut Definition = &mut blocks[at];
+                    // A group is fork-preferred, or exact, if ANY of its
+                    // members is: the fork the caller asked for must still
+                    // sort first even when an earlier fork produced the
+                    // identical body that now represents the group.
+                    if in_fork && !d.in_fork {
+                        d.in_fork = true;
+                        d.cite = cite.clone();
+                        // The representative body must come from the fork the
+                        // caller asked about — for a truncated function its
+                        // continuation hint names a doc_id, and that hint has
+                        // to point at the fork being read, not at whichever
+                        // one happened to be parsed first.
+                        d.body = body;
+                        d.also.push(std::mem::replace(&mut d.doc_id, doc_id.to_string()));
+                    } else {
+                        d.also.push(doc_id.to_string());
+                    }
+                    d.exact |= exact;
+                }
+                None => {
+                    by_key.insert(key, blocks.len());
+                    blocks.push(Definition {
+                        in_fork,
+                        is_fn,
+                        exact,
+                        body,
+                        doc_id: doc_id.to_string(),
+                        cite,
+                        also: Vec::new(),
+                    });
+                }
+            }
+        };
         for doc in &docs {
             // Every doc came from a tier="spec" source by construction —
             // no per-doc tier query needed.
@@ -761,12 +860,18 @@ impl CorpusServer {
                     continue;
                 }
                 let desc = c.description.map(|d| format!(" — {d}")).unwrap_or_default();
-                blocks.push((
+                let rendered = format!("{} = {}{desc}{status}", c.name, c.value);
+                push_keyed(
                     in_fork,
                     false,
                     c.name == name,
-                    format!("{} = {}{desc}{status}\n   {cite}", c.name, c.value),
-                ));
+                    // A constant renders no doc-specific hint, so its text is
+                    // its own identity.
+                    rendered.clone(),
+                    rendered,
+                    &doc.id,
+                    cite.clone(),
+                );
             }
             // A .py document IS Python; everything else is prose that may
             // quote Python or Solidity inside fences. The ERCs are the
@@ -808,15 +913,24 @@ impl CorpusServer {
                         None => format!("{}\n… [function truncated]", head.trim_end()),
                     }
                 };
-                blocks.push((
+                push_keyed(
                     in_fork,
                     true,
                     f.name == name,
+                    // Identity is the *untruncated* source. The rendered body
+                    // carries a "call get_post_context with doc_id=…" hint
+                    // naming the document it came from, so grouping on the
+                    // rendered text would make every fork's copy of a long
+                    // function unique — defeating the collapse on exactly the
+                    // functions where it saves the most.
+                    format!("{}{label}{status}{}\n{}", f.name, f.language, f.code),
                     format!(
-                        "{}{label}{status}\n```{}\n{code}\n```\n   {cite}",
+                        "{}{label}{status}\n```{}\n{code}\n```",
                         f.name, f.language
                     ),
-                ));
+                    &doc.id,
+                    cite.clone(),
+                );
             }
         }
 
@@ -830,11 +944,11 @@ impl CorpusServer {
 
         // Fork-preferred first, then exact-name before variants, constants
         // before functions; stable within groups (docs arrive id-ordered).
-        blocks.sort_by_key(|(in_fork, is_fn, exact, _)| (!in_fork, *is_fn, !exact));
+        blocks.sort_by_key(|d| (!d.in_fork, d.is_fn, !d.exact));
         let total = blocks.len();
         let shown = total.min(MAX_DEFINITIONS);
         let mut out = match (&p.fork, blocks.first()) {
-            (Some(fork), Some((false, ..))) => format!(
+            (Some(fork), Some(d)) if !d.in_fork => format!(
                 "No definition matching {name:?} inside fork {fork:?} — fork \
                  directories only carry what they change, so the governing \
                  definition is usually inherited or suffixed. Definitions found \
@@ -846,10 +960,22 @@ impl CorpusServer {
             ),
             (None, _) => format!("Definitions matching {name:?} across the spec corpus:\n"),
         };
-        for (_, _, _, block) in blocks.iter().take(shown) {
+        for d in blocks.iter().take(shown) {
             out.push('\n');
-            out.push_str(block);
+            out.push_str(&d.body);
             out.push('\n');
+            out.push_str(&format!("   {}\n", d.cite));
+            // Identical elsewhere: name the forks rather than repeat the body.
+            // This is the line that turns "24 near-identical blocks the reader
+            // must diff by eye" into "these forks agree, that one differs".
+            if !d.also.is_empty() {
+                out.push_str(&format!(
+                    "   identical in {} other document{}: {}\n",
+                    d.also.len(),
+                    if d.also.len() == 1 { "" } else { "s" },
+                    shared_by(&d.also),
+                ));
+            }
         }
         if shown < total {
             out.push_str(&format!(
@@ -1080,6 +1206,88 @@ mod tests {
         assert!(out.contains("https://example.com/specs/specs/phase0/beacon-chain"));
         // Research-tier mentions never masquerade as definitions.
         assert!(!out.contains("ethresear.ch"), "forum leaked into spec lookup:\n{out}");
+    }
+
+    /// The executable spec copies each function into every fork directory,
+    /// so an unfiltered lookup used to return one body per *directory*
+    /// (`calculate_base_fee_per_gas`: 14 byte-identical copies, 29,721
+    /// characters). Identical bodies collapse to one, naming the forks that
+    /// share it.
+    #[test]
+    fn identical_definitions_collapse_and_name_the_forks_sharing_them() {
+        let s = repeated_fork_server();
+        let out = s
+            .lookup_spec_impl(LookupSpecParams {
+                name: "calculate_widget_fee".into(),
+                fork: None,
+            })
+            .unwrap();
+        // Four directories, two distinct implementations: two bodies, not four.
+        assert_eq!(
+            out.matches("def calculate_widget_fee").count(),
+            2,
+            "one body per DISTINCT implementation, not per document:\n{out}"
+        );
+        assert!(
+            out.contains("identical in 2 other documents: paris, shanghai"),
+            "the forks sharing a body are named:\n{out}"
+        );
+    }
+
+    /// The other half, and the reason collapsing is a legibility fix and not
+    /// just a token saving: a fork that genuinely diverges must still stand
+    /// alone, rather than being folded in with the ones that agree.
+    #[test]
+    fn a_diverging_fork_is_not_collapsed_away() {
+        let s = repeated_fork_server();
+        let out = s
+            .lookup_spec_impl(LookupSpecParams {
+                name: "calculate_widget_fee".into(),
+                fork: None,
+            })
+            .unwrap();
+        assert!(out.contains("return 1"), "the shared body survives:\n{out}");
+        assert!(
+            out.contains("return 2"),
+            "the divergent fork keeps its own body:\n{out}"
+        );
+        // And it is not silently attributed to the group that agrees.
+        let shared = out.find("identical in 2 other documents").unwrap();
+        let divergent = out.find("return 2").unwrap();
+        assert!(divergent > shared, "divergent body listed separately:\n{out}");
+    }
+
+    /// Three fork directories: two carrying a byte-identical function and one
+    /// that changed it.
+    fn repeated_fork_server() -> CorpusServer {
+        let body = |ret: &str| {
+            format!(
+                "# Fork\n\n```python\ndef calculate_widget_fee(x: Uint) -> Uint:\n    return {ret}\n```\n"
+            )
+        };
+        let mut store = Store::open_in_memory().unwrap();
+        let doc = |id: &str, content: String| Document {
+            id: id.into(),
+            source: "specs".into(),
+            url: format!("https://example.com/{id}"),
+            title: "spec doc".into(),
+            author: None,
+            published: "2026-01-01T00:00:00Z".into(),
+            content,
+            meta: Map::new(),
+        };
+        store
+            .upsert(&[
+                doc("specs/forks/london/fork", body("1")),
+                doc("specs/forks/paris/fork", body("1")),
+                // Deliberately id-ordered between two agreeing forks, so the
+                // grouping cannot be an artefact of contiguous input.
+                doc("specs/forks/prague/fork", body("2")),
+                doc("specs/forks/shanghai/fork", body("1")),
+            ])
+            .unwrap();
+        store.upsert_source("specs", "https://example.com/specs", "spec").unwrap();
+        CorpusServer::new(store, None).unwrap()
     }
 
     #[test]
