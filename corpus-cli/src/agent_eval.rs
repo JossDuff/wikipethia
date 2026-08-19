@@ -89,11 +89,15 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
     // paid session: a broken server otherwise burns a full budget per
     // question, for every question, answering from pretraining.
     probe_server(&mut server_cmd, Duration::from_secs(60))?;
+    // …and one real session, because the handshake above proves only that
+    // OUR binary works. See `probe_tools_reachable`.
+    probe_tools_reachable(config, &mcp_config, &out_dir)?;
 
     let mut strict_total = 0.0;
     let mut thread_total = 0.0;
     let mut cost_total = 0.0;
     let mut failures = 0usize;
+    let mut tool_calls_total = 0usize;
     println!("strict thread tools    cost  question");
     for (i, (q, urls)) in questions.iter().zip(&expected_urls).enumerate() {
         let run = run_one(config, &mcp_config, &out_dir, i, &q.question);
@@ -105,6 +109,7 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
         strict_total += strict;
         thread_total += thread;
         cost_total += run.cost_usd;
+        tool_calls_total += run.queries.len();
         let flag = if run.error.is_some() { "  [FAILED]" } else { "" };
         println!(
             "  {strict:.2}   {thread:.2}  {:5}  ${:.2}  {}{flag}",
@@ -132,10 +137,17 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
     }
 
     let n = questions.len() as f64;
+    // A sweep in which nothing ever called the corpus measured the model's
+    // pretraining, not this server. The pre-sweep probe should have caught
+    // it, so reaching here means the tools went away mid-run — either way the
+    // means are not a baseline and must not be written down as one.
+    let valid = tool_calls_total > 0;
     let summary = json!({
         "model": config.model,
         "questions": questions.len(),
         "failures": failures,
+        "tool_calls": tool_calls_total,
+        "valid": valid,
         "strict_mean": strict_total / n,
         "thread_mean": thread_total / n,
         // A killed session's spend has no result event to report it, so
@@ -146,7 +158,8 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
     let cost_note = if failures > 0 { " (lower bound — failed sessions still spend)" } else { "" };
     println!(
         "\nagent-eval: strict {:.3}, thread {:.3} over {} questions — {} failed, \
-         ${cost_total:.2}{cost_note} total ({}), artifacts in {}",
+         {tool_calls_total} tool calls, ${cost_total:.2}{cost_note} total ({}), \
+         artifacts in {}",
         strict_total / n,
         thread_total / n,
         questions.len(),
@@ -154,6 +167,14 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
         config.model,
         out_dir.display()
     );
+    if !valid {
+        bail!(
+            "NOT A BASELINE: no question called the corpus even once, so these \
+             means describe {}'s pretraining rather than this server. Do not \
+             record them. (summary.json carries \"valid\": false.)",
+            config.model
+        );
+    }
     Ok(())
 }
 
@@ -414,6 +435,63 @@ fn write_mcp_config(
 
 /// One direct JSON-RPC initialize round-trip against the configured
 /// server, exactly as the headless sessions will launch it.
+/// Spend one session proving a headless client can actually **call** the
+/// corpus tools, and abort the whole run if it cannot.
+///
+/// [`probe_server`] is not enough, and 2026-08-19 is how we know. Claude Code
+/// 2.1.236 connects the MCP server, loads its instructions string, reports
+/// `"status": "connected"` — and never registers its tool schemas. A headless
+/// session then answers every question from pretraining. Nothing in the
+/// stream says so: the status guard in `run_one_inner` sees `connected` and
+/// passes, so a 33-question sweep would complete, report **`0 failed`**, and
+/// record a confident 0.000 against a 0.693 baseline. That reads as a
+/// catastrophic corpus regression caused by nothing at all, and it costs a
+/// full sweep to produce.
+///
+/// A false abort costs one re-run; a false baseline gets written down. So
+/// this probes on the configured model rather than a cheap tier — "the model
+/// was too weak to call a tool" must not be confusable with "the tools are
+/// not there" — and asks for a single call and nothing else, which keeps it
+/// to a small fraction of one question's budget.
+fn probe_tools_reachable(
+    config: &Config,
+    mcp_config: &Path,
+    out_dir: &Path,
+) -> anyhow::Result<()> {
+    let probe = run_one(
+        config,
+        mcp_config,
+        out_dir,
+        // Its artifacts land beside the questions' as q99-*, out of the way
+        // of the q00.. sequence --regrade reads.
+        99,
+        "Call the search_posts tool with the query \"proposer builder separation\". \
+         Then reply with only the number of results. Do not answer from your own \
+         knowledge and do not explain.",
+    );
+    if !probe.queries.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "the wikipethia tools are connected but not callable from a headless \
+         session — a probe on {} made no tool call{}.\n\n\
+         Every question would answer from pretraining and score ~0.00 while \
+         reporting success, so this run is stopped before it spends anything \
+         more. Known cause: Claude Code 2.1.236 does not register MCP tool \
+         schemas in `-p` mode (the server still reports \"connected\", and \
+         ToolSearch cannot find `mcp__wikipethia__*` either). Check `claude \
+         --version`.\n\n\
+         Probe artifacts: {}",
+        config.model,
+        probe
+            .error
+            .as_deref()
+            .map(|e| format!(" ({e})"))
+            .unwrap_or_default(),
+        out_dir.join("q99-stream.jsonl").display(),
+    )
+}
+
 fn probe_server(cmd: &mut Command, timeout: Duration) -> anyhow::Result<()> {
     let mut child = cmd
         .stdin(Stdio::piped())

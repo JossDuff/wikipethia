@@ -604,6 +604,38 @@ answer scored zero. Exhibit A for item 1 above.
 
 `lookup_spec` was reached for in 9 of 33 sessions.
 
+**BLOCKED 2026-08-19 — `agent-eval` cannot run on Claude Code 2.1.236.** A
+headless (`-p`) session connects the MCP server and loads its instructions
+string, but the CLI never registers the tool *schemas*: no `mcp__wikipethia__*`
+appears in the session's tool list, and `ToolSearch` cannot find them either
+(`select:mcp__wikipethia__search_posts` → "No matching deferred tools found").
+Reproduced with and without `--allowedTools`, with explicit tool names, with
+a server-level allow, and with `--tools ""`. Nothing on our side: the same
+binary and database answer JSON-RPC probes in under 0.1s.
+
+A 2-question opus smoke ($0.82) scored 0.00/0.00 with **zero tool calls** —
+both answers came from pretraining, and one said so.
+
+**The harness could not see this, which is the part worth fixing.** The
+status guard checks `server_status == "connected"`, and the status *is*
+`connected`. A full sweep would have completed, reported `0 failed`, and
+recorded a confident 0.000 against the 0.693 baseline — a catastrophic
+corpus regression caused by nothing, for $17.
+
+Two guards added, so it cannot happen quietly again:
+
+- `probe_tools_reachable` spends **one** session before the sweep proving a
+  headless client can actually *call* a corpus tool, and aborts with the
+  diagnosis if not. It probes on the configured model rather than a cheap
+  tier, so "too weak to call a tool" is never confusable with "no tools".
+  Verified: the sweep now stops after one probe with exit 1.
+- The summary carries `tool_calls` and `valid`, and a run where nothing ever
+  called the corpus exits non-zero with "NOT A BASELINE" rather than
+  printing means that look recordable.
+
+The recorded baselines above stay valid — they were measured when this
+worked. They simply cannot be reproduced until the CLI does.
+
 ### [ ] M12 — Adoption kit
 
 What "published community tool" needs beyond M8's dataset publishing:
