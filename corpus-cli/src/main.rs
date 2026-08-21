@@ -195,7 +195,14 @@ fn main() -> anyhow::Result<()> {
             force,
         } => {
             let manifest = Manifest::load()?;
-            let intent = SyncIntent { limit, full, force };
+            // A bare `sync` keeps the cheap checkpointed walk; `build` and
+            // `update` are what widen listings routinely.
+            let intent = SyncIntent {
+                limit,
+                full,
+                full_listings: false,
+                force,
+            };
             if let Some(topic_id) = topic {
                 let Some(source) = source.as_deref() else {
                     bail!("--topic needs --source: topic ids are source-relative");
@@ -316,7 +323,21 @@ fn pipeline(run: Run, source: Option<&str>, db: &Path) -> anyhow::Result<()> {
     drop(WriterLock::acquire(db, run.verb())?);
 
     report::stage(1, 3, "sync");
-    let synced = sync_sources(&manifest, source, &SyncIntent::default(), &table);
+    // Forum listings are walked to the end on every run, not just to the
+    // checkpoint. A deleted post changes its topic's `posts_count` but does
+    // not bump the topic in the activity listing, so a checkpointed walk
+    // cannot see a removal in a quiet thread — and a removal request is
+    // exactly the case that must not wait for someone to remember `--full`.
+    // Costs ~4 minutes across both forums, nearly all of it listing pages;
+    // topics upstream has not touched are still skipped without a fetch.
+    // Feeds are deliberately NOT widened here: their cost is per article,
+    // not per page (808 requests, ~13.5 minutes), and a feed cannot express
+    // a deletion anyway.
+    let intent = SyncIntent {
+        full_listings: true,
+        ..SyncIntent::default()
+    };
+    let synced = sync_sources(&manifest, source, &intent, &table);
     // One lock across both database stages: index and embed must not
     // interleave with each other or with a hand-run stage, and releasing
     // between them would leave exactly the gap worth closing. Re-acquired

@@ -8,13 +8,26 @@
 //!   what it already has.
 //! - **[`SyncState`], for incrementality.** `/latest` is ordered by activity,
 //!   so a walk that remembers how far back the last complete walk reached can
-//!   stop once it is reading old news. Without it a routine update costs the
-//!   whole listing — ~236 pages across both forums — to learn nothing.
+//!   stop once it is reading old news.
 //!
 //! The two are deliberately separate. File presence answers "do I have this?";
 //! the checkpoint answers "has upstream moved past it?". Before the second
 //! existed, presence answered both, which is why a topic fetched once was
 //! frozen at that version forever no matter how many replies it gained.
+//!
+//! **The checkpoint no longer bounds `build`/`update` (2026-08-21).** Those
+//! set [`SyncIntent::full_listings`] and walk every page, because stopping at
+//! the checkpoint makes one class of change permanently invisible: a deleted
+//! post decrements its topic's `posts_count` but does **not** bump the topic
+//! in the activity listing, so a deletion in a quiet thread is never
+//! revisited. Removal requests have exactly that shape, and "invisible until
+//! someone remembers `--full`" was not an acceptable answer for them.
+//!
+//! Measured, not assumed: a full walk is 102 pages and **1m42s** for
+//! ethresear.ch, 136 pages and **2m45s** for EthMagicians, with 3,049 and
+//! 4,039 topics respectively skipped without a fetch. A no-op `update` went
+//! from ~1m15s to ~5m50s. The checkpoint still bounds a bare `sync`, which
+//! is the cheap path when you only want recent activity.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -125,6 +138,24 @@ pub struct SyncIntent {
     /// Look at everything the source offers, not just what has moved since
     /// the checkpoint. Widens the search; does not force refetches.
     pub full: bool,
+    /// Widen walks whose cost is *per listing page* — never those whose cost
+    /// is per item. `build` and `update` set this; a bare `sync` does not.
+    ///
+    /// The two are separated because "look at everything" costs wildly
+    /// different amounts by adapter. A Discourse listing describes 30 topics
+    /// per request, so reading all of ethresear.ch is 102 requests —
+    /// **measured at 1m47s**, of which 3,049 of 3,120 topics were skipped
+    /// without a fetch. A feed describes one article per entry and both real
+    /// feeds serve teasers, so widening one costs a request *per article*:
+    /// 808 of them, ~13.5 minutes. Feeds therefore ignore this and keep their
+    /// recheck window; only `--full` widens them.
+    ///
+    /// The correctness this buys is specific: a deleted post changes a
+    /// topic's `posts_count` but does **not** bump it in the activity
+    /// listing, so an incremental walk that stops at the checkpoint can never
+    /// see a deletion in a quiet thread. That is the shape a
+    /// removal-request takedown has, which makes it worth four minutes a run.
+    pub full_listings: bool,
     /// Refetch every item reached, whatever the checkpoint and the local copy
     /// say. The recovery path for edits made in place, which upstream
     /// activity timestamps do not reflect.
@@ -145,6 +176,9 @@ pub struct SyncOptions {
     /// Walk every page, ignoring the checkpoint. Still skips topics upstream
     /// has not touched — this widens the search, it does not force refetches.
     pub full: bool,
+    /// Same widening, requested routinely by `build`/`update` rather than by
+    /// an explicit `--full`. See [`SyncIntent::full_listings`].
+    pub full_listings: bool,
     /// Refetch every topic the walk reaches, whatever the checkpoint and the
     /// local copy say. The recovery path for in-place post edits, which move
     /// neither `bumped_at` nor `last_posted_at` and are invisible otherwise.
@@ -194,7 +228,8 @@ pub fn sync(fetcher: &mut dyn Fetcher, opts: &SyncOptions) -> Result<SyncStats, 
     let mut state = SyncState::load(&opts.data_dir);
     // `--full` reads the checkpoint but declines to act on it, so a walk can
     // be widened without throwing away what the last one learned.
-    let watermark = if opts.full {
+    let walk_everything = opts.full || opts.full_listings;
+    let watermark = if walk_everything {
         String::new()
     } else {
         state.bumped_watermark.clone()
@@ -204,7 +239,11 @@ pub fn sync(fetcher: &mut dyn Fetcher, opts: &SyncOptions) -> Result<SyncStats, 
     // for both would report that nothing has ever synced here every time
     // someone passes --full.
     if !incremental {
-        let why = if opts.full {
+        let why = if opts.full_listings && !opts.full {
+            // The routine case, so it explains itself rather than looking
+            // like something went wrong with the checkpoint.
+            "checking every topic for edits and deletions"
+        } else if opts.full {
             "--full"
         } else {
             "no checkpoint"
@@ -434,24 +473,26 @@ pub(crate) fn progress_note(total: Option<u64>, stats: &SyncStats, elapsed: Dura
     };
     let processed = stats.processed() as u64;
     let pct = processed * 100 / total.max(1);
-    // Pace is per *request*, so the divisor must count everything that cost
-    // one. Dividing by `fetched` alone attributed an updating run's whole
-    // elapsed time to its handful of new items: the 2026-08-19 EF-blog sync
-    // (2 fetched, 17 updated in 19s) reported "~1h36m left" against a true
-    // ~11s, because 19s/2 became the per-item rate. Skips are excluded from
-    // the divisor deliberately — they are a `stat` call, not a request — and
-    // callers keep them out of `total` too, so the projection below stays
-    // over work that will actually be done.
+    // Pace on everything examined, not just what needed fetching. Both
+    // narrower divisors have been wrong here in ways that reached an
+    // operator:
     //
-    // Known residual, in the safe direction: a feed item that IS compared and
-    // turns out unchanged costs a request but lands in `skipped`, so a feed
-    // whose window is mostly unchanged paces on too few items and over-states
-    // its ETA — measured at ~1m against a true ~27s. Over-stating shrinks as
-    // the run proceeds and never tells an operator a long run is nearly done,
-    // which is the failure that would actually cost someone something.
-    let worked = (stats.fetched + stats.updated) as u64;
-    let eta = if worked > 0 && total > processed {
-        let per_item = elapsed.as_secs_f64() / worked as f64;
+    // - dividing by `fetched` alone attributed an updating run's whole
+    //   elapsed time to its handful of new items — the 2026-08-19 EF-blog
+    //   sync (2 fetched, 17 updated in 19s) said "~1h36m left" against a
+    //   true ~11s;
+    // - dividing by `fetched + updated` then broke the routine full listing
+    //   walk, where nearly every topic is a free skip: ethresear.ch reported
+    //   "~1h31m left" on a walk that finished in 1m47s.
+    //
+    // `processed` is the honest divisor because it counts the same units
+    // `total` does, so the ratio is an average pace that self-corrects as a
+    // run proceeds — early fetches stop dominating once the skips arrive.
+    // It requires callers to keep `total` and `processed` measuring the same
+    // population, which is why `FeedAdapter::sync` passes the number of items
+    // it will examine rather than the length of the feed.
+    let eta = if processed > 0 && total > processed {
+        let per_item = elapsed.as_secs_f64() / processed as f64;
         let left = human_duration(per_item * (total - processed) as f64);
         format!(", ~{left} left")
     } else {
@@ -564,11 +605,32 @@ mod tests {
     }
 
     #[test]
-    fn progress_note_skips_eta_before_the_first_fetch_and_when_done() {
+    /// A walk that has only skipped so far can still be estimated, and this
+    /// is the case a routine full listing walk spends nearly all its time in:
+    /// 40 skips in a second really does predict ~1.5s for the remaining 60.
+    /// Pacing on fetches alone printed no ETA at all here.
+    fn progress_note_estimates_from_skips_and_stops_when_done() {
         let note = progress_note(Some(100), &stats(0, 40), Duration::from_secs(1));
-        assert_eq!(note, "  [40/100, 40%]");
+        assert_eq!(note, "  [40/100, 40%, ~1s left]");
+        // Nothing left to project over.
         let note = progress_note(Some(100), &stats(60, 40), Duration::from_secs(120));
         assert_eq!(note, "  [100/100, 100%]");
+    }
+
+    /// The shape that made this worth changing: a full listing walk where
+    /// the fetches are a rounding error against the skips. Dividing by
+    /// fetched+updated said "~1h31m left" on a walk that took 1m47s.
+    #[test]
+    fn progress_note_is_not_dominated_by_a_handful_of_early_fetches() {
+        let stats = SyncStats {
+            fetched: 2,
+            updated: 3,
+            skipped: 1_995,
+            ..SyncStats::default()
+        };
+        // 2,000 topics in 60s = 0.03s each; 1,120 left ≈ 33s.
+        let note = progress_note(Some(3_120), &stats, Duration::from_secs(60));
+        assert_eq!(note, "  [2000/3120, 64%, ~33s left]");
     }
 
     #[test]
