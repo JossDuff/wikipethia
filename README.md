@@ -5,7 +5,7 @@ Give your LLM direct access to Ethereum specs, research, discussion, and history
 ## Sources
 
 Everything in the corpus, as declared in [`sources.toml`](sources.toml)
-(keep this list — and the [licensing table](#licensing) — in sync when
+keep this list and the [licensing table](#licensing) in sync when
 adding a source):
 
 | Source | What it is |
@@ -29,9 +29,11 @@ source carries the license its authors and publishers chose.
 
 **In short:** for non-commercial use (research, learning, personal projects)
 the whole corpus is available, with credit. For commercial use, everything
-except the two forums (ethresear.ch and Ethereum Magicians) is available;
-filter them out by `source`. Every document already carries its author, date,
-and URL, so attribution comes for free.
+except the two forums (ethresear.ch and Ethereum Magicians) is available.  
+Every document already carries its author, date, and URL, so attribution comes for free.
+
+Every document, chunk, and search result also carries its `source`, so the corpus
+can be filtered down to whichever sources suit your licensing needs.
 
 | Source | License |
 |---|---|
@@ -45,9 +47,6 @@ and URL, so attribution comes for free.
 | [ethereum/pm](https://github.com/ethereum/pm) | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
 | [vitalik.eth.limo](https://vitalik.eth.limo) | [WTFPL](http://www.wtfpl.net/) |
 | [EF blog](https://blog.ethereum.org) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
-
-Every document, chunk, and search result carries its `source`, so the corpus
-can be filtered down to whichever sources suit your licensing needs.
 
 ## Running it
 
