@@ -32,15 +32,21 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
-      # The manifest drives both README tables; a source added without them is
-      # the drift CLAUDE.md warns about, and it is cheap to catch here.
-      - name: Licensing table covers every manifest source
+      # CLAUDE.md's hard rule: sources.toml changes update the README. Both
+      # tables mirror the manifest, so both are checked.
+      #
+      # `|| true` on every count is load-bearing, not defensive noise: the
+      # default shell here is `bash -e`, and `grep -c` exits 1 when it matches
+      # nothing — so without it the step dies silently on exactly the
+      # regression it exists to catch (a heading renamed, or table rows
+      # reformatted), printing no counts and no ::error::.
+      - name: README tables cover every manifest source
         run: |
-          manifest=$(grep -cP '^id = "' sources.toml)
-          # Licensing is the last section, so the range runs to end of file.
-          licensing=$(sed -n '/^## Licensing/,$p' README.md | grep -c '^| \[')
-          echo "sources.toml: $manifest   README licensing rows: $licensing"
-          if [ "$manifest" -ne "$licensing" ]; then
-            echo "::error::sources.toml has $manifest sources but the README licensing table has $licensing rows"
-            exit 1
-          fi
+          manifest=$(grep -cP '^id = "' sources.toml || true)
+          sources=$(sed -n '/^## Sources/,/^## /p' README.md | grep -c '^| \[' || true)
+          licensing=$(sed -n '/^## Licensing/,$p' README.md | grep -c '^| \[' || true)
+          echo "sources.toml: $manifest | Sources table: $sources | Licensing table: $licensing"
+          fail=0
+          [ "$manifest" -eq "$sources" ]   || { echo "::error::Sources table has $sources rows, manifest has $manifest"; fail=1; }
+          [ "$manifest" -eq "$licensing" ] || { echo "::error::Licensing table has $licensing rows, manifest has $manifest"; fail=1; }
+          exit $fail

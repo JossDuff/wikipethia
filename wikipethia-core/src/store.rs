@@ -170,7 +170,7 @@ pub struct EmbeddedChunk<'a> {
     /// `chunks.id`, which is also the `chunks_vec` rowid.
     pub rowid: i64,
     /// The `chunks.content` this vector belongs to — what the write is
-    /// checked against. `corpus embed` hands exactly this text to the
+    /// checked against. `wikipethia embed` hands exactly this text to the
     /// embedder, so for it the two are the same string.
     pub content: &'a str,
     pub vector: Vec<f32>,

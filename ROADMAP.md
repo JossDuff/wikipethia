@@ -758,9 +758,12 @@ What "published community tool" needs beyond M8's dataset publishing.
 
 **Done 2026-08-21:**
 
-- **Binaries are named for the project.** `wikipethia`/`wikipethia-mcp` →
-  `wikipethia`/`wikipethia-mcp`. An adopter installs "wikipethia" and gets
-  commands that say so; the crate directories keep their internal names.
+- **Named for the project throughout.** `corpus-cli`/`corpus-mcp` →
+  `wikipethia`/`wikipethia-mcp`, and the crate directories with them
+  (`corpus-core` → `wikipethia-core`, and so on). An adopter installs
+  "wikipethia" and every path and command says so — `cargo install --path
+  corpus-cli` for a tool called wikipethia was confusing at exactly the
+  moment a new user meets it.
 - **`wikipethia status`.** A half-built corpus behaved like a working one —
   an index with no vectors still answers, because hybrid search degrades
   silently to pure BM25, so the first sign of trouble was an answer that felt

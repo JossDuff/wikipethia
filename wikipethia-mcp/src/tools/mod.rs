@@ -256,7 +256,7 @@ impl CorpusServer {
         if embedder.is_none() {
             instructions.push_str(
                 " Note: no embeddings indexed — ranking is currently lexical-only; \
-                 run `corpus embed` to fix.",
+                 run `wikipethia embed` to fix.",
             );
         }
         Ok(Self {
@@ -377,7 +377,7 @@ impl CorpusServer {
         if self.embedder.is_none() {
             out.push_str(
                 "\nnote: corpus has no vector index — ranking is lexical-only \
-                 (run `corpus embed`).",
+                 (run `wikipethia embed`).",
             );
         }
         Ok(out)
@@ -720,7 +720,7 @@ impl CorpusServer {
             // from instructions than from a protocol failure.
             return Ok(if store.embedding_count().map_err(internal)? == 0 {
                 "The corpus has no vector index, so similarity search is unavailable — \
-                 run `corpus embed` to build it. Meanwhile, search_posts still works."
+                 run `wikipethia embed` to build it. Meanwhile, search_posts still works."
                     .to_string()
             } else {
                 format!(
@@ -1856,6 +1856,6 @@ mod tests {
                 limit: None,
             })
             .unwrap();
-        assert!(out.contains("corpus embed"));
+        assert!(out.contains("wikipethia embed"));
     }
 }

@@ -251,6 +251,13 @@ fn main() -> anyhow::Result<()> {
         Command::Search { query, db, limit } => search(&query, &db, limit),
         Command::Status { db } => status(&db),
         Command::Embed { db, force } => {
+            // Existence first: `WriterLock::acquire` opens the path with
+            // `Connection::open`, which CREATES it — so taking the lock before
+            // checking defeats `open_existing` and leaves an empty database
+            // behind on a typo'd --db, which is exactly what open_existing
+            // was added to stop. `build`/`update` are unaffected: they may
+            // legitimately create the corpus.
+            corpus_exists(&db)?;
             let _lock = WriterLock::acquire(&db, "embed")?;
             embed(&db, force)
         }
@@ -267,7 +274,7 @@ fn main() -> anyhow::Result<()> {
             let embedder = if store.embedding_count()? > 0 {
                 Some(FastEmbedder::new()?)
             } else {
-                eprintln!("note: no embeddings — lexical only; run `corpus embed`");
+                eprintln!("note: no embeddings — lexical only; run `wikipethia embed`");
                 None
             };
             let f;
@@ -469,6 +476,22 @@ fn sync_sources(
     outcome
 }
 
+/// Fail before anything can create the file at `db`.
+///
+/// For commands that must not bring a corpus into existence but take the
+/// writer lock first — the lock opens the path to write its `meta` row, so
+/// `Store::open_existing` inside the command runs too late to help.
+fn corpus_exists(db: &Path) -> anyhow::Result<()> {
+    if !db.exists() {
+        bail!(
+            "no corpus at {} — build one with `wikipethia build`, or pass --db \
+             with the path to an existing corpus",
+            db.display()
+        );
+    }
+    Ok(())
+}
+
 /// What this corpus holds, and whether it can actually serve a query.
 ///
 /// The gap this closes: a half-built corpus behaved like a working one. An
@@ -482,8 +505,18 @@ fn status(db: &Path) -> anyhow::Result<()> {
     let missing = store.missing_embedding_count()?;
 
     println!("corpus     {}", db.canonicalize().unwrap_or_else(|_| db.to_path_buf()).display());
-    match store.embedding_model()? {
-        Some((model, dim)) => println!("model      {model} ({dim} dimensions)"),
+    // Whether the stored vectors were made by the model this build queries
+    // with. `hybrid_search` drops the vector arm silently on a dimension
+    // mismatch, and a same-dimension different model is worse — it returns
+    // neighbours computed in another space, with no error anywhere. Comparing
+    // is the whole reason this command reports the model at all.
+    let model = store.embedding_model()?;
+    let model_ok = model
+        .as_ref()
+        .is_some_and(|(m, d)| m == MODEL_ID && *d == DIM);
+    match &model {
+        Some((m, d)) if model_ok => println!("model      {m} ({d} dimensions)"),
+        Some((m, d)) => println!("model      {m} ({d} dimensions) — MISMATCH, this build uses {MODEL_ID} ({DIM})"),
         None => println!("model      none — no embeddings yet"),
     }
     println!("documents  {documents}");
@@ -516,6 +549,12 @@ fn status(db: &Path) -> anyhow::Result<()> {
     } else if embedded == 0 {
         println!(
             "PARTIAL: lexical search works, semantic does not. Run `wikipethia embed`."
+        );
+    } else if !model_ok {
+        println!(
+            "PARTIAL: vectors were built by a different model, so semantic search is \
+             skipped and only lexical ranking runs. Re-embed with \
+             `wikipethia embed --force`."
         );
     } else if missing > 0 {
         println!(
@@ -625,12 +664,12 @@ fn dedup(
 /// otherwise a note that ranking is lexical-only.
 fn query_vector(store: &Store, query: &str) -> anyhow::Result<Option<Vec<f32>>> {
     if store.embedding_count()? == 0 {
-        eprintln!("note: no embeddings — BM25 only; run `corpus embed` for hybrid search");
+        eprintln!("note: no embeddings — BM25 only; run `wikipethia embed` for hybrid search");
         return Ok(None);
     }
     let missing = store.missing_embedding_count()?;
     if missing > 0 {
-        eprintln!("note: {missing} chunks lack embeddings — run `corpus embed`");
+        eprintln!("note: {missing} chunks lack embeddings — run `wikipethia embed`");
     }
     Ok(Some(FastEmbedder::new()?.embed_query(query)?))
 }
@@ -841,7 +880,7 @@ fn index_with(
         let missing = store.missing_embedding_count()?;
         if missing > 0 {
             println!(
-                "{missing} chunks lack embeddings — run `corpus embed` to enable hybrid search"
+                "{missing} chunks lack embeddings — run `wikipethia embed` to enable hybrid search"
             );
         }
     }

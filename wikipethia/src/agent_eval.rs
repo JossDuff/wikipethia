@@ -410,7 +410,7 @@ fn write_mcp_config(
     // without an absolute cache path the server silently re-downloads the
     // model there (or hangs offline) and the MCP handshake times out. An
     // explicit FASTEMBED_CACHE_DIR wins; otherwise assume the invoker's
-    // cwd, where `corpus embed` put the model.
+    // cwd, where `wikipethia embed` put the model.
     let cache = std::env::var("FASTEMBED_CACHE_DIR")
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir()?.join(".fastembed_cache"));

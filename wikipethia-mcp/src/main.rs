@@ -166,7 +166,8 @@ struct Args {
 impl Args {
     fn parse() -> anyhow::Result<Self> {
         const USAGE: &str =
-            "wikipethia-mcp [--db <path>] [--http <addr> [--allow-host <name>]...]";
+            "wikipethia-mcp [--db <path>] [--http <addr> [--allow-host <name>]...] \
+             [--version]";
         let mut db = None;
         let mut http = None;
         let mut allow_hosts = Vec::new();
