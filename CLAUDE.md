@@ -105,9 +105,14 @@ threading a special case through.
 **Never commit the built index.** `corpus.sqlite` and embedding artifacts are
 gitignored. They ship as release assets.
 
-**sources.toml changes update the README.** The Sources table in README.md
-mirrors the manifest; whenever a source is added, removed, or re-tiered,
-update both in the same commit.
+**sources.toml changes update the README — both tables.** README.md carries
+two tables that mirror the manifest: **Sources** and **Licensing**. Whenever
+a source is added, removed, or re-tiered, update all three in the same
+commit.
+
+A new source's license must come from the publisher's own statement — not
+inferred from a sibling repository, not assumed from an organization's
+reputation. Both were wrong when checked here.
 
 **Ask before adding a dependency.** Tokio itself is fine when something needs
 it — the thing being protected is the polite crawl above, not the runtime.

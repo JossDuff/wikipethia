@@ -5,7 +5,8 @@ Give your LLM direct access to Ethereum specs, research, discussion, and history
 ## Sources
 
 Everything in the corpus, as declared in [`sources.toml`](sources.toml)
-(keep this list in sync when adding a source):
+keep this list and the [licensing table](#licensing) in sync when
+adding a source):
 
 | Source | What it is |
 |---|---|
@@ -19,6 +20,33 @@ Everything in the corpus, as declared in [`sources.toml`](sources.toml)
 | [ethereum/pm](https://github.com/ethereum/pm) | AllCoreDevs notes — what was decided, and when |
 | [vitalik.eth.limo](https://vitalik.eth.limo) | Vitalik's writing |
 | [EF blog](https://blog.ethereum.org) | Ethereum Foundation announcements and research |
+
+## Licensing
+
+This repository's code is MIT-licensed ([LICENSE](LICENSE)). The corpus is a
+different matter: wikipethia does not own the material it indexes, and each
+source carries the license its authors and publishers chose.
+
+**In short:** for non-commercial use (research, learning, personal projects)
+the whole corpus is available, with credit. For commercial use, everything
+except the two forums (ethresear.ch and Ethereum Magicians) is available.  
+Every document already carries its author, date, and URL, so attribution comes for free.
+
+Every document, chunk, and search result also carries its `source`, so the corpus
+can be filtered down to whichever sources suit your licensing needs.
+
+| Source | License |
+|---|---|
+| [ethresear.ch](https://ethresear.ch) | [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/) |
+| [Ethereum Magicians](https://ethereum-magicians.org) | [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/) |
+| [ethereum/EIPs](https://github.com/ethereum/EIPs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [ethereum/ERCs](https://github.com/ethereum/ERCs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [consensus-specs](https://github.com/ethereum/consensus-specs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [execution-specs](https://github.com/ethereum/execution-specs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [execution-apis](https://github.com/ethereum/execution-apis) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [ethereum/pm](https://github.com/ethereum/pm) | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
+| [vitalik.eth.limo](https://vitalik.eth.limo) | [WTFPL](http://www.wtfpl.net/) |
+| [EF blog](https://blog.ethereum.org) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
 
 ## Running it
 
