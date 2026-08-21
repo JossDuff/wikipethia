@@ -8,7 +8,7 @@ description.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-clap = { version = "4.6.4", features = ["derive"] }
+clap = { version = "4.6.4", features = ["derive", "env"] }
 wikipethia-core = { version = "0.1.0", path = "../wikipethia-core" }
 wikipethia-embed = { version = "0.1.0", path = "../wikipethia-embed" }
 wikipethia-fetch = { version = "0.1.0", path = "../wikipethia-fetch" }

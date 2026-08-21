@@ -220,34 +220,71 @@ impl Store {
         if !path.exists() {
             return Err(CoreError::NoCorpus(path.display().to_string()));
         }
+        // A corpus someone else built — downloaded from a release, dropped in
+        // /usr/share, on a read-only mount, or owned by another user — is
+        // exactly what publishing produces. SQLite reads such a file happily;
+        // only `Store::init` refuses, because it writes on every open (the
+        // WAL pragma and `user_version`).
+        //
+        // The metadata check is not redundant with the error fallback below:
+        // opening read/write first makes SQLite create `-wal` and `-shm`
+        // beside the corpus before it fails, littering a directory the caller
+        // did not mean to write to.
+        let file_is_writable = std::fs::metadata(path)
+            .map(|m| !m.permissions().readonly())
+            .unwrap_or(true);
+        if !file_is_writable {
+            return Self::open_read_only(path);
+        }
         match Self::open(path) {
             Ok(store) => Ok(store),
-            // A corpus someone else built — dropped in /usr/share, on a
-            // read-only mount, or owned by another user — is exactly what a
-            // published dataset produces, and `Store::init` writes on every
-            // open (the WAL pragma and `user_version`). SQLite reads such a
-            // file happily; only our initialisation refuses. Retry without it.
+            // Covers what the metadata check cannot see: a read-only mount,
+            // a directory without write permission, an immutable attribute.
             Err(CoreError::Db(e)) if is_readonly(&e) => Self::open_read_only(path),
             Err(e) => Err(e),
         }
     }
 
-    /// Open without the schema/pragma writes [`Store::init`] performs.
+    /// Open without the schema and pragma writes [`Store::init`] performs.
     ///
-    /// Safe precisely because the file is not writable: nothing here can
-    /// migrate it, so it must already be at a schema this build understands.
-    /// A too-old file surfaces as a missing-table error on the first query
-    /// rather than a silent wrong answer.
+    /// Two attempts, because "read-only" has two shapes and only the second
+    /// costs anything:
+    ///
+    /// 1. `mode=ro` — a read-only *file* in a writable directory. SQLite can
+    ///    still create the `-shm` it needs to read a WAL database, so this
+    ///    sees everything, including data not yet checkpointed.
+    /// 2. `immutable=1` — a read-only *directory or mount*, where `-shm`
+    ///    cannot be created and `mode=ro` fails too. **This reads only the
+    ///    main database file**, so anything still sitting in an
+    ///    uncheckpointed `-wal` is invisible. Correct for a published corpus,
+    ///    which is checkpointed by the copy that built it, and the only way
+    ///    to read one at all from a read-only mount.
+    ///
+    /// Skipping the migration in [`Store::init`] is safe precisely because
+    /// the file cannot be written: nothing here could migrate it anyway, and
+    /// a too-old schema surfaces as a missing-table error on the first query
+    /// rather than a silently wrong answer.
     fn open_read_only(path: &Path) -> Result<Self, CoreError> {
         register_sqlite_vec();
-        let conn = Connection::open_with_flags(
-            path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_URI
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        let has_vec = table_exists(&conn, "chunks_vec")?;
-        Ok(Self { conn, has_vec })
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_URI
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        // Each attempt must run a statement, not just open. SQLite opens
+        // lazily: `mode=ro` against a read-only *directory* returns a healthy
+        // Connection and only fails when the first query tries to create the
+        // `-shm` it needs. Matching on the open result alone made this
+        // fallback look correct while never firing — caught by the CLI still
+        // failing after the "fix".
+        let attempt = |query: &str| -> Result<Self, CoreError> {
+            let conn =
+                Connection::open_with_flags(format!("file:{}?{query}", path.display()), flags)?;
+            let has_vec = table_exists(&conn, "chunks_vec")?;
+            Ok(Self { conn, has_vec })
+        };
+        match attempt("mode=ro") {
+            Ok(store) => Ok(store),
+            Err(_) => attempt("immutable=1"),
+        }
     }
 
     pub fn open_in_memory() -> Result<Self, CoreError> {
@@ -270,16 +307,6 @@ impl Store {
         Ok(Self { conn, has_vec })
     }
 
-    /// Insert or overwrite by id, all in one transaction; returns how many
-    /// documents were actually WRITTEN. A document identical to its stored
-    /// row is skipped entirely — its chunks, FTS rows, and (crucially)
-    /// vectors survive untouched, which is what keeps a routine re-index
-    /// from forcing a full re-embed. Meta is compared in serialized form;
-    /// if a parser change ever reorders keys, everything reads as changed
-    /// once — a one-time re-chunk and re-embed, not corruption.
-    ///
-    /// The skip also means chunking-policy changes never reach stored
-    /// documents — [`Store::upsert_forced`] is the escape hatch.
     pub fn upsert(&mut self, docs: &[Document]) -> Result<usize, CoreError> {
         self.upsert_with(docs, false)
     }

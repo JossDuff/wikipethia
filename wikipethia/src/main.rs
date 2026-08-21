@@ -67,7 +67,7 @@ enum Command {
         #[arg(long)]
         source: Option<String>,
         /// Database file to write.
-        #[arg(long, default_value = "corpus.sqlite")]
+        #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
         db: PathBuf,
         /// Rewrite documents even when unchanged, re-cutting their chunks
         /// (and dropping their vectors). Required after a chunking change.
@@ -82,7 +82,7 @@ enum Command {
     Search {
         query: String,
         /// Database file to search.
-        #[arg(long, default_value = "corpus.sqlite")]
+        #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
         db: PathBuf,
         /// Maximum number of documents returned.
         #[arg(long, default_value_t = 10)]
@@ -92,7 +92,7 @@ enum Command {
     /// the model to the fastembed cache.
     Embed {
         /// Database file to embed.
-        #[arg(long, default_value = "corpus.sqlite")]
+        #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
         db: PathBuf,
         /// Discard existing vectors and re-embed everything.
         #[arg(long)]
@@ -107,7 +107,7 @@ enum Command {
         #[arg(long)]
         source: Option<String>,
         /// Database file to write.
-        #[arg(long, default_value = "corpus.sqlite")]
+        #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
         db: PathBuf,
     },
     /// Bring the corpus up to date: sync, index, and embed in sequence.
@@ -119,20 +119,20 @@ enum Command {
         #[arg(long)]
         source: Option<String>,
         /// Database file to update.
-        #[arg(long, default_value = "corpus.sqlite")]
+        #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
         db: PathBuf,
     },
     /// Report what this corpus holds and whether it is ready to serve.
     Status {
         /// Database file to inspect.
-        #[arg(long, default_value = "corpus.sqlite")]
+        #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
         db: PathBuf,
     },
     /// Report near-duplicate documents across sources (e.g. a blog post
     /// cross-posted to a forum). Requires embeddings.
     Dedup {
         /// Database file to scan.
-        #[arg(long, default_value = "corpus.sqlite")]
+        #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
         db: PathBuf,
         /// Cosine similarity at or above which a pair is flagged.
         #[arg(long, default_value_t = 0.95)]
@@ -150,7 +150,7 @@ enum Command {
     /// Run the retrieval eval set and report recall@10.
     Eval {
         /// Database file to search.
-        #[arg(long, default_value = "corpus.sqlite")]
+        #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
         db: PathBuf,
         /// Hand-written question set (see ROADMAP.md M3).
         #[arg(long, default_value = "tests/eval/questions.toml")]
@@ -164,7 +164,7 @@ enum Command {
     /// run first, and --regrade to re-score existing artifacts for free.
     AgentEval {
         /// Database file the MCP server will serve.
-        #[arg(long, default_value = "corpus.sqlite")]
+        #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
         db: PathBuf,
         /// Question set shared with `eval`.
         #[arg(long, default_value = "tests/eval/questions.toml")]

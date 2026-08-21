@@ -277,3 +277,79 @@ fn a_vector_cannot_outlive_the_chunk_content_it_was_computed_from() {
     assert_eq!(store.embedding_count().unwrap(), 1);
     assert_eq!(store.missing_embedding_count().unwrap(), 0);
 }
+
+/// A published corpus is read-only in two different ways, and both must work:
+/// a read-only *file* (downloaded, `chmod 444`) and a read-only *directory or
+/// mount* (`/usr/share`, a squashfs image). SQLite reads both; only
+/// `Store::init`'s pragma writes refuse, which is what `open_existing` works
+/// around. Untested until 2026-08-21, which is how two rounds of review found
+/// it still broken.
+#[test]
+fn a_read_only_corpus_can_still_be_read() {
+    use std::fs;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("corpus.sqlite");
+    {
+        let mut store = Store::open(&db).unwrap();
+        store.upsert(&[doc("ro")]).unwrap();
+    }
+
+    // 1. read-only file, writable directory.
+    let mut perms = fs::metadata(&db).unwrap().permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(&db, perms).unwrap();
+    let store = Store::open_existing(&db).expect("read-only file must open");
+    assert_eq!(store.count().unwrap(), 1);
+
+    // 2. WRITABLE file in a read-only directory. The case the first version
+    //    of this test missed by making the file read-only first: it takes the
+    //    read/write path, fails, and must fall through to the read-only
+    //    ladder. SQLite opens lazily, so the failure only appears on the
+    //    first query — which is why the fallback must probe, not just open.
+    let mut back = fs::metadata(&db).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    back.set_readonly(false);
+    fs::set_permissions(&db, back).unwrap();
+    let mut dperms = fs::metadata(dir.path()).unwrap().permissions();
+    dperms.set_readonly(true);
+    fs::set_permissions(dir.path(), dperms).unwrap();
+    let opened = Store::open_existing(&db);
+    let mut undo = fs::metadata(dir.path()).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    undo.set_readonly(false);
+    fs::set_permissions(dir.path(), undo).unwrap();
+    assert_eq!(
+        opened.expect("writable file in a read-only directory must open").count().unwrap(),
+        1
+    );
+
+    // 3. read-only file AND directory — nothing beside the file can be created.
+    let mut perms = fs::metadata(&db).unwrap().permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(&db, perms).unwrap();
+    let mut dperms = fs::metadata(dir.path()).unwrap().permissions();
+    dperms.set_readonly(true);
+    fs::set_permissions(dir.path(), dperms).unwrap();
+    let opened = Store::open_existing(&db);
+    // Restore before asserting, or tempdir cleanup fails and masks the result.
+    let mut back = fs::metadata(dir.path()).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    back.set_readonly(false);
+    fs::set_permissions(dir.path(), back).unwrap();
+    let store = opened.expect("read-only directory must open");
+    assert_eq!(store.count().unwrap(), 1);
+}
+
+#[test]
+fn opening_a_corpus_that_does_not_exist_names_the_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("nope.sqlite");
+    let err = match Store::open_existing(&missing) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("opened a corpus that does not exist"),
+    };
+    assert!(err.contains("nope.sqlite"), "{err}");
+    assert!(err.contains("wikipethia build"), "{err}");
+    // And it must not have created what it just said was missing.
+    assert!(!missing.exists());
+}

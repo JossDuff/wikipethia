@@ -31,7 +31,7 @@ cargo install --path wikipethia-mcp
 
 That puts `wikipethia` and `wikipethia-mcp` on your PATH. To run from the build directory instead, use `cargo build --release` and `./target/release/wikipethia`.
 
-Run the corpus-building commands (`build`, `update`, `sync`, `index`) from the clone — they read `sources.toml` and write `data/` relative to the working directory. `search`, `status`, and `wikipethia-mcp` work from anywhere with `--db`.
+Run the corpus-building commands (`build`, `update`, `sync`, `index`) from the clone — they read `sources.toml` and write `data/` relative to the working directory. `search`, `status`, and `wikipethia-mcp` work from anywhere; set `WIKIPETHIA_DB` or pass `--db` to point them at your corpus.
 
 ## Running it
 
