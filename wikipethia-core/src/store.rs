@@ -1134,9 +1134,8 @@ fn vec_blob(vector: &[f32]) -> Vec<u8> {
 /// The inverse of [`vec_blob`]. Trailing bytes that don't fill an f32 are
 /// dropped — they can only mean a corrupt row.
 fn vec_from_blob(blob: &[u8]) -> Vec<f32> {
-    blob.chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        .collect()
+    let (quads, _trailing) = blob.as_chunks::<4>();
+    quads.iter().copied().map(f32::from_le_bytes).collect()
 }
 
 /// Whether a rusqlite error is SQLite refusing to write.
