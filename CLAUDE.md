@@ -105,9 +105,20 @@ threading a special case through.
 **Never commit the built index.** `corpus.sqlite` and embedding artifacts are
 gitignored. They ship as release assets.
 
-**sources.toml changes update the README.** The Sources table in README.md
-mirrors the manifest; whenever a source is added, removed, or re-tiered,
-update both in the same commit.
+**sources.toml changes update the README — both tables.** README.md carries
+*two* tables that mirror the manifest: **Sources** (what each source is) and
+**Licensing** (what license it carries, and its share of corpus text).
+Whenever a source is added, removed, or re-tiered, update all three in the
+same commit.
+
+The licensing table is the one that will rot silently, so it has a rule of
+its own: **a new source does not land without its license established from
+the publisher's own statement**, with the link recorded in the table. Not
+inferred from a sibling repository, and not assumed from an organization's
+reputation — both of those were wrong when checked (vitalik.eth.limo turned
+out to be WTFPL, the EF blog CC BY 4.0 via terms of use that name the
+subdomain explicitly). If a source's license cannot be established, say so
+rather than shipping it unlabelled.
 
 **Ask before adding a dependency.** Tokio itself is fine when something needs
 it — the thing being protected is the polite crawl above, not the runtime.
