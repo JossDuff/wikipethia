@@ -103,7 +103,7 @@ Discourse source. A second instance of the same adapter is the cheapest possible
 proof that the abstraction holds.
 
 **Gate:** adding EthMagicians is a `sources.toml` edit and nothing else. No
-changes to `corpus-core`.
+changes to `wikipethia-core`.
 
 ### [x] Continuous refresh
 
@@ -267,11 +267,11 @@ Candidate fixes, cheapest first:
   but not the wasted work.
 
 **Half done, 2026-08-14 — the advisory lock shipped.** `WriterLock`
-(`corpus-core/src/lock.rs`) takes a `meta` row under `BEGIN IMMEDIATE`,
+(`wikipethia-core/src/lock.rs`) takes a `meta` row under `BEGIN IMMEDIATE`,
 holding `{pid, command, started_unix}`, and releases on drop including on
 panic. `index`, `embed`, `build`, and `update` hold it; `build`/`update`
 hold one across both database stages rather than releasing in between.
-Readers never take it — blocking `corpus-mcp`'s queries behind a two-hour
+Readers never take it — blocking `wikipethia-mcp`'s queries behind a two-hour
 embed would be worse than the bug. A lock whose pid is gone is taken over
 with a note naming the dead pid, and one older than 24h is taken over
 whatever its pid says, because pids are recycled and a permanently wedged
@@ -297,7 +297,7 @@ an exact answer instead of a collision probability — no migration, no stored
 column, no third thing to keep in sync.
 
 The test is `a_vector_cannot_outlive_the_chunk_content_it_was_computed_from`
-(`corpus-core/tests/store.rs`). It asserts the rowid is **actually reused**
+(`wikipethia-core/tests/store.rs`). It asserts the rowid is **actually reused**
 after a delete-and-reinsert before checking the guard, so it exercises real
 aliasing rather than degrading into "we wrote to a rowid that was gone" —
 which is the shape this bug would take if the test were written carelessly.
@@ -346,9 +346,17 @@ snapshots to IPFS if you want content-addressed builds. Peg release versions
 to hard forks rather than dates — "the Fusaka corpus" says what a snapshot
 knows in a way a timestamp doesn't.
 
-**Gate:** a stranger can download a published corpus and point `corpus-mcp`
-at it without building one — the prerequisite M12's ten-minute gate is
-blocked on.
+**Gate:** a stranger can download a published corpus and point
+`wikipethia-mcp` at it without building one.
+
+Worth stating plainly, because the old note here mis-attributed the cost: a
+clean build is ~7.5 hours, and **embedding is the largest share** (94k
+vectors at ~6/s ≈ 4.4h, local CPU) — not the crawl (~2h) it was blamed on.
+Publishing removes both. The stronger argument is the forums: every adopter
+who builds from scratch sends ~7,100 requests to ethresear.ch and
+EthMagicians. Publishing means that crawl happens once, here, rather than
+once per user — the same principle the rate limiter encodes, applied to the
+project as a whole.
 
 ---
 
@@ -437,7 +445,7 @@ after the opus run below**:
 ### [x] `lookup_spec` — Solidity interfaces, and collapsing per-fork duplicates
 
 Two independent gaps in the same tool. Neither needs new plumbing;
-`corpus-core/src/spec.rs` parses on demand and both are extensions to it.
+`wikipethia-core/src/spec.rs` parses on demand and both are extensions to it.
 
 **1. It walks past Solidity fences. — DONE 2026-08-14.** `spec.rs` gained
 `solidity_declarations` and `solidity_constants`; `lookup_spec` chains them
@@ -459,7 +467,7 @@ start claiming the ERCs' JavaScript examples.
 
 **Correcting this item's original gate, which was wrong.** It said "the
 ERC-1271 eval question stops scoring 0.00". It cannot: `eval` calls
-`hybrid_search` and nothing else (`corpus-cli/src/eval.rs:106`), so it never
+`hybrid_search` and nothing else (`wikipethia/src/eval.rs:106`), so it never
 reaches `spec.rs` or any MCP tool. That conflated the two layers CLAUDE.md
 warns are cheap to misread. Measured before and after: **lexical 0.333 /
 fused 0.477 over 33 questions, byte-identical** — the correct result, and the
@@ -523,7 +531,7 @@ description changed here, so it is due a run.
 ### [ ] M9 — Reranker
 
 Cross-encoder second stage over the union of both retrieval arms (~100
-docs), behind a trait in `corpus-embed` next to `Embedder`; fastembed ships
+docs), behind a trait in `wikipethia-embed` next to `Embedder`; fastembed ships
 bge-family rerankers through the already-approved ort stack. The old
 Deferred condition — "not until hybrid fusion has plateaued" — is now
 measured as met: recall@10 fused is 0.375 against a 0.581 candidate-pool
@@ -560,7 +568,7 @@ revisit isn't judged by the measure that parked it.
 Constants, spec function bodies, and fork-filtered spec content over the
 canonical spec repos already in policy (consensus-specs today;
 execution-specs and RIPs from the backlog). Shipped design —
-**parse-on-demand, not ingest-time extraction**: `corpus-core/src/spec.rs`
+**parse-on-demand, not ingest-time extraction**: `wikipethia-core/src/spec.rs`
 parses constant tables and python fences out of spec documents at query
 time (spec-tier content is ~30MB; the scan is milliseconds), found via a
 verbatim tier-bounded content match. No `meta` keys, no chunk tags, no
@@ -700,7 +708,7 @@ opens a *separate probe connection* and asks `server/discover`; rmcp answers
 rmcp replies — correctly shaped — and the client rejects every reply, retries
 at 0.5s/1s/2s, and gives up. Proven by rewriting exactly one string in a
 proxy: strip `"2026-07-28"` from 3.0.0's advertised list and all five tools
-register; put it back and none do. **rmcp 3.1.3 fixes it** (`corpus-mcp`
+register; put it back and none do. **rmcp 3.1.3 fixes it** (`wikipethia-mcp`
 now requires it) — five tools register against the real binary, and the
 2-question smoke went from 0.00/0.00 with 0 tool calls to 1.00/1.00 with 19.
 
@@ -746,22 +754,51 @@ worked. They simply cannot be reproduced until the CLI does.
 
 ### [ ] M12 — Adoption kit
 
-What "published community tool" needs beyond M8's dataset publishing:
-an install story (prebuilt binaries or `cargo install`), corpus
-download-and-verify, a health/diagnostics surface (today a broken index
-surfaces as prose mid-conversation), an adopter-facing README, and
-versioned releases in CI.
+What "published community tool" needs beyond M8's dataset publishing.
 
-Already done ahead of the milestone: the **streamable-HTTP transport**
-(`corpus-mcp --http`, shipped Aug 2026), so one host can serve several
-machines — with the standing caveat that it has no authentication and
-must bind loopback or a private interface. The README carries a
-quick-start and a hosting section.
+**Done 2026-08-21:**
 
-**Gate:** a stranger on a clean machine goes from nothing to a first
-cited answer in under ten minutes using only public docs. Note this is
-unreachable until M8 publishes a downloadable corpus — today the path
-runs through a multi-hour crawl.
+- **Named for the project throughout.** `corpus-cli`/`corpus-mcp` →
+  `wikipethia`/`wikipethia-mcp`, and the crate directories with them
+  (`corpus-core` → `wikipethia-core`, and so on). An adopter installs
+  "wikipethia" and every path and command says so — `cargo install --path
+  corpus-cli` for a tool called wikipethia was confusing at exactly the
+  moment a new user meets it.
+- **`wikipethia status`.** A half-built corpus behaved like a working one —
+  an index with no vectors still answers, because hybrid search degrades
+  silently to pure BM25, so the first sign of trouble was an answer that felt
+  slightly off mid-conversation. `status` reports documents per source,
+  vectors against embeddable chunks, the model, and one verdict line:
+  READY / PARTIAL / NOT READY.
+- **Read commands no longer create the corpus.** `Store::open` creates the
+  file when missing, which is right for `index` and wrong for everything
+  else: `search` in the wrong directory, or a typo in `--db`, wrote an empty
+  64KB database and then reported "holds no documents" — describing a file it
+  had just created. Readers use `open_existing`, and `CoreError::NoCorpus`
+  names the path.
+- **Error messages point at `build`**, not `index`, and no longer assume a
+  `cargo run` invocation that an installed binary will never match.
+- **`--version` on both binaries.** Hand-rolled in the server, which parses
+  its own arguments to stay dependency-free.
+- **Manifest metadata** — `license`, `repository`, `description` inherited
+  from the workspace, so the crates are installable and identify themselves.
+- **CI.** The checks CLAUDE.md already required by convention now run on
+  every push and pull request: clippy `-D warnings`, `cargo test`, and a
+  guard that the README licensing table still covers every manifest source.
+
+**Already done ahead of the milestone:** the streamable-HTTP transport
+(`wikipethia-mcp --http`), so one host can serve several machines — with the
+standing caveat that it has no authentication and must bind loopback or a
+private interface.
+
+**Still open:**
+
+- Prebuilt binaries on tagged releases (needs the CI above as its base).
+- Corpus download-and-verify — that is M8's artifact, not this milestone's.
+
+**Gate:** a stranger can install wikipethia, build or download a corpus, and
+get a cited answer through their own client, using only the README — with
+`status` able to tell them which of those steps is incomplete.
 
 ### [x] M13 — Execution-layer and process sources
 

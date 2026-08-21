@@ -396,71 +396,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
-name = "corpus-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "corpus-core",
- "corpus-embed",
- "corpus-fetch",
- "serde",
- "serde_json",
- "toml",
-]
-
-[[package]]
-name = "corpus-core"
-version = "0.1.0"
-dependencies = [
- "rusqlite",
- "serde",
- "serde_json",
- "sqlite-vec",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "corpus-embed"
-version = "0.1.0"
-dependencies = [
- "corpus-core",
- "fastembed",
-]
-
-[[package]]
-name = "corpus-fetch"
-version = "0.1.0"
-dependencies = [
- "corpus-core",
- "flate2",
- "scraper",
- "serde",
- "serde_json",
- "tar",
- "tempfile",
- "thiserror",
- "ureq",
-]
-
-[[package]]
-name = "corpus-mcp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "corpus-core",
- "corpus-embed",
- "rmcp",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3390,6 +3325,71 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "wikipethia"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "toml",
+ "wikipethia-core",
+ "wikipethia-embed",
+ "wikipethia-fetch",
+]
+
+[[package]]
+name = "wikipethia-core"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sqlite-vec",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "wikipethia-embed"
+version = "0.1.0"
+dependencies = [
+ "fastembed",
+ "wikipethia-core",
+]
+
+[[package]]
+name = "wikipethia-fetch"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "scraper",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "thiserror",
+ "ureq",
+ "wikipethia-core",
+]
+
+[[package]]
+name = "wikipethia-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "wikipethia-core",
+ "wikipethia-embed",
 ]
 
 [[package]]

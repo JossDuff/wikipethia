@@ -1,0 +1,54 @@
+# The checks CLAUDE.md already requires before calling a task done, enforced
+# on every push and pull request instead of by memory.
+#
+# No network: `cargo test` must pass offline (hard rule — fixtures live in
+# tests/fixtures/), so nothing here builds a corpus or reaches a forum.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+
+      # Keyed on Cargo.lock: the embedding stack (ort, tokenizers) dominates a
+      # cold build, and nothing here changes it week to week.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      # CLAUDE.md's hard rule: sources.toml changes update the README. This
+      # compares row COUNTS only, so it catches a source added or removed
+      # without its table rows — not a renamed id, a re-tiered source, or a
+      # row describing the wrong source. Those still need a human.
+      #
+      # `|| true` on every count is load-bearing, not defensive noise: the
+      # default shell here is `bash -e`, and `grep -c` exits 1 when it matches
+      # nothing — so without it the step dies silently on exactly the
+      # regression it exists to catch (a heading renamed, or table rows
+      # reformatted), printing no counts and no ::error::.
+      - name: README tables have a row per manifest source
+        run: |
+          manifest=$(grep -cP '^id = "' sources.toml || true)
+          sources=$(sed -n '/^## Sources/,/^## /p' README.md | grep -c '^| \[' || true)
+          licensing=$(sed -n '/^## Licensing/,$p' README.md | grep -c '^| \[' || true)
+          echo "sources.toml: $manifest | Sources table: $sources | Licensing table: $licensing"
+          fail=0
+          [ "$manifest" -eq "$sources" ]   || { echo "::error::Sources table has $sources rows, manifest has $manifest"; fail=1; }
+          [ "$manifest" -eq "$licensing" ] || { echo "::error::Licensing table has $licensing rows, manifest has $manifest"; fail=1; }
+          exit $fail
