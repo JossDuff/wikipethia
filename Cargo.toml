@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["corpus-core", "corpus-embed", "corpus-fetch", "corpus-mcp", "corpus-cli"]
+members = ["wikipethia-core", "wikipethia-embed", "wikipethia-fetch", "wikipethia-mcp", "wikipethia"]
 
 [workspace.package]
 version = "0.1.0"

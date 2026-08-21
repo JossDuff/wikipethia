@@ -3,7 +3,7 @@
     "wikipethia": {
       "type": "stdio",
       "command": "cargo",
-      "args": ["run", "-q", "-p", "corpus-mcp"]
+      "args": ["run", "-q", "-p", "wikipethia-mcp"]
     }
   }
 }

@@ -1,0 +1,16 @@
+[package]
+name = "wikipethia-embed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[dependencies]
+wikipethia-core = { version = "0.1.0", path = "../wikipethia-core" }
+# default-features off drops image-models; what remains is the ONNX runtime
+# (downloaded prebuilt at build time) and hf-hub over ureq — no async runtime.
+fastembed = { version = "5.17.4", default-features = false, features = [
+  "ort-download-binaries-native-tls",
+  "hf-hub-native-tls",
+] }

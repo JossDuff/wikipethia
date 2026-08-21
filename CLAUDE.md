@@ -16,7 +16,7 @@ burying spec documents under forum volume.
 **Out of scope for now:** the public web frontend. No UI, no user accounts, no
 request handlers of our own. If a task seems to need them, stop and ask.
 
-The MCP server's HTTP transport (`corpus-mcp --http`) is not an exception to
+The MCP server's HTTP transport (`wikipethia-mcp --http`) is not an exception to
 that: it mounts rmcp's own tower service and adds no handlers, auth, or
 pages. It also has **no authentication** — it must bind loopback or a private
 interface, never a public address.
@@ -31,13 +31,13 @@ interface, never a public address.
 ## Layout
 
 ```
-corpus-core/    documents, parsing, chunking, spec extraction, index, search
+wikipethia-core/    documents, parsing, chunking, spec extraction, index, search
                 — no I/O beyond the DB
-corpus-embed/   the fastembed Embedder impl — model cache and its one-time download
-corpus-fetch/   HTTP client, rate limiting, adapters — all crawl network lives here
-corpus-mcp/     MCP server (stdio by default, streamable HTTP with --http)
-corpus-cli/     sync, index, embed, refresh, search, dedup, eval, agent-eval
-sources.toml    the manifest — source of truth for what is in the corpus
+wikipethia-embed/   the fastembed Embedder impl — model cache and its one-time download
+wikipethia-fetch/   HTTP client, rate limiting, adapters — all crawl network lives here
+wikipethia-mcp/     MCP server (stdio by default, streamable HTTP with --http)
+wikipethia/         sync, index, embed, update, search, status, dedup, eval, agent-eval
+sources.toml        the manifest — source of truth for what is in the corpus
 ```
 
 ## Commands
@@ -48,10 +48,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The binaries are **`wikipethia`** (crate `corpus-cli`) and **`wikipethia-mcp`**
-(crate `corpus-mcp`) — the crate directories keep their old names, only the
-`[[bin]]` names changed. In this repo, `cargo run -p corpus-cli -- <cmd>`;
-installed, just `wikipethia <cmd>`.
+In this repo, `cargo run -p wikipethia -- <cmd>`; installed, just
+`wikipethia <cmd>`. Every crate, directory, and binary is named `wikipethia*`
+— renamed from `corpus-*` on 2026-08-21, because `cargo install --path
+corpus-cli` for a tool called wikipethia was confusing at exactly the moment
+a new user meets it.
 
 ```
 wikipethia build  [--source <id>]      # clone day: sync + index + embed
@@ -80,7 +81,7 @@ cost what the first crawl cost. Not a routine.
 `index` and `embed` take an advisory lock on the database (a `meta` row).
 A second writer fails fast rather than interleaving: `chunks.id` has no
 `AUTOINCREMENT`, so rowid reuse can otherwise attach a vector to text it was
-not computed from, silently. Readers, including `corpus-mcp`, never take it.
+not computed from, silently. Readers, including `wikipethia-mcp`, never take it.
 
 `agent-eval` spawns a headless Claude Code session per question and consumes
 real usage (API credit or plan allowance, depending on how the `claude` CLI
@@ -110,7 +111,7 @@ field that only one adapter can populate (`post_number`, `topic_id`, `username`)
 Source-specific data goes in a `meta: Map<String, Value>` field.
 
 **Adding a source type means adding an adapter, nothing else.** If a new source
-requires changes to `corpus-core`, the abstraction is wrong — say so rather than
+requires changes to `wikipethia-core`, the abstraction is wrong — say so rather than
 threading a special case through.
 
 **Never commit the built index.** `corpus.sqlite` and embedding artifacts are
@@ -128,8 +129,8 @@ reputation. Both were wrong when checked here.
 **Ask before adding a dependency.** Tokio itself is fine when something needs
 it — the thing being protected is the polite crawl above, not the runtime.
 Still ask before a headless browser or a second async runtime. Already
-approved: the embedding stack (fastembed/ort in `corpus-embed`, sqlite-vec in
-`corpus-core`), and axum + tokio-util in `corpus-mcp` for the HTTP transport
+approved: the embedding stack (fastembed/ort in `wikipethia-embed`, sqlite-vec in
+`wikipethia-core`), and axum + tokio-util in `wikipethia-mcp` for the HTTP transport
 (axum binds rmcp's tower service; it adds no handlers of our own).
 
 ## Retrieval invariants
@@ -195,7 +196,7 @@ that divergence is information, not a contradiction.
 The `description` string on each tool is a prompt, not documentation — it is the
 only text a model reads when deciding whether to call the tool. Treat edits to
 these strings as behavior changes, not copy edits. They live in
-`corpus-mcp/src/tools/`.
+`wikipethia-mcp/src/tools/`.
 
 The same applies to the server `instructions` string built in
 `CorpusServer::new` — clients load it at connect time, and it now carries

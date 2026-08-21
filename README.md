@@ -54,8 +54,8 @@ Needs Rust (stable, 2024 edition) and ~1.5GB of disk.
 
 ```bash
 git clone https://github.com/JossDuff/wikipethia && cd wikipethia
-cargo install --path corpus-cli    # the `wikipethia` command
-cargo install --path corpus-mcp    # the `wikipethia-mcp` server
+cargo install --path wikipethia
+cargo install --path wikipethia-mcp
 ```
 
 That puts `wikipethia` and `wikipethia-mcp` on your PATH. To run from the
