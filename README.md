@@ -27,6 +27,12 @@ This repository's code is MIT-licensed ([LICENSE](LICENSE)). The corpus is a
 different matter: wikipethia does not own the material it indexes, and each
 source carries the license its authors and publishers chose.
 
+**In short:** for non-commercial use (research, learning, personal projects)
+the whole corpus is available, with credit. For commercial use, everything
+except the two forums (ethresear.ch and Ethereum Magicians) is available;
+filter them out by `source`. Every document already carries its author, date,
+and URL, so attribution comes for free.
+
 | Source | License |
 |---|---|
 | [ethresear.ch](https://ethresear.ch) | [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/) |
