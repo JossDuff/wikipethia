@@ -23,76 +23,25 @@ adding a source):
 
 ## Licensing
 
-**This repository's code is MIT-licensed** ([LICENSE](LICENSE)). The corpus it
-builds is a different question: wikipethia does not own the material it
-indexes, and each source carries the license its authors and publishers chose.
-Nothing here relicenses anything.
+This repository's code is MIT-licensed ([LICENSE](LICENSE)). The corpus is a
+different matter: wikipethia does not own the material it indexes, and each
+source carries the license its authors and publishers chose.
 
-Verified against each publisher's own statement, 2026-08-21:
+| Source | License |
+|---|---|
+| [ethresear.ch](https://ethresear.ch) | [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/) |
+| [Ethereum Magicians](https://ethereum-magicians.org) | [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/) |
+| [ethereum/EIPs](https://github.com/ethereum/EIPs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [ethereum/ERCs](https://github.com/ethereum/ERCs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [consensus-specs](https://github.com/ethereum/consensus-specs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [execution-specs](https://github.com/ethereum/execution-specs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [execution-apis](https://github.com/ethereum/execution-apis) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [ethereum/pm](https://github.com/ethereum/pm) | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
+| [vitalik.eth.limo](https://vitalik.eth.limo) | [WTFPL](http://www.wtfpl.net/) |
+| [EF blog](https://blog.ethereum.org) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
 
-| Source | License | Commercial use | Share of corpus text | Where it says so |
-|---|---|---|---|---|
-| [ethresear.ch](https://ethresear.ch) | [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/) | **No** | 30.9% | [Terms of service](https://ethresear.ch/tos), "User Content License" |
-| [Ethereum Magicians](https://ethereum-magicians.org) | [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/) | **No** | 29.0% | [Terms of service](https://ethereum-magicians.org/tos), "User Content License" |
-| [ethereum/pm](https://github.com/ethereum/pm) | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) | Yes, share-alike | 13.5% | [LICENSE](https://github.com/ethereum/pm/blob/master/LICENSE) |
-| [ethereum/ERCs](https://github.com/ethereum/ERCs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) | Yes, unconditional | 7.7% | [LICENSE.md](https://github.com/ethereum/ERCs/blob/master/LICENSE.md) |
-| [ethereum/EIPs](https://github.com/ethereum/EIPs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) | Yes, unconditional | 5.1% | [LICENSE.md](https://github.com/ethereum/EIPs/blob/master/LICENSE.md) |
-| [EF blog](https://blog.ethereum.org) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | Yes, attribution | 4.8% | [EF Terms of Use](https://ethereum.org/terms-of-use/) — see below |
-| [execution-specs](https://github.com/ethereum/execution-specs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) | Yes, unconditional | 4.7% | [LICENSE.md](https://github.com/ethereum/execution-specs/blob/HEAD/LICENSE.md) |
-| [vitalik.eth.limo](https://vitalik.eth.limo) | [WTFPL](http://www.wtfpl.net/) | Yes, unconditional | 3.0% | [vbuterin/blog README](https://github.com/vbuterin/blog) |
-| [consensus-specs](https://github.com/ethereum/consensus-specs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) | Yes, unconditional | 1.1% | [LICENSE](https://github.com/ethereum/consensus-specs/blob/master/LICENSE) |
-| [execution-apis](https://github.com/ethereum/execution-apis) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) | Yes, unconditional | 0.1% | [LICENSE](https://github.com/ethereum/execution-apis/blob/main/LICENSE) |
-
-Roughly **40% of the corpus text is commercially usable**, and **26%** carries
-no share-alike obligation at all. The remaining ~60% is the two forums, whose
-terms make user contributions **non-commercial** — a choice by the forum
-operators that nothing on this end can change.
-
-### Every document is source-attributed, so the corpus can be pruned to fit
-
-License is a function of `source`, and **every document, chunk, and search
-result carries its `source`** — along with author, publication date, and a
-citable URL, because the retrieval invariant requires them anyway.
-
-That means you never have to take the corpus as a whole. Filter by `source`
-and you have a subset whose licensing you can state exactly:
-
-```sql
--- Unconditional: public domain and WTFPL. No attribution, no share-alike.
--- 2,520 documents, 21.8% of corpus text.
-SELECT * FROM documents WHERE source IN
-  ('eips','ercs','consensusspecs','executionspecs','executionapis','vitalik');
-
--- Everything usable commercially — adds the EF blog (CC BY 4.0, attribution)
--- and ethereum/pm (CC BY-SA 3.0, attribution + share-alike).
--- 3,765 documents, 40.2% of corpus text.
-SELECT * FROM documents WHERE source NOT IN ('ethresearch','ethmagicians');
-```
-
-(Add the EF blog to the first query and you have the **share-alike-free** set:
-26.6% of the text, attribution being the only condition.)
-
-The same holds for anyone redistributing a built corpus or training on it:
-drop the two forum sources and the non-commercial restriction goes with them.
-
-### Two details worth knowing before you redistribute
-
-**The EF blog's feed contradicts its own terms.** `blog.ethereum.org/en/feed.xml`
-emits `<copyright>All rights reserved 2026</copyright>`, while the Ethereum
-Foundation [Terms of Use](https://ethereum.org/terms-of-use/) name
-`blog.ethereum.org` explicitly among "the Websites" and license all non-code
-content under CC BY 4.0. The feed string appears to be an unreviewed default
-from its generator (`jpmonette/feed`), and a deliberate legal document naming
-the site outweighs a metadata field — but the contradiction is real and
-unresolved, so it is recorded here rather than papered over.
-
-**The forums use version 3.0, not 4.0.** Two consequences: 3.0 has no 30-day
-cure period, so a breach terminates the license permanently rather than
-temporarily; and 3.0 predates the explicit treatment of database rights that
-4.0 added, which matters when what you are redistributing is a database.
-
-None of this is legal advice — it is a record of what each publisher states,
-with links so you can check every row yourself.
+Every document, chunk, and search result carries its `source`, so the corpus
+can be filtered down to whichever sources suit your licensing needs.
 
 ## Running it
 
