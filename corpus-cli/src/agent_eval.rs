@@ -59,7 +59,7 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
         bail!("no questions to run (is --limit 0?)");
     }
 
-    let store = Store::open(&config.db)?;
+    let store = Store::open_existing(&config.db)?;
     let expected_urls: Vec<ExpectedUrls> = resolve_expected_docs(&store, &questions)?
         .into_iter()
         .map(|docs| ExpectedUrls {

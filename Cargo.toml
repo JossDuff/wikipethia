@@ -5,3 +5,6 @@ members = ["corpus-core", "corpus-embed", "corpus-fetch", "corpus-mcp", "corpus-
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/JossDuff/wikipethia"
+description = "A curated local corpus of Ethereum research and standards, with hybrid search, exposed to LLM clients over MCP."

@@ -46,17 +46,26 @@ sources.toml    the manifest — source of truth for what is in the corpus
 cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo run -p corpus-cli -- build [--source <id>]     # clone day: sync + index + embed
-cargo run -p corpus-cli -- update [--source <id>]    # same three stages, incrementally
-cargo run -p corpus-cli -- sync [--source <id>] [--limit N] [--full] [--force]
-cargo run -p corpus-cli -- index [--source <id>] [--force]
-cargo run -p corpus-cli -- embed [--force]
-cargo run -p corpus-cli -- search "<query>" [--limit N]
-cargo run -p corpus-cli -- dedup [--threshold 0.95] [--source <id>]
-cargo run -p corpus-cli -- eval                      # retrieval: recall@10
-cargo run -p corpus-cli -- agent-eval [--limit N] [--model haiku]
-cargo run -p corpus-cli -- agent-eval --regrade <dir>   # re-score, no spend
-cargo run -p corpus-mcp -- [--db <path>] [--http <addr> [--allow-host <name>]]
+```
+
+The binaries are **`wikipethia`** (crate `corpus-cli`) and **`wikipethia-mcp`**
+(crate `corpus-mcp`) — the crate directories keep their old names, only the
+`[[bin]]` names changed. In this repo, `cargo run -p corpus-cli -- <cmd>`;
+installed, just `wikipethia <cmd>`.
+
+```
+wikipethia build  [--source <id>]      # clone day: sync + index + embed
+wikipethia update [--source <id>]      # same three stages, incrementally
+wikipethia status                      # docs/vectors per source; READY or not
+wikipethia sync   [--source <id>] [--limit N] [--full] [--force]
+wikipethia index  [--source <id>] [--force]
+wikipethia embed  [--force]
+wikipethia search "<query>" [--limit N]
+wikipethia dedup  [--threshold 0.95] [--source <id>]
+wikipethia eval                        # retrieval: recall@10
+wikipethia agent-eval [--limit N] [--model haiku]
+wikipethia agent-eval --regrade <dir>  # re-score, no spend
+wikipethia-mcp [--db <path>] [--http <addr> [--allow-host <name>]]
 ```
 
 `build` and `update` are the same pipeline; they differ in what they report,
@@ -81,7 +90,9 @@ There is deliberately **no `add` subcommand**. A source is declared by editing
 review, and the README duty above. Don't reintroduce one.
 
 Clippy must be clean before you call a task done. `cargo test` must pass without
-network access.
+network access. CI (`.github/workflows/ci.yml`) runs both on every push and
+pull request, plus a guard that the README licensing table still covers every
+manifest source.
 
 ## Hard rules
 
@@ -142,7 +153,7 @@ weighting has fixed that. Long documents page through `get_post_context`'s
 ## Evals
 
 `tests/eval/questions.toml` holds questions paired with the post IDs that should
-surface. Run `cargo run -p corpus-cli -- eval` before and after any change to
+surface. Run `wikipethia eval` before and after any change to
 chunking, ranking, or embeddings, and report the recall delta. A retrieval change
 without an eval run is not a finished change.
 

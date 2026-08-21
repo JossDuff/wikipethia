@@ -1,0 +1,45 @@
+# The checks CLAUDE.md already requires before calling a task done, enforced
+# on every push and pull request instead of by memory.
+#
+# No network: `cargo test` must pass offline (hard rule — fixtures live in
+# tests/fixtures/), so nothing here builds a corpus or reaches a forum.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+
+      # Keyed on Cargo.lock: the embedding stack (ort, tokenizers) dominates a
+      # cold build, and nothing here changes it week to week.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      # The manifest drives both README tables; a source added without them is
+      # the drift CLAUDE.md warns about, and it is cheap to catch here.
+      - name: Licensing table covers every manifest source
+        run: |
+          manifest=$(grep -cP '^id = "' sources.toml)
+          licensing=$(sed -n '/^## Licensing/,/^## Running/p' README.md | grep -c '^| \[')
+          echo "sources.toml: $manifest   README licensing rows: $licensing"
+          if [ "$manifest" -ne "$licensing" ]; then
+            echo "::error::sources.toml has $manifest sources but the README licensing table has $licensing rows"
+            exit 1
+          fi

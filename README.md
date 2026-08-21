@@ -48,79 +48,92 @@ can be filtered down to whichever sources suit your licensing needs.
 | [vitalik.eth.limo](https://vitalik.eth.limo) | [WTFPL](http://www.wtfpl.net/) |
 | [EF blog](https://blog.ethereum.org) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
 
-## Running it
+## Install
 
-You need Rust (stable, 2024 edition) and ~1.5GB of disk (raw fetches +
-index + embedding model). Build:
+Needs Rust (stable, 2024 edition) and ~1.5GB of disk.
 
 ```bash
 git clone https://github.com/JossDuff/wikipethia && cd wikipethia
-cargo build --release
+cargo install --path corpus-cli    # the `wikipethia` command
+cargo install --path corpus-mcp    # the `wikipethia-mcp` server
 ```
 
-Build the corpus. One command, three stages (fetch → index → embed):
+That puts `wikipethia` and `wikipethia-mcp` on your PATH. To run from the
+build directory instead, use `cargo build --release` and
+`./target/release/wikipethia`.
+
+## Running it
+
+Build the corpus — one command, three stages (fetch → index → embed):
 
 ```bash
-cargo run --release -p corpus-cli -- build
+wikipethia build
 ```
 
-Expect several hours. The forum crawls hold to one request per second per
-host on purpose — these forums are public goods — and that is the whole of
-the wall clock. Interrupting is safe: every stage is resumable and
-re-running picks up where it stopped. The embedding stage downloads a small
-model (~130MB) on its first run, then works on CPU.
+Expect several hours, most of it embedding (CPU) and a polite
+one-request-per-second crawl. Interrupting is safe: every stage is resumable
+and re-running picks up where it stopped. The first embed downloads a ~130MB
+model.
 
-For a quick taste before committing to the full crawl:
+A single source is much faster if you want to try it first:
 
 ```bash
-cargo run --release -p corpus-cli -- build --source ethresearch
+wikipethia build --source consensusspecs
 ```
 
-Thereafter, keep it current with:
+Check what you have:
 
 ```bash
-cargo run --release -p corpus-cli -- update
+wikipethia status
 ```
 
-`update` runs the same three stages, but writes only what has actually
-changed: it checks every forum topic against the copy you hold, skips a
-repository whose head commit hasn't moved, and re-embeds only new text. A run
-with nothing new upstream takes about six minutes across all ten sources —
-nearly all of it the deliberate one-request-per-second pacing — and prints
-one line per source saying so. This is the command to put on a timer; see
-"Keeping it current" below.
-
-`build` and `update` differ only in what they tell you; either one works at
-any time, and `refresh` still works as an alias for `update`. The three
-stages remain available separately (`sync`, `index`, `embed`) for surgical
-use — that's where `--force` lives.
-
-Try it:
+Search it:
 
 ```bash
-cargo run --release -p corpus-cli -- search "why enshrine PBS"
+wikipethia search "why enshrine PBS"
 ```
 
-Connect it to Claude Code (run from the repo root, or pass `--db`):
+Connect it to Claude Code:
 
 ```bash
-claude mcp add wikipethia -- $(pwd)/target/release/corpus-mcp --db $(pwd)/corpus.sqlite
+claude mcp add wikipethia -- wikipethia-mcp --db $(pwd)/corpus.sqlite
 ```
 
 Then ask Ethereum questions — the model cites forum posts, EIPs, and specs
 with URLs and dates. To serve it over the network instead of stdio, see
 "Hosting it remotely" below.
 
+## Commands
+
+| Command | What it does |
+|---|---|
+| `build` | Fetch, index, and embed everything. The clone-day command. |
+| `update` | Same three stages, incrementally. The one to put on a timer. |
+| `status` | What the corpus holds, and whether it is ready to serve. |
+| `search "<query>"` | Hybrid search from the terminal. |
+| `sync` / `index` / `embed` | The three stages separately, for surgical use — this is where `--force` lives. |
+| `dedup` | Report near-duplicate documents across sources. |
+| `eval` | Retrieval eval: recall@10 over `tests/eval/questions.toml`. |
+| `agent-eval` | Whole-loop eval through a headless Claude Code session. Consumes real usage. |
+
+`--db <path>` selects the corpus, `--source <id>` limits a command to one
+source, and `refresh` is a kept alias for `update`. `--help` on any command
+has the rest.
+
 ## Keeping it current
 
-`update` on a timer is the whole story. A systemd user timer, nightly:
+`update` runs the same three stages as `build`, writing only what changed. A
+run with nothing new upstream takes about six minutes across all ten sources,
+nearly all of it the deliberate one-request-per-second pacing.
+
+A systemd user timer, nightly:
 
 ```ini
 # ~/.config/systemd/user/wikipethia-update.service
 [Service]
 Type=oneshot
 WorkingDirectory=/srv/wikipethia
-ExecStart=/srv/wikipethia/corpus-cli update
+ExecStart=/srv/wikipethia/wikipethia update
 ```
 
 ```ini
@@ -193,7 +206,7 @@ Search can also be scoped to one source or fork
 
 ## Hosting it remotely
 
-The shape: your server runs `corpus-mcp --http` as a long-lived daemon next
+The shape: your server runs `wikipethia-mcp --http` as a long-lived daemon next
 to its own copy of the corpus; your other machines add it to Claude Code as
 an HTTP MCP server and query it over the network. The MCP server speaks
 stdio by default and streamable HTTP with `--http`.
@@ -210,7 +223,7 @@ across the server and client commands.
 
 ```bash
 # ON THE SERVER — bind loopback only; unreachable from outside the box:
-corpus-mcp --db /srv/wikipethia/corpus.sqlite --http 127.0.0.1:8642
+wikipethia-mcp --db /srv/wikipethia/corpus.sqlite --http 127.0.0.1:8642
 
 # ON YOUR LOCAL MACHINE — forward a local port to the server's loopback,
 # then connect to it as if it were local:
@@ -225,7 +238,7 @@ claude mcp add --transport http wikipethia http://127.0.0.1:8642/mcp
 # assigns 100.x.y.z addresses; `tailscale ip -4` prints yours) and allow
 # the bare hostname clients will use (rmcp rejects unknown Host headers as
 # DNS-rebind protection; port-less names match any port):
-corpus-mcp --db corpus.sqlite --http <your-tailscale-ip>:8642 --allow-host <your-server>.<your-tailnet>.ts.net
+wikipethia-mcp --db corpus.sqlite --http <your-tailscale-ip>:8642 --allow-host <your-server>.<your-tailnet>.ts.net
 
 # ON EACH CLIENT MACHINE:
 claude mcp add --transport http wikipethia http://<your-server>.<your-tailnet>.ts.net:8642/mcp
@@ -236,7 +249,7 @@ Deployment notes:
 - Copy the corpus WAL-safely: `sqlite3 corpus.sqlite ".backup snap.sqlite"`
   then rsync the snapshot — never rsync a live database.
 - The embedding model downloads to the fastembed cache on the server's
-  first query; pre-warm with one `corpus-cli search`.
+  first query; pre-warm with one `wikipethia search`.
 - A minimal systemd unit:
 
   ```ini
@@ -245,7 +258,7 @@ Deployment notes:
   After=network.target
 
   [Service]
-  ExecStart=/srv/wikipethia/corpus-mcp --db /srv/wikipethia/corpus.sqlite --http 127.0.0.1:8642
+  ExecStart=/srv/wikipethia/wikipethia-mcp --db /srv/wikipethia/corpus.sqlite --http 127.0.0.1:8642
   WorkingDirectory=/srv/wikipethia
   Restart=on-failure
 
@@ -266,7 +279,7 @@ Each run consumes real usage — API credit or your Claude plan's allowance,
 depending on how the `claude` CLI is authenticated — so start small:
 
 ```bash
-cargo run --release -p corpus-cli -- agent-eval --limit 2 --model haiku
+wikipethia agent-eval --limit 2 --model haiku
 ```  Feel free to contribute eval questions with
 links to the source that you feel should be retrieved to answer the question.  
 

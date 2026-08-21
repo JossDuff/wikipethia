@@ -346,9 +346,17 @@ snapshots to IPFS if you want content-addressed builds. Peg release versions
 to hard forks rather than dates — "the Fusaka corpus" says what a snapshot
 knows in a way a timestamp doesn't.
 
-**Gate:** a stranger can download a published corpus and point `corpus-mcp`
-at it without building one — the prerequisite M12's ten-minute gate is
-blocked on.
+**Gate:** a stranger can download a published corpus and point
+`wikipethia-mcp` at it without building one.
+
+Worth stating plainly, because the old note here mis-attributed the cost: a
+clean build is ~7.5 hours, and **embedding is the largest share** (94k
+vectors at ~6/s ≈ 4.4h, local CPU) — not the crawl (~2h) it was blamed on.
+Publishing removes both. The stronger argument is the forums: every adopter
+who builds from scratch sends ~7,100 requests to ethresear.ch and
+EthMagicians. Publishing means that crawl happens once, here, rather than
+once per user — the same principle the rate limiter encodes, applied to the
+project as a whole.
 
 ---
 
@@ -746,22 +754,48 @@ worked. They simply cannot be reproduced until the CLI does.
 
 ### [ ] M12 — Adoption kit
 
-What "published community tool" needs beyond M8's dataset publishing:
-an install story (prebuilt binaries or `cargo install`), corpus
-download-and-verify, a health/diagnostics surface (today a broken index
-surfaces as prose mid-conversation), an adopter-facing README, and
-versioned releases in CI.
+What "published community tool" needs beyond M8's dataset publishing.
 
-Already done ahead of the milestone: the **streamable-HTTP transport**
-(`corpus-mcp --http`, shipped Aug 2026), so one host can serve several
-machines — with the standing caveat that it has no authentication and
-must bind loopback or a private interface. The README carries a
-quick-start and a hosting section.
+**Done 2026-08-21:**
 
-**Gate:** a stranger on a clean machine goes from nothing to a first
-cited answer in under ten minutes using only public docs. Note this is
-unreachable until M8 publishes a downloadable corpus — today the path
-runs through a multi-hour crawl.
+- **Binaries are named for the project.** `corpus-cli`/`corpus-mcp` →
+  `wikipethia`/`wikipethia-mcp`. An adopter installs "wikipethia" and gets
+  commands that say so; the crate directories keep their internal names.
+- **`wikipethia status`.** A half-built corpus behaved like a working one —
+  an index with no vectors still answers, because hybrid search degrades
+  silently to pure BM25, so the first sign of trouble was an answer that felt
+  slightly off mid-conversation. `status` reports documents per source,
+  vectors against embeddable chunks, the model, and one verdict line:
+  READY / PARTIAL / NOT READY.
+- **Read commands no longer create the corpus.** `Store::open` creates the
+  file when missing, which is right for `index` and wrong for everything
+  else: `search` in the wrong directory, or a typo in `--db`, wrote an empty
+  64KB database and then reported "holds no documents" — describing a file it
+  had just created. Readers use `open_existing`, and `CoreError::NoCorpus`
+  names the path.
+- **Error messages point at `build`**, not `index`, and no longer assume a
+  `cargo run` invocation that an installed binary will never match.
+- **`--version` on both binaries.** Hand-rolled in the server, which parses
+  its own arguments to stay dependency-free.
+- **Manifest metadata** — `license`, `repository`, `description` inherited
+  from the workspace, so the crates are installable and identify themselves.
+- **CI.** The checks CLAUDE.md already required by convention now run on
+  every push and pull request: clippy `-D warnings`, `cargo test`, and a
+  guard that the README licensing table still covers every manifest source.
+
+**Already done ahead of the milestone:** the streamable-HTTP transport
+(`wikipethia-mcp --http`), so one host can serve several machines — with the
+standing caveat that it has no authentication and must bind loopback or a
+private interface.
+
+**Still open:**
+
+- Prebuilt binaries on tagged releases (needs the CI above as its base).
+- Corpus download-and-verify — that is M8's artifact, not this milestone's.
+
+**Gate:** a stranger can install wikipethia, build or download a corpus, and
+get a cited answer through their own client, using only the README — with
+`status` able to tell them which of those steps is incomplete.
 
 ### [x] M13 — Execution-layer and process sources
 

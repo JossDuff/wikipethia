@@ -209,6 +209,20 @@ impl Store {
         Self::init(Connection::open(path)?)
     }
 
+    /// Open a corpus that must already exist, for commands that only read.
+    ///
+    /// [`Store::open`] creates the file when it is missing, which is right for
+    /// `index` and wrong for everything else: a typo in `--db`, or running
+    /// `search` in the wrong directory, silently produced an empty 64KB
+    /// database and then reported "holds no documents" — describing a file it
+    /// had just created itself. Readers get an error naming the path instead.
+    pub fn open_existing(path: &Path) -> Result<Self, CoreError> {
+        if !path.exists() {
+            return Err(CoreError::NoCorpus(path.display().to_string()));
+        }
+        Self::open(path)
+    }
+
     pub fn open_in_memory() -> Result<Self, CoreError> {
         register_sqlite_vec();
         Self::init(Connection::open_in_memory()?)

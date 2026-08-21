@@ -24,7 +24,11 @@ use manifest::{Kind, Manifest, adapter_for};
 use report::{Run, Table};
 
 #[derive(Parser)]
-#[command(name = "corpus", about = "Curated Ethereum research corpus")]
+#[command(
+    name = "wikipethia",
+    version,
+    about = "A curated local corpus of Ethereum research and standards"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -118,6 +122,12 @@ enum Command {
         #[arg(long, default_value = "corpus.sqlite")]
         db: PathBuf,
     },
+    /// Report what this corpus holds and whether it is ready to serve.
+    Status {
+        /// Database file to inspect.
+        #[arg(long, default_value = "corpus.sqlite")]
+        db: PathBuf,
+    },
     /// Report near-duplicate documents across sources (e.g. a blog post
     /// cross-posted to a forum). Requires embeddings.
     Dedup {
@@ -175,8 +185,8 @@ enum Command {
         /// Artifacts directory; default eval-runs/<unix-epoch>/ (gitignored).
         #[arg(long)]
         out: Option<PathBuf>,
-        /// corpus-mcp binary for the session to spawn.
-        #[arg(long, default_value = "target/release/corpus-mcp")]
+        /// MCP server binary for the session to spawn.
+        #[arg(long, default_value = "target/release/wikipethia-mcp")]
         server_bin: PathBuf,
         /// Re-score an existing run directory's artifacts with the current
         /// grader — no sessions, no spend.
@@ -239,6 +249,7 @@ fn main() -> anyhow::Result<()> {
             within_source,
         } => dedup(&db, threshold, source.as_deref(), within_source),
         Command::Search { query, db, limit } => search(&query, &db, limit),
+        Command::Status { db } => status(&db),
         Command::Embed { db, force } => {
             let _lock = WriterLock::acquire(&db, "embed")?;
             embed(&db, force)
@@ -252,7 +263,7 @@ fn main() -> anyhow::Result<()> {
                 )
             })?;
             let questions = eval::parse_questions(&text)?;
-            let store = Store::open(&db)?;
+            let store = Store::open_existing(&db)?;
             let embedder = if store.embedding_count()? > 0 {
                 Some(FastEmbedder::new()?)
             } else {
@@ -458,10 +469,70 @@ fn sync_sources(
     outcome
 }
 
+/// What this corpus holds, and whether it can actually serve a query.
+///
+/// The gap this closes: a half-built corpus behaved like a working one. An
+/// index with no vectors still answers — hybrid search degrades silently to
+/// pure BM25 — so the first sign of trouble was an answer that felt slightly
+/// off, mid-conversation, with nothing to check it against.
+fn status(db: &Path) -> anyhow::Result<()> {
+    let store = Store::open_existing(db)?;
+    let documents = store.count()?;
+    let embedded = store.embedding_count()?;
+    let missing = store.missing_embedding_count()?;
+
+    println!("corpus     {}", db.canonicalize().unwrap_or_else(|_| db.to_path_buf()).display());
+    match store.embedding_model()? {
+        Some((model, dim)) => println!("model      {model} ({dim} dimensions)"),
+        None => println!("model      none — no embeddings yet"),
+    }
+    println!("documents  {documents}");
+    match missing {
+        0 => println!("vectors    {embedded}"),
+        n => println!("vectors    {embedded} ({n} chunk{} still to embed)", report::plural(n)),
+    }
+    println!();
+
+    let stats = store.source_stats()?;
+    if stats.is_empty() {
+        println!("no sources — run `wikipethia build`");
+    } else {
+        println!("{:<16} {:>8}  tier", "source", "docs");
+        for s in &stats {
+            println!(
+                "{:<16} {:>8}  {}",
+                s.id,
+                s.count,
+                s.tier.as_deref().unwrap_or("-")
+            );
+        }
+    }
+
+    // The one line that decides whether this corpus is usable, spelled out
+    // rather than left for the reader to infer from the numbers above.
+    println!();
+    if documents == 0 {
+        println!("NOT READY: no documents. Run `wikipethia build`.");
+    } else if embedded == 0 {
+        println!(
+            "PARTIAL: lexical search works, semantic does not. Run `wikipethia embed`."
+        );
+    } else if missing > 0 {
+        println!(
+            "PARTIAL: {missing} chunk{} without a vector, so semantic search misses \
+             them. Run `wikipethia embed`.",
+            report::plural(missing)
+        );
+    } else {
+        println!("READY: lexical and semantic search are both available.");
+    }
+    Ok(())
+}
+
 fn search(query: &str, db: &Path, limit: usize) -> anyhow::Result<()> {
-    let store = Store::open(db)?;
+    let store = Store::open_existing(db)?;
     if store.count()? == 0 {
-        bail!("{} holds no documents — run index first?", db.display());
+        bail!("{} holds no documents — run `wikipethia build` first", db.display());
     }
     let query_vec = query_vector(&store, query)?;
     let hits = store.hybrid_search(query, query_vec.as_deref(), limit)?;
@@ -499,9 +570,9 @@ fn dedup(
     source: Option<&str>,
     within_source: bool,
 ) -> anyhow::Result<()> {
-    let store = Store::open(db)?;
+    let store = Store::open_existing(db)?;
     if store.embedding_count()? == 0 {
-        bail!("{} has no embeddings — run `corpus embed` first", db.display());
+        bail!("{} has no embeddings — run `wikipethia embed` first", db.display());
     }
     let ids = store.doc_ids(source)?;
     if ids.is_empty() {
@@ -565,9 +636,9 @@ fn query_vector(store: &Store, query: &str) -> anyhow::Result<Option<Vec<f32>>> 
 }
 
 fn embed(db: &Path, force: bool) -> anyhow::Result<()> {
-    let mut store = Store::open(db)?;
+    let mut store = Store::open_existing(db)?;
     if store.count()? == 0 {
-        bail!("{} holds no documents — run index first?", db.display());
+        bail!("{} holds no documents — run `wikipethia build` first", db.display());
     }
     let embedder = FastEmbedder::new()?;
     if store.ensure_embedding_space(MODEL_ID, DIM, force)? {

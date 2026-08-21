@@ -24,12 +24,12 @@ use tools::CorpusServer;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse()?;
-    let store = Store::open(&args.db)?;
+    let store = Store::open_existing(&args.db)?;
     if store.count()? == 0 {
         // Failing the connection beats serving an empty corpus silently —
         // this line shows up in the client's MCP logs.
         anyhow::bail!(
-            "{} holds no documents — run `cargo run -p corpus-cli -- index` first",
+            "{} holds no documents — run `wikipethia build` first",
             args.db.display()
         );
     }
@@ -166,7 +166,7 @@ struct Args {
 impl Args {
     fn parse() -> anyhow::Result<Self> {
         const USAGE: &str =
-            "corpus-mcp [--db <path>] [--http <addr> [--allow-host <name>]...]";
+            "wikipethia-mcp [--db <path>] [--http <addr> [--allow-host <name>]...]";
         let mut db = None;
         let mut http = None;
         let mut allow_hosts = Vec::new();
@@ -175,6 +175,13 @@ impl Args {
             match arg.as_str() {
                 "--help" | "-h" => {
                     println!("{USAGE}");
+                    std::process::exit(0);
+                }
+                // Hand-rolled like the rest of this parser; adopters expect
+                // it, and "which build am I running" is the first question
+                // when a server misbehaves.
+                "--version" | "-V" => {
+                    println!("wikipethia-mcp {}", env!("CARGO_PKG_VERSION"));
                     std::process::exit(0);
                 }
                 "--db" => db = Some(PathBuf::from(next_value(&mut args, "--db")?)),

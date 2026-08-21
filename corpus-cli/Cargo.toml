@@ -2,6 +2,16 @@
 name = "corpus-cli"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+# The binary is what a user types; the crate directory keeps its internal
+# name. Renamed 2026-08-21 — "corpus-cli" told an adopter nothing about what
+# they had installed, and collides with any other corpus tool on PATH.
+[[bin]]
+name = "wikipethia"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
