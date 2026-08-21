@@ -155,8 +155,9 @@ async fn wait_for_shutdown_signal() {
 
 /// Hand-rolled to stay dependency-free: `--db <path>`, `--http <addr>`,
 /// `--allow-host <name>` (repeatable). db resolution: `--db` beats
-/// `CORPUS_DB` beats `corpus.sqlite` (the .mcp.json entry launches from
-/// the repo root, so the relative default works).
+/// `WIKIPETHIA_DB` (or the pre-rename `CORPUS_DB`) beats `corpus.sqlite`
+/// (the .mcp.json entry launches from the repo root, so the relative
+/// default works).
 struct Args {
     db: PathBuf,
     http: Option<SocketAddr>,
@@ -212,6 +213,9 @@ impl Args {
             anyhow::bail!("--allow-host only applies to --http mode");
         }
         let db = db
+            // WIKIPETHIA_DB is the name; CORPUS_DB is still read so anyone who
+            // exported it before the rename is not silently ignored.
+            .or_else(|| std::env::var("WIKIPETHIA_DB").ok().map(PathBuf::from))
             .or_else(|| std::env::var("CORPUS_DB").ok().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("corpus.sqlite"));
         Ok(Self {

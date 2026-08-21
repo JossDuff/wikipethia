@@ -32,15 +32,17 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
-      # CLAUDE.md's hard rule: sources.toml changes update the README. Both
-      # tables mirror the manifest, so both are checked.
+      # CLAUDE.md's hard rule: sources.toml changes update the README. This
+      # compares row COUNTS only, so it catches a source added or removed
+      # without its table rows — not a renamed id, a re-tiered source, or a
+      # row describing the wrong source. Those still need a human.
       #
       # `|| true` on every count is load-bearing, not defensive noise: the
       # default shell here is `bash -e`, and `grep -c` exits 1 when it matches
       # nothing — so without it the step dies silently on exactly the
       # regression it exists to catch (a heading renamed, or table rows
       # reformatted), printing no counts and no ::error::.
-      - name: README tables cover every manifest source
+      - name: README tables have a row per manifest source
         run: |
           manifest=$(grep -cP '^id = "' sources.toml || true)
           sources=$(sed -n '/^## Sources/,/^## /p' README.md | grep -c '^| \[' || true)

@@ -333,6 +333,16 @@ fn pipeline(run: Run, source: Option<&str>, db: &Path) -> anyhow::Result<()> {
     }
     println!();
 
+    // `update` must not invent a corpus. `build` may — that is its job — but
+    // a typo'd --db on the command meant for a timer otherwise creates an
+    // empty database (WriterLock::acquire opens the path to write its meta
+    // row) and then syncs, indexes and embeds the whole corpus into it:
+    // hours of CPU and a full polite crawl, while the real corpus the server
+    // is serving silently goes stale. Checked before the lock, because the
+    // lock is what would create the file.
+    if run == Run::Update {
+        corpus_exists(db)?;
+    }
     // Fail before the crawl, not after it. The lock proper is taken below,
     // around the two database stages; this only refuses a run that is already
     // doomed — otherwise a timer firing during a manual `embed` would spend

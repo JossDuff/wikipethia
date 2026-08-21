@@ -220,7 +220,34 @@ impl Store {
         if !path.exists() {
             return Err(CoreError::NoCorpus(path.display().to_string()));
         }
-        Self::open(path)
+        match Self::open(path) {
+            Ok(store) => Ok(store),
+            // A corpus someone else built — dropped in /usr/share, on a
+            // read-only mount, or owned by another user — is exactly what a
+            // published dataset produces, and `Store::init` writes on every
+            // open (the WAL pragma and `user_version`). SQLite reads such a
+            // file happily; only our initialisation refuses. Retry without it.
+            Err(CoreError::Db(e)) if is_readonly(&e) => Self::open_read_only(path),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Open without the schema/pragma writes [`Store::init`] performs.
+    ///
+    /// Safe precisely because the file is not writable: nothing here can
+    /// migrate it, so it must already be at a schema this build understands.
+    /// A too-old file surfaces as a missing-table error on the first query
+    /// rather than a silent wrong answer.
+    fn open_read_only(path: &Path) -> Result<Self, CoreError> {
+        register_sqlite_vec();
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_URI
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let has_vec = table_exists(&conn, "chunks_vec")?;
+        Ok(Self { conn, has_vec })
     }
 
     pub fn open_in_memory() -> Result<Self, CoreError> {
@@ -1083,6 +1110,19 @@ fn vec_from_blob(blob: &[u8]) -> Vec<f32> {
     blob.chunks_exact(4)
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect()
+}
+
+/// Whether a rusqlite error is SQLite refusing to write.
+///
+/// Matched on the primary code so both `SQLITE_READONLY` and its extended
+/// variants (`_DBMOVED`, `_DIRECTORY`, …) count; a read-only *mount* reports
+/// a different extended code than a read-only *file*.
+fn is_readonly(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(f, _)
+            if f.code == rusqlite::ErrorCode::ReadOnly
+    )
 }
 
 fn table_exists(conn: &Connection, name: &str) -> Result<bool, CoreError> {

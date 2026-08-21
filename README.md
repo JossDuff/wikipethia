@@ -69,6 +69,8 @@ claude mcp add wikipethia -- wikipethia-mcp --db $(pwd)/corpus.sqlite
 
 Then ask Ethereum questions — the model cites forum posts, EIPs, and specs with URLs and dates.
 
+To serve one corpus to several machines, `wikipethia-mcp --http <addr>` speaks streamable HTTP instead of stdio. **It has no authentication** — bind loopback and reach it over an SSH tunnel, or bind a private-network address (Tailscale, WireGuard), never a public one. `--allow-host <name>` allows the hostname clients will use.
+
 ## Commands
 
 | Command | What it does |
