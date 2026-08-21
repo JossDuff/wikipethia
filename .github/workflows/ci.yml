@@ -37,7 +37,8 @@ jobs:
       - name: Licensing table covers every manifest source
         run: |
           manifest=$(grep -cP '^id = "' sources.toml)
-          licensing=$(sed -n '/^## Licensing/,/^## Running/p' README.md | grep -c '^| \[')
+          # Licensing is the last section, so the range runs to end of file.
+          licensing=$(sed -n '/^## Licensing/,$p' README.md | grep -c '^| \[')
           echo "sources.toml: $manifest   README licensing rows: $licensing"
           if [ "$manifest" -ne "$licensing" ]; then
             echo "::error::sources.toml has $manifest sources but the README licensing table has $licensing rows"

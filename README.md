@@ -1,12 +1,10 @@
 # wikipethia
 
-Give your LLM direct access to Ethereum specs, research, discussion, and history.  All exposed as an MCP server.
+Give your LLM direct access to Ethereum specs, research, discussion, and history. All exposed as an MCP server.
 
 ## Sources
 
-Everything in the corpus, as declared in [`sources.toml`](sources.toml)
-keep this list and the [licensing table](#licensing) in sync when
-adding a source):
+Everything in the corpus, as declared in [`sources.toml`](sources.toml) — keep this list and the [licensing table](#licensing) in sync when adding a source.
 
 | Source | What it is |
 |---|---|
@@ -21,33 +19,6 @@ adding a source):
 | [vitalik.eth.limo](https://vitalik.eth.limo) | Vitalik's writing |
 | [EF blog](https://blog.ethereum.org) | Ethereum Foundation announcements and research |
 
-## Licensing
-
-This repository's code is MIT-licensed ([LICENSE](LICENSE)). The corpus is a
-different matter: wikipethia does not own the material it indexes, and each
-source carries the license its authors and publishers chose.
-
-**In short:** for non-commercial use (research, learning, personal projects)
-the whole corpus is available, with credit. For commercial use, everything
-except the two forums (ethresear.ch and Ethereum Magicians) is available.  
-Every document already carries its author, date, and URL, so attribution comes for free.
-
-Every document, chunk, and search result also carries its `source`, so the corpus
-can be filtered down to whichever sources suit your licensing needs.
-
-| Source | License |
-|---|---|
-| [ethresear.ch](https://ethresear.ch) | [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/) |
-| [Ethereum Magicians](https://ethereum-magicians.org) | [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/) |
-| [ethereum/EIPs](https://github.com/ethereum/EIPs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
-| [ethereum/ERCs](https://github.com/ethereum/ERCs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
-| [consensus-specs](https://github.com/ethereum/consensus-specs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
-| [execution-specs](https://github.com/ethereum/execution-specs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
-| [execution-apis](https://github.com/ethereum/execution-apis) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
-| [ethereum/pm](https://github.com/ethereum/pm) | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
-| [vitalik.eth.limo](https://vitalik.eth.limo) | [WTFPL](http://www.wtfpl.net/) |
-| [EF blog](https://blog.ethereum.org) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
-
 ## Install
 
 Needs Rust (stable, 2024 edition) and ~1.5GB of disk.
@@ -58,9 +29,7 @@ cargo install --path wikipethia
 cargo install --path wikipethia-mcp
 ```
 
-That puts `wikipethia` and `wikipethia-mcp` on your PATH. To run from the
-build directory instead, use `cargo build --release` and
-`./target/release/wikipethia`.
+That puts `wikipethia` and `wikipethia-mcp` on your PATH. To run from the build directory instead, use `cargo build --release` and `./target/release/wikipethia`.
 
 ## Running it
 
@@ -70,10 +39,7 @@ Build the corpus — one command, three stages (fetch → index → embed):
 wikipethia build
 ```
 
-Expect several hours, most of it embedding (CPU) and a polite
-one-request-per-second crawl. Interrupting is safe: every stage is resumable
-and re-running picks up where it stopped. The first embed downloads a ~130MB
-model.
+Expect several hours, most of it embedding (CPU) and a polite one-request-per-second crawl. Interrupting is safe: every stage is resumable and re-running picks up where it stopped. The first embed downloads a ~130MB model.
 
 A single source is much faster if you want to try it first:
 
@@ -99,16 +65,14 @@ Connect it to Claude Code:
 claude mcp add wikipethia -- wikipethia-mcp --db $(pwd)/corpus.sqlite
 ```
 
-Then ask Ethereum questions — the model cites forum posts, EIPs, and specs
-with URLs and dates. To serve it over the network instead of stdio, see
-"Hosting it remotely" below.
+Then ask Ethereum questions — the model cites forum posts, EIPs, and specs with URLs and dates.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `build` | Fetch, index, and embed everything. The clone-day command. |
-| `update` | Same three stages, incrementally. The one to put on a timer. |
+| `update` | Updates all sources, same three stages as build. Run periodically or cron job. |
 | `status` | What the corpus holds, and whether it is ready to serve. |
 | `search "<query>"` | Hybrid search from the terminal. |
 | `sync` / `index` / `embed` | The three stages separately, for surgical use — this is where `--force` lives. |
@@ -116,173 +80,37 @@ with URLs and dates. To serve it over the network instead of stdio, see
 | `eval` | Retrieval eval: recall@10 over `tests/eval/questions.toml`. |
 | `agent-eval` | Whole-loop eval through a headless Claude Code session. Consumes real usage. |
 
-`--db <path>` selects the corpus, `--source <id>` limits a command to one
-source, and `refresh` is a kept alias for `update`. `--help` on any command
-has the rest.
-
-## Keeping it current
-
-`update` runs the same three stages as `build`, writing only what changed. A
-run with nothing new upstream takes about six minutes across all ten sources,
-nearly all of it the deliberate one-request-per-second pacing.
-
-A systemd user timer, nightly:
-
-```ini
-# ~/.config/systemd/user/wikipethia-update.service
-[Service]
-Type=oneshot
-WorkingDirectory=/srv/wikipethia
-ExecStart=/srv/wikipethia/wikipethia update
-```
-
-```ini
-# ~/.config/systemd/user/wikipethia-update.timer
-[Timer]
-OnCalendar=daily
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
-
-`systemctl --user enable --now wikipethia-update.timer`. The MCP server sees
-new documents live through SQLite's WAL, so nothing needs restarting. Only
-one writer may touch the corpus at a time; if a timer fires while you are
-running `index` or `embed` by hand, it exits immediately saying who holds it
-rather than corrupting the vectors.
-
-`update` walks each forum's listing to the end, checking every topic against
-what you have — 102 pages for ethresear.ch, 136 for EthMagicians, about four
-minutes between them. Topics upstream hasn't touched are skipped without a
-fetch, so that is nearly all listing pages rather than downloads. This is
-what lets a **deleted** post disappear from your corpus on the next run: a
-deletion changes a topic's post count but doesn't bump it in the activity
-listing, so a walk that stopped at the last checkpoint would never look at it
-again.
-
-Two things an update still cannot see, both by design:
-
-- **A forum post edited in place**, in a thread that got no other activity.
-  Nothing upstream changes to signal it — not the post count, not the
-  timestamps. `corpus sync --source <id> --full --force` sweeps a source and
-  refetches everything; it costs what the first crawl cost, so it's a
-  once-in-a-while thing, not a routine. The same command is what catches a
-  user whose *account* was deleted, since Discourse anonymizes the username
-  and leaves the posts in place.
-- **A correction to an old blog article.** Both feeds are full archives
-  (634 items for the EF blog), and re-reading every article on every run
-  would cost minutes to find a change nobody made. A routine update compares
-  the newest 30; `corpus sync --source <id> --full` compares all of them.
-  New articles are always picked up wherever they sit in the feed.
+`--db <path>` selects the corpus, `--source <id>` limits a command to one source, and `refresh` is a kept alias for `update`. `--help` on any command has the rest.
 
 ## Why not just grep the text?
 
 Search here is more than keyword matching, in three layers:
 
-- **Ranked lexical search (FTS5 + BM25).** Keyword matches are scored: rare terms
-  outweigh common ones, title/author hits outweigh body mentions, and
-  stemming matches (ex: "exits" to "exit"). Exact tokens like `EIP-4844`
-  or an author name hit precisely.
-- **Semantic search (embeddings).** Every chunk of text is mapped by a small
-  local model (BGE-small, via fastembed) to a point in vector space where
-  *meaning*, not spelling, determines distance. A question about "PBS" finds
-  the proposer/builder-separation posts that never uses the acronym.
-- **Hybrid fusion (RRF).** Both rankings merge via reciprocal rank fusion:
-  documents strong in either list surface, and exact-term hits are never
-  diluted by the vector side.
+- **Ranked lexical search (FTS5 + BM25).** Keyword matches are scored: rare terms outweigh common ones, title/author hits outweigh body mentions, and stemming matches (ex: "exits" to "exit"). Exact tokens like `EIP-4844` or an author name hit precisely.
+- **Semantic search (embeddings).** Every chunk of text is mapped by a small local model (BGE-small, via fastembed) to a point in vector space where *meaning*, not spelling, determines distance. A question about "PBS" finds the proposer/builder-separation posts that never use the acronym.
+- **Hybrid fusion (RRF).** Both rankings merge via reciprocal rank fusion: documents strong in either list surface, and exact-term hits are never diluted by the vector side.
 
-Every result carries a stable doc id, author, published date, and URL.  The
-date matters because Ethereum research supersedes itself and a 2019 design
-post can flatly contradict a 2024 one.
+Every result carries a stable doc id, author, published date, and URL. The date matters because Ethereum research supersedes itself and a 2019 design post can flatly contradict a 2024 one.
 
-Beyond ranked search, the MCP server answers exact spec identifiers
-directly: `lookup_spec` reads the indexed consensus-specs/EIP documents
-themselves and returns a constant's value or a spec function's Python body,
-per fork, with citations — no ranking involved, so a constant defined once
-in phase0 can't be drowned out by forum posts that mention it more often.
-Search can also be scoped to one source or fork
-(`scope: "consensusspecs/specs/electra"`).
+Beyond ranked search, the MCP server answers exact spec identifiers directly: `lookup_spec` reads the indexed consensus-specs/EIP documents themselves and returns a constant's value or a spec function's Python body, per fork, with citations — no ranking involved, so a constant defined once in phase0 can't be drowned out by forum posts that mention it more often. Search can also be scoped to one source or fork (`scope: "consensusspecs/specs/electra"`).
 
-## Hosting it remotely
+## Licensing
 
-The shape: your server runs `wikipethia-mcp --http` as a long-lived daemon next
-to its own copy of the corpus; your other machines add it to Claude Code as
-an HTTP MCP server and query it over the network. The MCP server speaks
-stdio by default and streamable HTTP with `--http`.
+This repository's code is MIT-licensed ([LICENSE](LICENSE)). The corpus is a different matter: wikipethia does not own the material it indexes, and each source carries the license its authors and publishers chose.
 
-**There is no authentication**, so the port must never be publicly
-reachable. Two safe ways to reach it.
+**In short:** for non-commercial use (research, learning, personal projects) the whole corpus is available, with credit. For commercial use, everything except the two forums (ethresear.ch and Ethereum Magicians) is available. Every document already carries its author, date, and URL, so attribution comes for free.
 
-Reading the examples: `127.0.0.1` is literal — the loopback address,
-type it exactly. Anything in `<angle brackets>` is yours to fill in.
-`8642` is an arbitrary port; pick any free one, just keep it consistent
-across the server and client commands.
+Every document, chunk, and search result also carries its `source`, so the corpus can be filtered down to whichever sources suit your licensing needs.
 
-**Over an SSH tunnel** — works anywhere you can ssh, nothing else to set up:
-
-```bash
-# ON THE SERVER — bind loopback only; unreachable from outside the box:
-wikipethia-mcp --db /srv/wikipethia/corpus.sqlite --http 127.0.0.1:8642
-
-# ON YOUR LOCAL MACHINE — forward a local port to the server's loopback,
-# then connect to it as if it were local:
-ssh -N -L 8642:127.0.0.1:8642 <user>@<your-server> &
-claude mcp add --transport http wikipethia http://127.0.0.1:8642/mcp
-```
-
-**Over a private network** (Tailscale/WireGuard) — no tunnel to keep alive:
-
-```bash
-# ON THE SERVER — bind the server's OWN private-network address (Tailscale
-# assigns 100.x.y.z addresses; `tailscale ip -4` prints yours) and allow
-# the bare hostname clients will use (rmcp rejects unknown Host headers as
-# DNS-rebind protection; port-less names match any port):
-wikipethia-mcp --db corpus.sqlite --http <your-tailscale-ip>:8642 --allow-host <your-server>.<your-tailnet>.ts.net
-
-# ON EACH CLIENT MACHINE:
-claude mcp add --transport http wikipethia http://<your-server>.<your-tailnet>.ts.net:8642/mcp
-```
-
-Deployment notes:
-
-- Copy the corpus WAL-safely: `sqlite3 corpus.sqlite ".backup snap.sqlite"`
-  then rsync the snapshot — never rsync a live database.
-- The embedding model downloads to the fastembed cache on the server's
-  first query; pre-warm with one `wikipethia search`.
-- A minimal systemd unit:
-
-  ```ini
-  [Unit]
-  Description=wikipethia MCP server
-  After=network.target
-
-  [Service]
-  ExecStart=/srv/wikipethia/wikipethia-mcp --db /srv/wikipethia/corpus.sqlite --http 127.0.0.1:8642
-  WorkingDirectory=/srv/wikipethia
-  Restart=on-failure
-
-  [Install]
-  WantedBy=multi-user.target
-  ```
-
-## Help improve wikipethia by asking questions
-
-A hand-written eval set of questions and answers (`tests/eval/questions.toml`)
-scores every change by recall@10.
-
-A second eval layer measures the whole loop instead of one search: the
-`agent-eval` subcommand runs each question through a headless Claude Code
-session with wikipethia as the only tool source and grades whether the
-final answer cites the expected documents (strictly, and at thread level).
-Each run consumes real usage — API credit or your Claude plan's allowance,
-depending on how the `claude` CLI is authenticated — so start small:
-
-```bash
-wikipethia agent-eval --limit 2 --model haiku
-```  Feel free to contribute eval questions with
-links to the source that you feel should be retrieved to answer the question.  
-
-For example, if you wrote a post about LeanVM that you feel is the perfect source for a
-question like "What assumptions does LeanVM make?", **add this to the eval set!!!**  It will
-be a huge help in fine tuning wikipethia!
+| Source | License |
+|---|---|
+| [ethresear.ch](https://ethresear.ch) | [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/) |
+| [Ethereum Magicians](https://ethereum-magicians.org) | [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/) |
+| [ethereum/EIPs](https://github.com/ethereum/EIPs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [ethereum/ERCs](https://github.com/ethereum/ERCs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [consensus-specs](https://github.com/ethereum/consensus-specs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [execution-specs](https://github.com/ethereum/execution-specs) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [execution-apis](https://github.com/ethereum/execution-apis) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| [ethereum/pm](https://github.com/ethereum/pm) | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
+| [vitalik.eth.limo](https://vitalik.eth.limo) | [WTFPL](http://www.wtfpl.net/) |
+| [EF blog](https://blog.ethereum.org) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
