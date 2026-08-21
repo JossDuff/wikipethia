@@ -483,11 +483,9 @@ fn sync_sources(
 /// `Store::open_existing` inside the command runs too late to help.
 fn corpus_exists(db: &Path) -> anyhow::Result<()> {
     if !db.exists() {
-        bail!(
-            "no corpus at {} — build one with `wikipethia build`, or pass --db \
-             with the path to an existing corpus",
-            db.display()
-        );
+        // The same error `Store::open_existing` would have raised, rather
+        // than a second copy of its sentence to drift from.
+        return Err(wikipethia_core::CoreError::NoCorpus(db.display().to_string()).into());
     }
     Ok(())
 }
@@ -549,6 +547,11 @@ fn status(db: &Path) -> anyhow::Result<()> {
     } else if embedded == 0 {
         println!(
             "PARTIAL: lexical search works, semantic does not. Run `wikipethia embed`."
+        );
+    } else if model.is_none() {
+        println!(
+            "PARTIAL: {embedded} vectors present but no model recorded, so semantic \
+             search cannot be trusted. Re-embed with `wikipethia embed --force`."
         );
     } else if !model_ok {
         println!(
