@@ -294,17 +294,27 @@ mid-run fails cleanly (`another writer holds this corpus: embed running as
 pid 1, started 93s ago`, exit 1), and a test demonstrates that no vector can
 outlive the chunk content it was computed from.
 
-### [ ] M8 — Contribution workflow
+### [ ] M8 — Publish the corpus
 
-`corpus add <url> --note "..."` that detects the type, fetches, prints the
-extracted text for review, appends to `sources.toml`, and opens a PR. CI
-validates the schema, dry-run fetches, and comments with doc count and the first
-300 characters extracted.
+**Scope cut 2026-08-21: the contribution workflow is dropped.** `corpus add
+<url>` was removed rather than implemented. Joss's call, and the right one:
+a source is declared by editing `sources.toml` in this repository, which
+already gets a diff, a review, and the README duty the manifest header
+demands. A subcommand that appended to the same file would be a second,
+worse way to do one thing, and the curation policy — Ethereum-canonical
+only, provenance over quality — is a judgement call, not a flag.
 
-That last part is the one that earns its keep — silent extraction failures are
-invisible until a search comes back weird months later.
+What that drops with it, honestly: CI that dry-run fetches a proposed source
+and comments with its doc count and first 300 extracted characters. That
+check was the part of M8 that earned its keep, because **silent extraction
+failures are invisible until a search comes back weird months later** — the
+EF-blog video post and the 365 "Moved" EIP tombstones are both cases where
+the corpus quietly held less than it looked like. Nothing replaces it today;
+`index` prints a `warn:` line per empty extraction, which is only seen if
+someone is watching. Worth a small CI job on `sources.toml` changes
+eventually, independent of any `add` command.
 
-Publish `corpus.sqlite` on merge — primary channel: a Hugging Face dataset
+**What remains, and it is what gates M12:** publish `corpus.sqlite` on merge — primary channel: a Hugging Face dataset
 repo (versioned, good bandwidth for a ~500 MB file, discoverable by exactly
 the RAG-builder audience; a parquet export of the documents gets the hub's
 browsable table viewer for free). GitHub release assets as a mirror; pin
@@ -312,7 +322,9 @@ snapshots to IPFS if you want content-addressed builds. Peg release versions
 to hard forks rather than dates — "the Fusaka corpus" says what a snapshot
 knows in a way a timestamp doesn't.
 
-**Gate:** adding a blog post you just read takes under a minute end to end.
+**Gate:** a stranger can download a published corpus and point `corpus-mcp`
+at it without building one — the prerequisite M12's ten-minute gate is
+blocked on.
 
 ---
 

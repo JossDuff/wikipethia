@@ -76,7 +76,9 @@ not computed from, silently. Readers, including `corpus-mcp`, never take it.
 `agent-eval` spawns a headless Claude Code session per question and consumes
 real usage (API credit or plan allowance, depending on how the `claude` CLI
 is authenticated) — smoke with `--limit 2 --model haiku` before a full run.
-`add` is not implemented yet; it arrives with M8.
+There is deliberately **no `add` subcommand**. A source is declared by editing
+`sources.toml` here — that is the whole workflow, and it gets a diff, a
+review, and the README duty above. Don't reintroduce one.
 
 Clippy must be clean before you call a task done. `cargo test` must pass without
 network access.

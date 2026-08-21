@@ -1,4 +1,10 @@
-//! CLI: sync, index, search, embed, add, and eval subcommands.
+//! CLI: sync, index, search, embed, and eval subcommands.
+//!
+//! There is deliberately no `add`. Sources are declared by editing
+//! `sources.toml` in this repository — see the manifest header. A subcommand
+//! that appended to it would be a second, worse way to do the same thing,
+//! and the curation policy is a judgement call that wants a diff and a
+//! review rather than a CLI flag.
 
 mod agent_eval;
 mod eval;
@@ -111,12 +117,6 @@ enum Command {
         /// Database file to update.
         #[arg(long, default_value = "corpus.sqlite")]
         db: PathBuf,
-    },
-    /// Add a source by URL (arrives in M8).
-    Add {
-        url: String,
-        #[arg(long)]
-        note: Option<String>,
     },
     /// Report near-duplicate documents across sources (e.g. a blog post
     /// cross-posted to a forum). Requires embeddings.
@@ -236,7 +236,6 @@ fn main() -> anyhow::Result<()> {
             let _lock = WriterLock::acquire(&db, "embed")?;
             embed(&db, force)
         }
-        Command::Add { .. } => bail!("add is not implemented until M8"),
         Command::Eval { db, questions } => {
             let text = fs::read_to_string(&questions).with_context(|| {
                 format!(
