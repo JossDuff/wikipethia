@@ -153,6 +153,7 @@ fn opts(dir: &Path, limit: Option<usize>) -> SyncOptions {
         data_dir: dir.to_path_buf(),
         limit,
         full: false,
+        full_listings: false,
         force: false,
     }
 }

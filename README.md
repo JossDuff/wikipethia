@@ -82,13 +82,13 @@ Thereafter, keep it current with:
 cargo run --release -p corpus-cli -- update
 ```
 
-`update` runs the same three stages, but only over what has actually
-changed: it walks each forum's recent-activity listing until it reaches
-posts it already has, skips a repository whose head commit hasn't moved,
-and re-embeds only new text. A run with nothing new upstream takes about a
-minute across all ten sources — nearly all of it the deliberate
-one-request-per-second pacing — and prints one line per source saying so.
-This is the command to put on a timer; see "Keeping it current" below.
+`update` runs the same three stages, but writes only what has actually
+changed: it checks every forum topic against the copy you hold, skips a
+repository whose head commit hasn't moved, and re-embeds only new text. A run
+with nothing new upstream takes about six minutes across all ten sources —
+nearly all of it the deliberate one-request-per-second pacing — and prints
+one line per source saying so. This is the command to put on a timer; see
+"Keeping it current" below.
 
 `build` and `update` differ only in what they tell you; either one works at
 any time, and `refresh` still works as an alias for `update`. The three
@@ -139,14 +139,26 @@ one writer may touch the corpus at a time; if a timer fires while you are
 running `index` or `embed` by hand, it exits immediately saying who holds it
 rather than corrupting the vectors.
 
-Two things an incremental update cannot see, both by design:
+`update` walks each forum's listing to the end, checking every topic against
+what you have — 102 pages for ethresear.ch, 136 for EthMagicians, about four
+minutes between them. Topics upstream hasn't touched are skipped without a
+fetch, so that is nearly all listing pages rather than downloads. This is
+what lets a **deleted** post disappear from your corpus on the next run: a
+deletion changes a topic's post count but doesn't bump it in the activity
+listing, so a walk that stopped at the last checkpoint would never look at it
+again.
+
+Two things an update still cannot see, both by design:
 
 - **A forum post edited in place**, in a thread that got no other activity.
-  Nothing upstream changes to signal it. `corpus sync --source <id> --full
-  --force` sweeps a source and refetches everything; it costs what the first
-  crawl cost, so it's a once-in-a-while thing, not a routine.
+  Nothing upstream changes to signal it — not the post count, not the
+  timestamps. `corpus sync --source <id> --full --force` sweeps a source and
+  refetches everything; it costs what the first crawl cost, so it's a
+  once-in-a-while thing, not a routine. The same command is what catches a
+  user whose *account* was deleted, since Discourse anonymizes the username
+  and leaves the posts in place.
 - **A correction to an old blog article.** Both feeds are full archives
-  (632 items for the EF blog), and re-reading every article on every run
+  (634 items for the EF blog), and re-reading every article on every run
   would cost minutes to find a change nobody made. A routine update compares
   the newest 30; `corpus sync --source <id> --full` compares all of them.
   New articles are always picked up wherever they sit in the feed.

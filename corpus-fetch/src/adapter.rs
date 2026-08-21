@@ -69,6 +69,7 @@ impl DiscourseAdapter {
             data_dir: self.data_dir.clone(),
             limit: intent.limit,
             full: intent.full,
+            full_listings: intent.full_listings,
             force: intent.force,
         }
     }

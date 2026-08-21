@@ -114,7 +114,7 @@ incremental. README carries a systemd timer.
 
 | Adapter | Sees new items | Sees *edits* | Cost when nothing changed |
 |---|---|---|---|
-| Discourse | yes | yes, for any thread with new activity | walks to the checkpoint and stops (2 pages) |
+| Discourse | yes | yes, for any thread with new activity | walks the whole listing (102 + 136 pages, ~4m); topics upstream has not touched are skipped without a fetch |
 | Repo | yes | yes | one commit-feed request; no tarball |
 | Feed | yes | yes, within the feed window | one request per item in the window |
 
@@ -153,9 +153,33 @@ incremental. README carries a systemd timer.
   time, not parsing. Behaviour was never wrong — the windowed skip covers
   it — but the stated reason was.
 
+**Superseded 2026-08-21 — `build`/`update` now walk forum listings in full.**
+The checkpointed walk could not see a **deletion**: removing a post decrements
+its topic's `posts_count`, which `is_stale` checks, but does not bump the
+topic in the activity listing — so a deletion in a quiet thread was never
+revisited and stayed in the corpus indefinitely. That is the shape a removal
+request takes, and "invisible until someone remembers `--full`" was not an
+acceptable answer for it. `SyncIntent::full_listings` is set by the pipeline
+commands; a bare `sync` keeps the cheap checkpointed walk.
+
+Widened for **listings only**, never for feeds: a listing page describes 30
+topics, a feed entry describes one article, so widening a feed costs a
+request per article (808 of them, ~13.5 minutes) to catch corrections that
+are rare — and a feed cannot express a deletion at all.
+
+Measured, and it corrects a number this document had wrong. The old entry
+claimed a full-listing walk cost "~50min"; it does not. A full ethresear.ch
+walk is **102 pages / 1m42s**, EthMagicians **136 pages / 2m45s**, with 3,049
+and 4,039 topics respectively skipped without a fetch. A no-op `update` goes
+from ~1m15s to **~5m50s**; a complete run measured **7m55s**. The ~50min
+figure most likely described the first uncheckpointed crawl, which also
+refetched thousands of topics — a different operation.
+
 **Two limits, stated rather than papered over.** A post edited in place in a
 thread with *no* other activity moves nothing upstream and stays invisible
-until `sync --full --force`; Discourse offers no edited-since feed. And a
+until `sync --full --force`; Discourse offers no edited-since feed. The same
+command is the only thing that catches an account deletion, since Discourse
+anonymizes the username and leaves the posts, moving neither counter. And a
 correction to a blog article older than the recheck window waits for a
 `--full` sync.
 
@@ -167,8 +191,8 @@ correction to a blog article older than the recheck window waits for a
   uncheckpointed walk of both listings) recovered 171 EthMagicians
   documents, 15 EIPs, and 2 ERCs, and unindexed 25 posts deleted upstream.
 - *An edited upstream spec file does too.* 3 consensus-specs files.
-- *A no-op run is cheap.* **1m15s** across all ten sources, versus the
-  ~50min the old full-listing walk cost. Decomposed: index ~1s, the two
+- *A no-op run is cheap.* **1m15s** across all ten sources at the time.
+  Decomposed: index ~1s, the two
   forum walks 3s, the six repos 6s, and the two feeds 60s — the feeds are
   now the whole cost, because each re-reads 30 articles at one request per
   second to detect corrections. Slightly over the "well under a minute" the
