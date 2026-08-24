@@ -7,10 +7,9 @@
 //!    `wikipethia update > log` keeps the shape of the run and leaves the chatter
 //!    on the terminal, and `wikipethia-mcp`'s protocol-only-stdout discipline has
 //!    an analogue here.
-//! 2. **Nothing is printed for a no-op.** Before the sync became incremental
-//!    a routine run emitted one "already on disk" line per topic — 7,094 of
-//!    them across the two forums, none of them information. Unchanged items
-//!    are counted and reported as a count.
+//! 2. **Nothing is printed for a no-op.** A routine run once emitted one
+//!    "already on disk" line per topic — thousands of them, none of them
+//!    information. Unchanged items are counted and reported as a count.
 //! 3. **One row per source, one summary per run.** Rows are column-aligned
 //!    from the manifest's widest source id, so stdout stays a readable table
 //!    even while stderr detail interleaves between the rows.

@@ -42,10 +42,10 @@ pub struct Question {
     /// is often *better* than the expect. That is a defect in the measure,
     /// not the system.
     ///
-    /// Deliberately a separate field rather than a reinterpretation of
-    /// `expect`: every existing question keeps its exact meaning, so the
-    /// recorded baselines stay comparable. A question may use either or both;
-    /// the two contribute to one score.
+    /// A separate field rather than a reinterpretation of `expect`: every
+    /// existing question keeps its exact meaning, so the recorded baselines
+    /// stay comparable. A question may use either or both; the two
+    /// contribute to one score.
     #[serde(default)]
     pub expect_any: Vec<Vec<String>>,
 }
@@ -315,7 +315,7 @@ mod tests {
         assert_eq!(recall(q, &ids(&["a"])), 1.0);
 
         // An empty group can never be satisfied — it would silently cap the
-        // question below 1.00 for ever, which is the failure this guards.
+        // question below 1.00, which is the failure this guards.
         let empty_group =
             "[[questions]]\nquestion = \"q\"\nexpect = []\nexpect_any = [[]]";
         assert!(parse_questions(empty_group).is_err());

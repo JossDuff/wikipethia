@@ -404,8 +404,7 @@ impl crate::Adapter for RepoAdapter {
         let limit = opts.limit;
         // The tarball is one silent request that can take minutes for
         // asset-heavy repos — without this line, that whole window is
-        // indistinguishable from a hang (measured: eips took 6m21s on a
-        // rate-limited server with no output at all).
+        // indistinguishable from a hang.
         self.report_branch(fetcher);
 
         // A tarball for a commit we already unpacked teaches nothing, and it
@@ -641,9 +640,9 @@ impl crate::Adapter for RepoAdapter {
             }
         } else {
             // Markdown ids drop the extension (`.../beacon-chain`, long
-            // established); other types keep it, which is both honest and
-            // the discriminator lookup_spec uses to read a .py document as
-            // Python rather than as prose quoting Python.
+            // established); other types keep it — the discriminator
+            // lookup_spec uses to read a .py document as Python rather
+            // than as prose quoting Python.
             let id_path = relpath.strip_suffix(".md").unwrap_or(&relpath);
             let kind = FileKind::of(&relpath).unwrap_or(FileKind::Markdown);
             // For Python, the path tail carries the fork and module name —
