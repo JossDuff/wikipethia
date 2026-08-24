@@ -28,19 +28,17 @@ to the exact model that produced them.
 
 ## Each upload
 
-**1. Export.** From the repo root, against a freshly `update`d corpus.
-Two scripts producing the same output; use whichever toolchain you have:
+**1. Export.** From the repo root, against a freshly `update`d corpus:
 
 ```bash
 python3 hf_scripts/export_hf.py          # needs pyarrow
-hf_scripts/export_hf.sh                  # needs only the duckdb binary
 ```
 
-Either writes `documents.parquet` (gitignored) and prints per-source row
-counts. Both refuse to export a source that has no license mapping — when
-`sources.toml` gains a source, add it to the `LICENSES` map in **both
-scripts** and to the counts table in the card, alongside the README
-licensing-table duty the manifest already carries.
+Writes `documents.parquet` (gitignored) and prints per-source row counts.
+It refuses to export a source that has no license mapping — when
+`sources.toml` gains a source, add it to the script's `LICENSES` map and
+to the counts table in the card, alongside the README licensing-table
+duty the manifest already carries.
 
 **2. Update `dataset_card.md`.** It is the dataset's landing page (uploads
 as the repo's `README.md`). Refresh the snapshot date and the per-source
