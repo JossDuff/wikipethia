@@ -1,9 +1,14 @@
-# ids resolved mechanically from the cited URLs (each
-# expect is the topic OP's document id).
+# The retrieval eval set (see CLAUDE.md "Evals"). Each question is paired
+# with the document ids that should surface in the top 10.
 #
-# Still held back: nothing — the last question (staking cap) joined at M7.
-# Its HackMD secondary (notes.ethereum.org fradamt consolidation FAQ) stays
-# out until HackMD is ever ingestible.
+# Two ways to express what should surface:
+#   `expect`     — all-of: every id is a separate credit.
+#   `expect_any` — groups, each worth one credit earned by any single
+#                  member; for questions several sources answer equally well.
+#
+# Ids are resolved mechanically from the cited URLs (a forum expect is the
+# topic OP's document id). The staking-cap question's HackMD secondary
+# source (fradamt's consolidation FAQ) stays out until HackMD is ingestible.
 
 [[questions]]
 question = "Why did Ethereum raise the staking cap for validators?"
@@ -12,13 +17,9 @@ expect = ["eips/eip-7251"]
 
 [[questions]]
 question = "What is the current account abstraction flow on Ethereum?"
-# Canonical EthMagicians threads for the EIPs Joss's answer names:
+# Three credits, one per mechanism; each is earned by either the thread that
+# argued it or the standard that specifies it.
 # t/7160 ERC-4337 (vbuterin), t/19923 EIP-7702 (vbuterin), t/27617 EIP-8141
-#
-# ANY-OF (2026-08-19), the cleanest case in the set: still three credits, one
-# per mechanism, but each is earned by either the thread that argued it or
-# the EIP/ERC that specifies it. The opus run cited all three specifications
-# and scored 0.00 strict for naming the standards instead of their threads.
 expect_any = [
     ["ethmagicians/post/21055", "ercs/erc-4337"],
     ["ethmagicians/post/48140", "eips/eip-7702"],
@@ -27,10 +28,8 @@ expect_any = [
 
 [[questions]]
 question = "Why does Ethereum have blobs?"
-# ANY-OF (2026-08-19). A "why" question about blobs is answered equally well
-# by the EthMagicians thread that argued it, the EIP that specifies it, or
-# Vitalik's explainer. The opus agent-eval run cited the latter two and
-# scored 0.00 — a defect in the measure, not the answer.
+# A "why" question answered equally well by the EthMagicians thread that
+# argued it, the EIP that specifies it, or Vitalik's explainer.
 # https://ethereum-magicians.org/t/eip-4844-shard-blob-transactions/8430
 expect_any = [[
     "ethmagicians/post/23602",
@@ -50,28 +49,20 @@ expect = ["ethresearch/post/48719"]
 
 [[questions]]
 question = "What is PBS?"
-# 2026-08-10 diagnostics: potuz's "ePBS design constraints" OP opens by
-# explaining what PBS entails — Joss agreed it answers the definitional
-# question better than the original expect (vbuterin's fee-market design
-# post, t/9725 post 26652, kept here for the record).
+# No single post owns the definition: the ePBS-design-constraints OP and the
+# "why enshrine PBS" OP both open by explaining what PBS is.
 # https://ethresear.ch/t/epbs-design-constraints/18728
-# ANY-OF (2026-08-19). This expect has already been revised once (see above),
-# which is itself the signal that no single post owns the definition: the
-# ePBS-constraints OP and the "why enshrine PBS" OP both open by explaining
-# what PBS is. The opus run cited the second.
+# https://ethresear.ch/t/why-enshrine-proposer-builder-separation-a-viable-path-to-epbs/15710
 expect_any = [["ethresearch/post/45970", "ethresearch/post/39462"]]
 
 [[questions]]
 question = "What are the services a validator participates in?"
-# AGENT-CLASS QUESTION (2026-08-10 diagnostics): the answer is a synthesis
-# across many posts that never use the word "services" — no single query can
-# carry the decomposition an agent does with multiple searches. Expect ~0.00
-# at recall@10 indefinitely; that is the measured floor, not a regression.
-# Decomposed queries find these expects at top ranks (view-merge #2, DAS
-# fork-choice #3, FOCIL #10). Belongs in a future agent-level answer eval —
-# ground truth already written in eval-questions.txt (A7).
-# Broad by design: proposer, FFG, FOCIL, LMD-GHOST, sync, execution, building.
-# 12 expects > K=10, so recall on this question caps at 0.83.
+# Agent-class synthesis: the answer spans many posts that never use the word
+# "services", so no single query can carry it. Recall@10 near 0.00 here is
+# the measured floor, not a regression — decomposed queries find these
+# expects at top ranks, and the agent layer is what can credit that.
+# Broad by design: proposer, FFG, FOCIL, LMD-GHOST, sync, execution,
+# building. 12 expects > K=10, so recall on this question caps at 0.83.
 # t/22004, t/19870, t/16054, t/16541, t/18046, t/17169,
 # t/19529, t/19578, t/20562, t/13739, t/11853, t/20927
 expect = [
@@ -106,8 +97,8 @@ expect = [
 
 [[questions]]
 question = "How does PeerDAS scale blob throughput beyond EIP-4844?"
-# ANY-OF (2026-08-19): the 2023 design post, the EIP, and the consensus spec
-# are three faces of the same answer. The opus run cited the latter two.
+# The design post, the EIP, and the consensus spec are three faces of the
+# same answer.
 # https://ethresear.ch/t/peerdas-a-simpler-das-approach-using-battle-tested-p2p-components/16541
 expect_any = [[
     "ethresearch/post/41277",
@@ -122,12 +113,9 @@ expect = ["ethresearch/post/39462"]
 
 [[questions]]
 question = "What is lean Ethereum and what are its main pillars?"
-# ethresear.ch expects only; blog.ethereum.org/2025/07/31/lean-ethereum and
-# leanroadmap.org join at M7.
+# The EF's own announcement states the pillars as authoritatively as either
+# research post: one credit for any of the three.
 # t/25369, t/25374
-# ANY-OF (2026-08-19): the EF's own announcement states the pillars as
-# authoritatively as either research post. The opus run cited it and scored
-# 0.00. Now one credit for any of the three, not two credits for two posts.
 expect_any = [[
     "ethresearch/post/61091",
     "ethresearch/post/61106",
@@ -141,15 +129,10 @@ expect = ["ethresearch/post/61091"]
 
 [[questions]]
 question = "What would be the tradeoffs of adding a new commitment scheme or erasure coding algorithm to Ethereum?"
-# 2026-08-10 diagnostics: vbuterin's reply #27 in the RLNC thread states the
-# tradeoff directly ("a lot of needless complexity to introduce a whole new
-# commitment scheme…") — Joss agreed it's the better answer than the OP
-# (t/21370 post 52013, kept here for the record).
+# Several posts address the tradeoffs directly; vbuterin's reply in the RLNC
+# propagation thread states it plainly ("a lot of needless complexity to
+# introduce a whole new commitment scheme…").
 # https://ethresear.ch/t/faster-block-blob-propagation-in-ethereum/21370/27
-# ANY-OF (2026-08-19). The original single expect is about propagation, and
-# the opus run cited four posts that address the question as asked — the
-# tradeoffs of alternative commitment schemes and erasure codes — more
-# directly than it does. Keeping it, adding them.
 expect_any = [[
     "ethresearch/post/52648",
     "ethresearch/post/35615",
@@ -159,14 +142,11 @@ expect_any = [[
 
 [[questions]]
 question = "What are all the different types of L2s and what are their tradeoffs?"
-# AGENT-CLASS QUESTION (2026-08-10 diagnostics): enumerative — no single post
-# surveys the taxonomy, so no single query can score here. Expect ~0.00 at
-# recall@10 indefinitely; that is the measured floor, not a regression.
-# Decomposed queries find every expect in the top-10 ("based rollups" #1,
-# "sidechains security model" #2, "native rollups" #4, "optimistic rollup
-# fast finality withdrawal" #4, "minimal viable plasma" #9). Belongs in a
-# future agent-level answer eval — ground truth in eval-questions.txt (A12).
-# TODO when EthMagicians lands (M6): https://ethereum-magicians.org/t/i-think-its-ok-to-allow-stage-1-rollups-shorter-withdrawal-windows-1-2-days-but-we-should-be-more-conservative-on-stage-2/26392
+# Agent-class enumeration: no single post surveys the taxonomy, so no single
+# query can score here. Recall@10 near 0.00 is the measured floor, not a
+# regression — decomposed queries find every expect in the top 10, and the
+# agent layer is what can credit that.
+# Candidate additional expect: t/26392 (stage-1 rollup withdrawal windows).
 # t/15016 based rollups, t/21517 native rollups, t/426 plasma,
 # t/8045 sidechains, t/18868 fast-finality optimistic rollups
 expect = [
@@ -179,13 +159,11 @@ expect = [
 
 [[questions]]
 question = "As of mid-2026, what is the next Ethereum hardfork and what are its proposed EIPs?"
-# ADVERSARIAL TEMPORAL CASE (2026-08-11): the corpus actively misleads here —
-# Hegotá (the fork AFTER next) has the newest, loudest planning threads, and
-# its meta thread postdates Glamsterdam's. Recency and discussion volume both
-# point at the wrong fork; the discriminator is Meta-EIP status, not date.
-# This question beat the naive multi-hop approach in live testing. Date-pinned
-# so the answer key never rots; expects are the Glamsterdam Meta EIP and
-# timbeiko's meta thread.
+# Adversarial temporal case: the corpus actively misleads here — Hegotá (the
+# fork AFTER next) has the newest, loudest planning threads, and its meta
+# thread postdates Glamsterdam's. Recency and discussion volume both point
+# at the wrong fork; the discriminator is Meta-EIP status, not date. The
+# question is date-pinned so the answer key never rots.
 # https://eips.ethereum.org/EIPS/eip-7773
 # https://ethereum-magicians.org/t/eip-7773-glamsterdam-network-upgrade-meta-thread/21195
 expect = ["eips/eip-7773", "ethmagicians/post/51376"]
@@ -229,8 +207,8 @@ question = "What did Ethereum do to scale rollups?"
 # https://eips.ethereum.org/EIPS/eip-4844
 expect = ["eips/eip-4844"]
 
-# Spec-engineering questions (M10). These measure whether free-text search
-# can reach the consensus-specs documents; the lookup_spec tool answers the
+# Spec-engineering questions. These measure whether free-text search can
+# reach the consensus-specs documents; the lookup_spec tool answers the
 # identifier-shaped versions directly, so low scores here document the
 # free-text gap that tool bypasses, not a product failure.
 
@@ -254,20 +232,19 @@ question = "What is the weak subjectivity period and how is it computed?"
 expect = ["consensusspecs/specs/phase0/weak-subjectivity"]
 
 # ---------------------------------------------------------------------------
-# Added 2026-08-14 for the five sources that had no coverage at all:
-# executionspecs, executionapis, pm, ercs, efblog — roughly 30% of the corpus,
-# so every recall number before this was a number about the other five.
+# Coverage for executionspecs, executionapis, pm, ercs, and efblog — roughly
+# 30% of the corpus; before these, every recall number was a number about
+# the other five sources.
 #
-# Written from knowledge first, then each `expect` and each stated answer was
-# checked against the raw file under data/ rather than against search results.
-# That order matters: a question reverse-engineered from what already ranks
-# well measures nothing. It also caught two errors — the blob helper is
-# `taylor_exponential`, not EIP-4844's `fake_exponential`, and a planned
-# question about BPO3 was unanswerable ("BPO3" appears nowhere in the notes).
+# Written from knowledge first, then each `expect` and each stated answer
+# was checked against the raw file under data/ rather than against search
+# results. That order matters: a question reverse-engineered from what
+# already ranks well measures nothing.
 #
-# Several of these are expected to score 0 on free-text retrieval. #3, #4 and
-# #7 are the shape lookup_spec exists for, and #5/#6 sit in 600 transcript
-# files of overlapping fork chatter. A low honest baseline is the point.
+# Several of these are expected to score ~0 on free-text retrieval — the
+# identifier-shaped ones are what lookup_spec exists for, and the pm
+# questions sit in 600 transcript files of overlapping fork chatter. A low
+# honest baseline is the point.
 # ---------------------------------------------------------------------------
 
 [[questions]]
@@ -281,15 +258,15 @@ expect = ["executionspecs/src/ethereum/forks/cancun/vm/instructions/system.py"]
 [[questions]]
 # Answer: calculate_blob_gas_price -> taylor_exponential(BLOB_MIN_GASPRICE,
 # excess_blob_gas, BLOB_BASE_FEE_UPDATE_FRACTION) — an integer Taylor series,
-# because the spec cannot use floating point. The helper itself only became
-# reachable when `paths` widened to src/ethereum (see sources.toml).
+# because the spec cannot use floating point. The helper is only in the
+# corpus because `paths` covers all of src/ethereum (see sources.toml).
 question = "How does the execution spec turn excess blob gas into a blob gas price?"
-# ANY-OF (2026-08-19): the question names no fork, and EELS keeps a copy of
+# The question names no fork, and EELS keeps a copy of
 # calculate_blob_gas_price per fork — citing prague's is not more wrong than
 # citing cancun's. Deliberately NOT widened to EIP-4844 or numeric.py: the
-# question asks what the *execution spec* does, which is the thing this
-# question was added to measure, and numeric.py is a generic helper that
-# does not answer it alone.
+# question asks what the *execution spec* does, which is the thing it was
+# added to measure, and numeric.py is a generic helper that does not answer
+# it alone.
 expect_any = [[
     "executionspecs/src/ethereum/forks/cancun/vm/gas.py",
     "executionspecs/src/ethereum/forks/prague/vm/gas.py",
@@ -315,8 +292,7 @@ expect = ["executionapis/src/engine/paris"]
 # Answer: raised by Sean Anderson on ACDC #150 (background #149) to raise blob
 # counts without a full fork; deprioritized because PeerDAS should already
 # give ~8x capacity, so BPO was to be revisited only if a gradual post-PeerDAS
-# increase turned out to be needed. ROADMAP records this as the nuance that
-# lives ONLY in these notes — the Aug 2026 client test could not answer it.
+# increase turned out to be needed. This nuance lives ONLY in these notes.
 question = "Where did the idea of blob-parameter-only forks come from, and why weren't they done straight away?"
 expect = [
     "pm/AllCoreDevs-CL-Meetings/call_150",

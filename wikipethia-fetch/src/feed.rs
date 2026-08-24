@@ -212,14 +212,12 @@ impl crate::Adapter for FeedAdapter {
     /// vitalik.eth.limo. Comparing every one of them would be minutes of
     /// rate-limited fetching on every run, for ever.
     ///
-    /// **Both** feeds, measured 2026-08-19: an earlier version of this comment
-    /// claimed the EF blog's descriptions carried whole articles and that
-    /// comparing it was therefore free. They do not — all 634 are ~330-char
-    /// teasers, so [`is_full_content`] fires for neither real feed today and
-    /// the EF blog costs the same 30 requests per routine sync that vitalik
-    /// does. The branch is kept because it is a property of the feed, not of
-    /// the adapter, and a feed that starts serving full content should stop
-    /// costing requests the moment it does.
+    /// Both real feeds serve ~330-char teaser descriptions, not full
+    /// articles, so [`is_full_content`] fires for neither today and each
+    /// costs the same 30 requests per routine sync. The branch is kept
+    /// because it is a property of the feed, not of the adapter, and a feed
+    /// that starts serving full content should stop costing requests the
+    /// moment it does.
     ///
     /// So a routine sync compares the newest [`RECHECK_RECENT`] items, where
     /// corrections realistically land, and `--full` compares the lot. An item

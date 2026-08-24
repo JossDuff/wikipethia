@@ -76,9 +76,9 @@ enum Command {
     },
     /// Search the corpus (hybrid: BM25 over FTS5 fused with vector similarity).
     ///
-    /// Hybrid since M4, though this said "lexically" until 2026-08-19 — which
-    /// silently turns any CLI attempt to A/B the two arms into fused-vs-fused.
-    /// `eval` is the surface that reports them separately.
+    /// Always fused — there is no CLI switch to run one arm alone, so an A/B
+    /// of the two arms here is silently fused-vs-fused. `eval` is the surface
+    /// that reports them separately.
     Search {
         query: String,
         /// Database file to search.
@@ -401,8 +401,9 @@ fn pipeline(run: Run, source: Option<&str>, db: &Path) -> anyhow::Result<()> {
 
 /// What clone day costs, said once before it starts costing it.
 ///
-/// Joss's call: it takes as long as it takes. So this sets the expectation
-/// and names the escape hatch rather than nagging or offering to do less.
+/// A full build takes as long as it takes — the polite crawl is the point.
+/// So this sets the expectation and names the escape hatch rather than
+/// nagging or offering to do less.
 fn announce_build_cost(selected: &[&manifest::Source]) {
     let forums = selected.iter().filter(|s| s.kind == Kind::Discourse).count();
     let repos = selected.iter().filter(|s| s.kind == Kind::Repo).count();

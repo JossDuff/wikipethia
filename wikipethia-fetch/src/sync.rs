@@ -15,7 +15,7 @@
 //! existed, presence answered both, which is why a topic fetched once was
 //! frozen at that version forever no matter how many replies it gained.
 //!
-//! **The checkpoint no longer bounds `build`/`update` (2026-08-21).** Those
+//! **The checkpoint does not bound `build`/`update`.** Those
 //! set [`SyncIntent::full_listings`] and walk every page, because stopping at
 //! the checkpoint makes one class of change permanently invisible: a deleted
 //! post decrements its topic's `posts_count` but does **not** bump the topic
@@ -478,8 +478,8 @@ pub(crate) fn progress_note(total: Option<u64>, stats: &SyncStats, elapsed: Dura
     // operator:
     //
     // - dividing by `fetched` alone attributed an updating run's whole
-    //   elapsed time to its handful of new items — the 2026-08-19 EF-blog
-    //   sync (2 fetched, 17 updated in 19s) said "~1h36m left" against a
+    //   elapsed time to its handful of new items — an EF-blog sync
+    //   (2 fetched, 17 updated in 19s) said "~1h36m left" against a
     //   true ~11s;
     // - dividing by `fetched + updated` then broke the routine full listing
     //   walk, where nearly every topic is a free skip: ethresear.ch reported

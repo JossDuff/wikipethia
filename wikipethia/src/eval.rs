@@ -36,16 +36,11 @@ pub struct Question {
     /// Groups of interchangeable sources. **Any-of**: each inner group is
     /// worth one credit, earned by finding *any* one of its members.
     ///
-    /// This exists because single-document expects were understating the
-    /// system, provably rather than arguably. On the 2026-08-14 opus
-    /// agent-eval run, all eight questions scoring 0.00 strict had cited
-    /// real, on-topic sources — just not the one named in `expect`. "Why does
-    /// Ethereum have blobs?" cited EIP-4844 and Vitalik's blobs post where
-    /// the expect names the EthMagicians thread; the excess-blob-gas question
-    /// scored 1.00 on retrieval and 0.00 on the agent layer for citing
-    /// EIP-4844, EIP-7691 and `numeric.py` instead of the single
-    /// `cancun/vm/gas.py` named. In several the model's sourcing was better
-    /// than the expect. That is a defect in the measure, not the system.
+    /// This exists because single-document expects understate the system:
+    /// an answer citing the EIP that specifies a mechanism where `expect`
+    /// names the forum thread that argued it scores 0.00 for sourcing that
+    /// is often *better* than the expect. That is a defect in the measure,
+    /// not the system.
     ///
     /// Deliberately a separate field rather than a reinterpretation of
     /// `expect`: every existing question keeps its exact meaning, so the

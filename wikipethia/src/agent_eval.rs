@@ -438,7 +438,7 @@ fn write_mcp_config(
 /// Spend one session proving a headless client can actually **call** the
 /// corpus tools, and abort the whole run if it cannot.
 ///
-/// [`probe_server`] is not enough, and 2026-08-19 is how we know. Claude Code
+/// [`probe_server`] is not enough, demonstrated the hard way: Claude Code
 /// 2.1.236 connects the MCP server, loads its instructions string, reports
 /// `"status": "connected"` — and never registers its tool schemas. A headless
 /// session then answers every question from pretraining. Nothing in the
@@ -731,9 +731,9 @@ mod tests {
     }
 
     /// The measurement fix this field exists for: several sources answer
-    /// "why does Ethereum have blobs?" equally well, and the opus run cited
-    /// the EIP where `expect` named the forum thread — scoring 0.00 for a
-    /// good answer. Any member of the group now earns the credit.
+    /// "why does Ethereum have blobs?" equally well, and an answer citing
+    /// the EIP where `expect` named the forum thread scored 0.00 despite
+    /// being a good answer. Any member of the group now earns the credit.
     #[test]
     fn an_alternatives_group_is_satisfied_by_any_member() {
         let expected = ExpectedUrls {

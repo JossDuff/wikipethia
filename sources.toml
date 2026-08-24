@@ -3,7 +3,7 @@
 #   corpus sync && corpus index && corpus embed
 # …plus one documentation duty: update the Sources table in README.md.
 #
-# Curation policy (Joss, 2026-08-10): Ethereum-canonical sources only —
+# Curation policy: Ethereum-canonical sources only —
 # the forums, the ethereum GitHub org, EF and vitalik's own writing.
 # Research published by independent companies (however good) stays out;
 # their incentives aren't the protocol's.
@@ -78,9 +78,9 @@ tier = "spec"
 # paths is the whole of src/ethereum, which excludes tests/ (2,694 files)
 # and packages/ — only ~24% of this repo's Python is spec.
 #
-# Widened from src/ethereum/forks (2026-08-14) because the per-fork modules
-# call helpers that live beside them, and a spec function whose body names an
-# identifier the corpus cannot resolve is a dead end for lookup_spec:
+# Wider than src/ethereum/forks because the per-fork modules call helpers
+# that live beside them, and a spec function whose body names an identifier
+# the corpus cannot resolve is a dead end for lookup_spec:
 # `calculate_blob_gas_price` returns `taylor_exponential(...)`, which was in
 # src/ethereum/utils/numeric.py and therefore invisible. Also brings in
 # crypto/ (kzg, blake2, elliptic_curve — the precompiles) and the top-level
