@@ -17,14 +17,17 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to commit SHAs, not tags: a tag can be re-pointed
+      # at malicious code if the action's repo is compromised, a SHA cannot.
+      # The comment names the release the SHA was resolved from.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
 
       # Keyed on Cargo.lock: the embedding stack (ort, tokenizers) dominates a
       # cold build, and nothing here changes it week to week.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
