@@ -4,7 +4,7 @@ Give your LLM direct access to Ethereum specs, research, discussion, and history
 
 ## Sources
 
-Everything in the corpus, as declared in [`sources.toml`](sources.toml) — keep this list and the [licensing table](#licensing) in sync when adding a source.
+Everything in the corpus, as declared in [`sources.toml`](sources.toml) keep this list and the [licensing table](#licensing) in sync when adding a source.
 
 | Source | What it is |
 |---|---|
@@ -25,13 +25,15 @@ Needs Rust (stable, 2024 edition) and ~1.5GB of disk.
 
 ```bash
 git clone https://github.com/JossDuff/wikipethia && cd wikipethia
+# Binary for syncing the above sources and building the corpus
 cargo install --path wikipethia
+# MCP binary that queries the corpus
 cargo install --path wikipethia-mcp
 ```
 
 That puts `wikipethia` and `wikipethia-mcp` on your PATH. To run from the build directory instead, use `cargo build --release` and `./target/release/wikipethia`.
 
-Run the corpus-building commands (`build`, `update`, `sync`, `index`) from the clone — they read `sources.toml` and write `data/` relative to the working directory. `search`, `status`, and `wikipethia-mcp` work from anywhere; set `WIKIPETHIA_DB` or pass `--db` to point them at your corpus.
+Run the corpus-building commands (`build`, `update`, `sync`, `index`) from the clone.  They read `sources.toml` and write `data/` relative to the working directory. `search`, `status`, and `wikipethia-mcp` work from anywhere; set `WIKIPETHIA_DB` or pass `--db` to point them at your corpus.
 
 ## Running it
 
@@ -55,21 +57,13 @@ Check what you have:
 wikipethia status
 ```
 
-Search it:
-
-```bash
-wikipethia search "why enshrine PBS"
-```
-
 Connect it to Claude Code:
 
 ```bash
 claude mcp add wikipethia -- wikipethia-mcp --db $(pwd)/corpus.sqlite
 ```
 
-Then ask Ethereum questions — the model cites forum posts, EIPs, and specs with URLs and dates.
-
-To serve one corpus to several machines, `wikipethia-mcp --http <addr>` speaks streamable HTTP instead of stdio. **It has no authentication** — bind loopback and reach it over an SSH tunnel, or bind a private-network address (Tailscale, WireGuard), never a public one. `--allow-host <name>` allows the hostname clients will use.
+Then ask Ethereum questions! The model cites forum posts, EIPs, and specs with URLs and dates.
 
 ## Commands
 
@@ -79,22 +73,22 @@ To serve one corpus to several machines, `wikipethia-mcp --http <addr>` speaks s
 | `update` | Updates all sources, same three stages as build. Run periodically or cron job. |
 | `status` | What the corpus holds, and whether it is ready to serve. |
 | `search "<query>"` | Hybrid search from the terminal. |
-| `sync` / `index` / `embed` | The three stages separately, for surgical use — this is where `--force` lives. |
+| `sync` / `index` / `embed` | The three stages separately, for surgical use. |
 | `dedup` | Report near-duplicate documents across sources. |
 | `eval` | Retrieval eval: recall@10 over `tests/eval/questions.toml`. |
 | `agent-eval` | Whole-loop eval through a headless Claude Code session. Consumes real usage. |
 
 `--db <path>` selects the corpus, `--source <id>` limits a command to one source, and `refresh` is a kept alias for `update`. `--help` on any command has the rest.
 
-## Why not just grep the text?
+## Better than grep
 
 Search here is more than keyword matching, in three layers:
 
 - **Ranked lexical search (FTS5 + BM25).** Keyword matches are scored: rare terms outweigh common ones, title/author hits outweigh body mentions, and stemming matches (ex: "exits" to "exit"). Exact tokens like `EIP-4844` or an author name hit precisely.
-- **Semantic search (embeddings).** Every chunk of text is mapped by a small local model (BGE-small, via fastembed) to a point in vector space where *meaning*, not spelling, determines distance. A question about "PBS" finds the proposer/builder-separation posts that never use the acronym.
+- **Semantic search (embeddings).** Every chunk of text is mapped by a small local model (BGE-small, via fastembed) to a point in vector space where *meaning*, not spelling, determines distance. A question about "PBS" finds proposer/builder-separation posts that never use the acronym.
 - **Hybrid fusion (RRF).** Both rankings merge via reciprocal rank fusion: documents strong in either list surface, and exact-term hits are never diluted by the vector side.
 
-Every result carries a stable doc id, author, published date, and URL. The date matters because Ethereum research supersedes itself and a 2019 design post can flatly contradict a 2024 one.
+Every result carries a stable doc id, author, published date, and URL.
 
 Beyond ranked search, the MCP server answers exact spec identifiers directly: `lookup_spec` reads the indexed consensus-specs/EIP documents themselves and returns a constant's value or a spec function's Python body, per fork, with citations — no ranking involved, so a constant defined once in phase0 can't be drowned out by forum posts that mention it more often. Search can also be scoped to one source or fork (`scope: "consensusspecs/specs/electra"`).
 
