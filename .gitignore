@@ -3,6 +3,7 @@
 corpus.sqlite
 corpus.sqlite-wal
 corpus.sqlite-shm
+*.parquet
 *.fastembed_cache/
 claude-web-shot.txt
 ethereum-mcp-shot.txt
