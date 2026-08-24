@@ -37,7 +37,7 @@ Run the corpus-building commands (`build`, `update`, `sync`, `index`) from the c
 
 ## Running it
 
-Build the corpus — one command, three stages (fetch → index → embed):
+Build the corpus.  Runs three stages (fetch → index → embed):
 
 ```bash
 wikipethia build
