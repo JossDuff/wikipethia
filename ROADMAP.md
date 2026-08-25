@@ -889,6 +889,76 @@ closed (verified: `lookup_spec taylor_exponential` now returns the body and a
 citation). The fingerprint guard from the refresh work did its job — same head
 SHA, changed config, so the tarball was re-downloaded rather than skipped.
 
+### [ ] M14 — Source expansion for a published training corpus
+
+**Scoped 2026-08-25. Not started — deliberately.** This records the source
+list and its rationale ahead of any work.
+
+The corpus is gaining a second consumer beyond retrieval: a published
+dataset (M8's Hugging Face channel) usable as fine-tuning material. The
+editorial line, decided while scoping: **Ethereum protocol research**.
+Application-layer material was considered and cut — ecosystem contract
+audits, OpenZeppelin, Solidity/Vyper docs, Flashbots, the Yellow Paper.
+
+Sources, grouped by ingest shape:
+
+**Plain repo-adapter adds (near zero work):**
+
+- `ethereum/research` — the research team's working code and notes; the
+  substrate behind many ethresear.ch posts already indexed.
+- `ethereum/annotated-spec` — already in the backlog; the
+  dedup-vs-consensus-specs decision recorded there still stands.
+- `ethereum/beacon-APIs` (+ `portal-network-specs` in the same batch) —
+  deferred at M13 over OpenAPI/YAML extraction; that work lands here.
+- eth2book — Ben Edgington's "Upgrading Ethereum"
+  (`benjaminion/upgrading-ethereum-book`).
+- EPF wiki (epf.wiki) — GitHub-backed protocol curriculum.
+
+**One-off dump ingest:**
+
+- Ethereum StackExchange — official Stack Exchange data dump, filtered to
+  protocol-tier tags (consensus, networking, EVM internals); the Solidity
+  long tail is most of its volume and stays out.
+
+**New adapter plus a filtering decision:**
+
+- ethereum.org — protocol/learn sections only, not the dapp tutorials.
+- Devcon/Devconnect talk archive (archive.devcon.org) — filtered by track.
+
+For all three above, the filter rule is load-bearing, not cosmetic: each
+source is protocol-relevant but majority application-layer by volume, and
+the filter decides what a model trained on this learns.
+
+**Curation projects (gathering documents more than writing adapters):**
+
+- Protocol incident postmortems — the 2016 Shanghai DoS attacks, the DAO
+  fork, Medalla, the Nov 2020 geth consensus split, the May 2023 beacon
+  chain finality incidents. Scattered across the EF blog and client team
+  writeups.
+- EF-commissioned protocol audits — deposit contract, client and
+  consensus-layer engagements (Least Authority, Sigma Prime, Trail of Bits).
+- EF bug bounty disclosures — protocol and client vulnerabilities only.
+
+**Hardest and least defined, ranked last on effort-to-signal:**
+
+- Eth R&D Discord archive — no official archive exists; any ingest is a
+  point-in-time export, and message-level text is noisy and contextual.
+
+Two standing backlog lines are revised by this scope, noted there as well:
+the Stack Exchange entry's "revisit if the use case appears" — the training
+use case has appeared — and the "Explicitly out" exclusion of audit/exploit
+corpora, which now applies to *ecosystem/contract* material only;
+EF-commissioned protocol audits and incident postmortems are in scope.
+
+Licensing for the published dataset is handled separately (Joss, with
+legal). The per-source README licensing-table duty still applies to every
+`sources.toml` entry at ingest time, as always.
+
+**Gate:** the standing ritual, per batch rather than at the end — each
+source is a `sources.toml` entry plus its adapter work and nothing else;
+README tables updated; eval questions added per source with recall
+recorded; per-batch eval delta reported.
+
 ---
 
 ## Source backlog
@@ -925,14 +995,16 @@ in those notes — the corpus couldn't answer it, web search could.
   material anywhere (bugs, rejected approaches, design fights); needs a
   GitHub-issues adapter with API auth and rate limits. Real scope.
 - Ethereum Stack Exchange dump — CC-licensed Q&A; shape suits training more
-  than retrieval, revisit if the use case appears.
+  than retrieval. The training use case appeared: now scoped in M14.
 - HackMD page adapter — `/{id}/download` serves raw markdown; would capture
   the notes half of ethresear.ch's stub posts (and the staking-cap
   question's secondary source).
 
 **Explicitly out** (training-corpus material or provenance policy): test
-suites, Sourcify verified contracts, empirical chain data, audit/exploit
-corpora, company research forums and blogs.
+suites, Sourcify verified contracts, empirical chain data,
+*ecosystem/contract-level* audit and exploit corpora (narrowed 2026-08-25 —
+EF-commissioned protocol audits and protocol incident postmortems are in
+scope via M14), company research forums and blogs.
 
 ---
 
