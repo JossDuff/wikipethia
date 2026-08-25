@@ -36,8 +36,7 @@ use format::{
 ///    identifier twice with the same body (erc-7417 does, for `balanceOf` and
 ///    `transferFrom`) pushes its own id into the group, which rendered as
 ///    "identical in 1 other document: ercs/erc-7417" *while being cited from
-///    erc-7417*. That is a plain falsehood about how widely a definition is
-///    shared — exactly the claim this feature exists to make trustworthy.
+///    erc-7417* — a plain falsehood about how widely a definition is shared.
 /// 2. **Count what is listed.** Fork labels are deduped, so counting raw
 ///    entries printed "identical in 3 other documents: electra" whenever two
 ///    files under one fork carried the same definition.
@@ -660,7 +659,7 @@ impl CorpusServer {
             // The requested post pages through `offset` (its truncation
             // hint must not point back at this same call); neighbors keep
             // the tighter cap and the truncate_block hint, which is
-            // honest for them — requesting THAT doc really shows more.
+            // accurate for them: requesting that doc really does show more.
             let body = if is_requested {
                 let total = d.content.chars().count();
                 shown_end = (offset + OP_MAX_CHARS).min(total);
@@ -816,12 +815,11 @@ impl CorpusServer {
 
         // One entry per *distinct definition*, not per document. The
         // executable spec keeps a near-identical copy of each function per
-        // fork directory, so an unfiltered lookup used to emit the same body
-        // two dozen times: `calculate_base_fee_per_gas` returned 29,721
-        // characters across 926 lines, of which 14 copies were byte-identical
-        // down to the docstring. Collapsing them is not only cheaper — it is
-        // what makes genuine divergence *visible*, instead of something the
-        // reader has to find by diffing near-identical blocks by eye.
+        // fork directory, so an unfiltered lookup emits the same body a
+        // dozen-plus times, byte-identical down to the docstring. Collapsing
+        // them is not only cheaper — it is what makes genuine divergence
+        // *visible*, instead of something the reader has to find by diffing
+        // near-identical blocks by eye.
         //
         // `body` is the whole rendered definition minus its citation, so it
         // is the grouping key: anything textually identical merges, anything

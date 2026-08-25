@@ -102,16 +102,15 @@ CREATE INDEX IF NOT EXISTS documents_source ON documents (source);
 /// on author names and topic titles are half the point of lexical search.
 /// Tags sit level with title because for spec documents they carry the
 /// frontmatter (status, type) that plain text lost. Content stays at 1.0:
-/// damping it to 0.5 was measured to cost fused recall on body-answered
-/// questions (0.435 → 0.324) without moving the spec-retrieval cases.
+/// damping it was measured to cost fused recall on body-answered questions
+/// without helping the spec-retrieval cases.
 /// One const because the expression appears in both SELECT and ORDER BY.
 const BM25: &str = "bm25(chunks_fts, 5.0, 5.0, 5.0, 1.0)";
 
 /// Max documents per (source, title) pair in the lexical ranking. Forum
-/// replies inherit their thread's title, so one popular thread floods the
-/// ranking: before this cap, all 27 documents ahead of the Glamsterdam
-/// Hardfork Meta EIP on the query "Hardfork Meta" were replies from two
-/// Istanbul/Berlin-era threads. Two per thread keeps the OP-plus-best-reply
+/// replies inherit their thread's title, so without a cap one popular
+/// thread floods the ranking with replies ahead of the document that
+/// actually answers the query. Two per thread keeps the OP-plus-best-reply
 /// shape; keying on source keeps a spec and its same-titled forum thread
 /// distinct.
 const THREAD_CAP: usize = 2;
@@ -156,16 +155,11 @@ pub struct ChunkToEmbed {
 
 /// A computed vector together with the exact text it was computed from.
 ///
-/// The pairing is the point. `chunks.id` has no `AUTOINCREMENT`, so SQLite
-/// reuses a rowid the moment the row holding it is deleted — and embedding
-/// is slow enough (minutes to hours) that a concurrent `index` can delete a
-/// chunk and reinsert a different one at the same rowid while its vector is
-/// still being computed. Writing that vector back by rowid alone silently
-/// attaches it to text it does not describe, and nothing downstream can tell:
-/// semantic search just returns confidently wrong neighbours, for ever.
-///
-/// Carrying `content` lets [`Store::write_embeddings`] re-check the row it is
-/// about to write against and drop the vector if the text moved underneath it.
+/// Rowids are reused after a delete (see [`crate::lock`] for the full
+/// hazard), so a vector written back by rowid alone can land on text it
+/// does not describe. Carrying `content` lets [`Store::write_embeddings`]
+/// re-check the row it is about to write against and drop the vector if
+/// the text moved underneath it.
 pub struct EmbeddedChunk<'a> {
     /// `chunks.id`, which is also the `chunks_vec` rowid.
     pub rowid: i64,
@@ -272,9 +266,8 @@ impl Store {
         // Each attempt must run a statement, not just open. SQLite opens
         // lazily: `mode=ro` against a read-only *directory* returns a healthy
         // Connection and only fails when the first query tries to create the
-        // `-shm` it needs. Matching on the open result alone made this
-        // fallback look correct while never firing — caught by the CLI still
-        // failing after the "fix".
+        // `-shm` it needs — so deciding the fallback on the open result alone
+        // looks correct and never fires.
         let attempt = |query: &str| -> Result<Self, CoreError> {
             let conn =
                 Connection::open_with_flags(format!("file:{}?{query}", path.display()), flags)?;
@@ -840,20 +833,14 @@ impl Store {
     /// the chunk still holds the text the vector was computed from**. Returns
     /// how many were written; the rest are dropped.
     ///
-    /// This is the invariant that makes a vector's provenance checkable: no
-    /// vector can outlive the chunk content it was computed from. The
-    /// advisory lock in [`crate::lock`] already stops two CLI processes from
-    /// interleaving, but it proves nothing about a vector already in hand —
-    /// anything bypassing the CLI, or two machines against a shared file,
-    /// reaches this path with the lock uncontended. Here the check is on the
-    /// data itself, so it holds regardless of who else is writing.
-    ///
-    /// The comparison is the content verbatim rather than a hash of it. A
-    /// hash would need a schema migration and a stored column to be worth
-    /// anything, and would trade an exact answer for a collision probability
-    /// to save re-binding a couple of kilobytes on a path that is already
-    /// dominated by the embedder. `chunks.id` is the primary key, so the
-    /// re-check is a point lookup.
+    /// The invariant: no vector can outlive the chunk content it was
+    /// computed from. Unlike the advisory lock in [`crate::lock`], this
+    /// check is on the data itself, so it holds even for writers the lock
+    /// cannot see (another machine on a shared file, direct SQL). The
+    /// comparison is the content verbatim, not a hash — `chunks.id` is the
+    /// primary key, so the re-check is a point lookup, and a hash would need
+    /// a stored column while trading an exact answer for a collision
+    /// probability.
     ///
     /// A dropped vector is not an error and needs no repair: its chunk still
     /// reads as missing an embedding, so the next pass re-reads the current

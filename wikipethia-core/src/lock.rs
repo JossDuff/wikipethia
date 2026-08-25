@@ -1,38 +1,21 @@
 //! An advisory lock over the one database, so two writers cannot interleave.
 //!
-//! # Why this exists
+//! `chunks.id` has no `AUTOINCREMENT`, so SQLite reuses rowids after a
+//! delete. A slow `embed` can compute a vector for a chunk that a concurrent
+//! `index --force` deletes and replaces at the same rowid — the vector lands
+//! attached to text it does not describe, nothing errors, and semantic
+//! search returns wrong neighbours from then on. A scheduled `update` firing
+//! during a long manual `embed` reproduces this exactly, so writers take
+//! this lock and the second one fails fast.
 //!
-//! `chunks.id` is `INTEGER PRIMARY KEY` without `AUTOINCREMENT`, so SQLite
-//! reuses rowids after a delete. That makes the following sequence possible,
-//! and it is silent from end to end:
+//! The lock only covers writers that go through this code. Anything else —
+//! another machine on a shared file, a direct SQL write — is caught on the
+//! data instead: [`crate::store::Store::write_embeddings`] re-checks each
+//! chunk's content before inserting its vector and drops the ones that
+//! moved.
 //!
-//! 1. `embed` reads chunk rowid 900 and starts computing its vector.
-//! 2. `index --force` deletes that chunk and inserts a *different* one, which
-//!    lands on rowid 900.
-//! 3. `embed` writes its vector against rowid 900.
-//!
-//! The vector no longer describes the text it is attached to. Nothing errors;
-//! semantic search just returns confidently wrong neighbours from then on.
-//! Two concurrent `embed` runs collide more loudly (`UNIQUE constraint failed
-//! on chunks_vec`), which is the only reason the hazard was ever noticed.
-//!
-//! Naming a command for cron makes this likelier, not less: a scheduled
-//! `update` firing while a long manual `embed` is still running reproduces it
-//! exactly. So the writers take this lock and the second one is turned away.
-//!
-//! # What it does not do
-//!
-//! It does not make a vector prove it belongs to the text it came from — two
-//! writers on *different machines* against a shared file, or anything that
-//! bypasses the CLI, reach the write path with this lock uncontended. That is
-//! now covered separately, and on the data rather than on the process:
-//! [`crate::store::Store::write_embeddings`] re-checks each chunk's content
-//! before inserting its vector and drops the ones that moved. This lock
-//! closes the reachable hole cheaply; that check closes the rest.
-//!
-//! Readers never take it. `wikipethia-mcp` opens the database read/write but only
-//! reads, and blocking queries behind a two-hour embed would be a worse bug
-//! than the one being fixed.
+//! Readers never take it: `wikipethia-mcp`'s queries must not queue behind a
+//! multi-hour embed.
 
 use std::path::Path;
 use std::process;
@@ -46,15 +29,15 @@ use crate::error::CoreError;
 const LOCK_KEY: &str = "writer.lock";
 
 /// Beyond this, a lock is assumed abandoned even if something answers to its
-/// pid — pids get recycled, and a stuck lock that can only be cleared by
-/// hand is a worse failure than a rare early steal. Generous enough to cover
-/// a full-corpus embed on a slow machine.
+/// pid — pids get recycled, and a lock that can only be cleared by hand
+/// would wedge the corpus. Generous enough to cover a full-corpus embed on
+/// a slow machine.
 const MAX_HELD: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Held for as long as the writer runs; released on drop, including on panic.
 ///
-/// Deliberately owns its own [`Connection`] rather than borrowing a [`Store`]:
-/// the writers need `&mut Store` for the actual work, and a guard borrowing it
+/// Owns its own [`Connection`] rather than borrowing a [`Store`]: the
+/// writers need `&mut Store` for the actual work, and a guard borrowing it
 /// would make that impossible.
 ///
 /// [`Store`]: crate::Store

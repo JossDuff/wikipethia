@@ -76,9 +76,9 @@ enum Command {
     },
     /// Search the corpus (hybrid: BM25 over FTS5 fused with vector similarity).
     ///
-    /// Hybrid since M4, though this said "lexically" until 2026-08-19 — which
-    /// silently turns any CLI attempt to A/B the two arms into fused-vs-fused.
-    /// `eval` is the surface that reports them separately.
+    /// Always fused — there is no CLI switch to run one arm alone, so an A/B
+    /// of the two arms here is silently fused-vs-fused. `eval` is the surface
+    /// that reports them separately.
     Search {
         query: String,
         /// Database file to search.
@@ -356,11 +356,10 @@ fn pipeline(run: Run, source: Option<&str>, db: &Path) -> anyhow::Result<()> {
     // not bump the topic in the activity listing, so a checkpointed walk
     // cannot see a removal in a quiet thread — and a removal request is
     // exactly the case that must not wait for someone to remember `--full`.
-    // Costs ~4 minutes across both forums, nearly all of it listing pages;
-    // topics upstream has not touched are still skipped without a fetch.
-    // Feeds are deliberately NOT widened here: their cost is per article,
-    // not per page (808 requests, ~13.5 minutes), and a feed cannot express
-    // a deletion anyway.
+    // Costs a few minutes across both forums, nearly all of it listing
+    // pages; topics upstream has not touched are still skipped without a
+    // fetch. Feeds are NOT widened here: their cost is per article, not per
+    // page, and a feed cannot express a deletion anyway.
     let intent = SyncIntent {
         full_listings: true,
         ..SyncIntent::default()
@@ -382,7 +381,7 @@ fn pipeline(run: Run, source: Option<&str>, db: &Path) -> anyhow::Result<()> {
     // idea how much of the work survived.
     let documents = indexed.as_ref().map(|i| i.written).unwrap_or(0);
     println!();
-    // Both stages named, because they can disagree honestly: a sync that
+    // Both stages named, because they can disagree: a sync that
     // fetched nothing still indexes whatever an earlier bare `sync` left on
     // disk, and "0 changed, 3 written" is confusing without the labels.
     println!(
@@ -401,8 +400,9 @@ fn pipeline(run: Run, source: Option<&str>, db: &Path) -> anyhow::Result<()> {
 
 /// What clone day costs, said once before it starts costing it.
 ///
-/// Joss's call: it takes as long as it takes. So this sets the expectation
-/// and names the escape hatch rather than nagging or offering to do less.
+/// A full build takes as long as it takes — the polite crawl is the point.
+/// So this sets the expectation and names the escape hatch rather than
+/// nagging or offering to do less.
 fn announce_build_cost(selected: &[&manifest::Source]) {
     let forums = selected.iter().filter(|s| s.kind == Kind::Discourse).count();
     let repos = selected.iter().filter(|s| s.kind == Kind::Repo).count();

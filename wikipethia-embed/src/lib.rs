@@ -21,11 +21,10 @@ impl FastEmbedder {
     ///
     /// The cache directory is resolved explicitly because fastembed's default
     /// is the **relative** `.fastembed_cache`, which is wrong the moment this
-    /// is an installed tool rather than something run from one checkout: every
-    /// working directory gets its own 128MB copy, and offline it simply fails.
-    /// It bit the README's own `claude mcp add` example — the client launches
-    /// the server with the *project's* cwd, so each project re-downloaded the
-    /// model.
+    /// is an installed tool rather than something run from one checkout:
+    /// MCP clients launch the server with the project's cwd, so every
+    /// project would download its own ~130MB copy of the model — and
+    /// offline, fail outright.
     ///
     /// Order: `FASTEMBED_CACHE_DIR` (fastembed's own variable, so anyone
     /// already setting it is unaffected), then a `.fastembed_cache` that

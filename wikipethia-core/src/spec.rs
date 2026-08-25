@@ -252,11 +252,9 @@ fn fence_functions(lines: &[&str], heading: Option<&str>) -> Vec<SpecFunction> {
 // Solidity fences.
 //
 // The ERCs put their normative surface in Solidity, not Python or a constant
-// table, so none of the above reaches it. The case that forced this: asking
-// what `isValidSignature` returns scored 0.00 in the retrieval eval while the
-// answer — the magic value `0x1626ba7e` — sat in erc-1271's fence the whole
-// time. The answer IS a 4-byte literal, so neither retrieval arm can help:
-// FTS stems it apart and the vector side has nothing to grip.
+// table, so none of the above reaches it. And that surface is often a bare
+// literal — erc-1271's magic value `0x1626ba7e` — which neither retrieval
+// arm can reach: FTS stems it apart and the vector side has nothing to grip.
 //
 // Scope is deliberately narrow: `function` declarations and `constant` state
 // variables. Events, errors, structs, and modifiers are not extracted — they
@@ -266,12 +264,11 @@ fn fence_functions(lines: &[&str], heading: Option<&str>) -> Vec<SpecFunction> {
 /// Whether a fence holds Solidity: its info string says so, or its contents
 /// declare a `pragma solidity`.
 ///
-/// The sniff is not belt-and-braces. Measured across the ingested EIPs and
-/// ERCs, **19 documents carry `pragma solidity` in a fence tagged
-/// `javascript` or `js` and never tag a single fence `solidity`** — among them
-/// erc-1271 (the magic-value case this exists for), erc-3156 (flash loans),
-/// and erc-1822 (proxies). An info-string-only rule would miss precisely the
-/// documents that motivated the feature.
+/// The content sniff is required, not redundant: a number of EIP/ERC
+/// documents carry `pragma solidity` in a fence tagged `javascript` and
+/// never tag a single fence `solidity` — among them erc-1271, the
+/// magic-value case this exists for. An info-string-only rule would miss
+/// precisely the documents that motivated the feature.
 ///
 /// A Solidity fence with neither marker is not detected. That is accepted:
 /// `pragma solidity` is a strong, self-describing signal, where sniffing for

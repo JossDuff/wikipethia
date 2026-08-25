@@ -15,7 +15,7 @@
 //! existed, presence answered both, which is why a topic fetched once was
 //! frozen at that version forever no matter how many replies it gained.
 //!
-//! **The checkpoint no longer bounds `build`/`update` (2026-08-21).** Those
+//! **The checkpoint does not bound `build`/`update`.** Those
 //! set [`SyncIntent::full_listings`] and walk every page, because stopping at
 //! the checkpoint makes one class of change permanently invisible: a deleted
 //! post decrements its topic's `posts_count` but does **not** bump the topic
@@ -23,11 +23,10 @@
 //! revisited. Removal requests have exactly that shape, and "invisible until
 //! someone remembers `--full`" was not an acceptable answer for them.
 //!
-//! Measured, not assumed: a full walk is 102 pages and **1m42s** for
-//! ethresear.ch, 136 pages and **2m45s** for EthMagicians, with 3,049 and
-//! 4,039 topics respectively skipped without a fetch. A no-op `update` went
-//! from ~1m15s to ~5m50s. The checkpoint still bounds a bare `sync`, which
-//! is the cheap path when you only want recent activity.
+//! A full listing walk costs a few minutes per forum — nearly every topic
+//! is skipped without a fetch, so the cost is the listing pages themselves.
+//! The checkpoint still bounds a bare `sync`, which is the cheap path when
+//! you only want recent activity.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -143,18 +142,18 @@ pub struct SyncIntent {
     ///
     /// The two are separated because "look at everything" costs wildly
     /// different amounts by adapter. A Discourse listing describes 30 topics
-    /// per request, so reading all of ethresear.ch is 102 requests —
-    /// **measured at 1m47s**, of which 3,049 of 3,120 topics were skipped
-    /// without a fetch. A feed describes one article per entry and both real
-    /// feeds serve teasers, so widening one costs a request *per article*:
-    /// 808 of them, ~13.5 minutes. Feeds therefore ignore this and keep their
-    /// recheck window; only `--full` widens them.
+    /// per request, so reading a whole forum's listing is on the order of a
+    /// hundred requests, with nearly every topic skipped without a fetch. A
+    /// feed describes one article per entry and both real feeds serve
+    /// teasers, so widening one costs a request *per article* — hundreds of
+    /// them. Feeds therefore ignore this and keep their recheck window; only
+    /// `--full` widens them.
     ///
     /// The correctness this buys is specific: a deleted post changes a
     /// topic's `posts_count` but does **not** bump it in the activity
-    /// listing, so an incremental walk that stops at the checkpoint can never
-    /// see a deletion in a quiet thread. That is the shape a
-    /// removal-request takedown has, which makes it worth four minutes a run.
+    /// listing, so an incremental walk that stops at the checkpoint can
+    /// never see a deletion in a quiet thread. That is the shape a
+    /// removal-request takedown has.
     pub full_listings: bool,
     /// Refetch every item reached, whatever the checkpoint and the local copy
     /// say. The recovery path for edits made in place, which upstream
@@ -357,7 +356,7 @@ pub fn sync(fetcher: &mut dyn Fetcher, opts: &SyncOptions) -> Result<SyncStats, 
 /// `null_as_default` throughout, not plain `#[serde(default)]`: a stored
 /// `"last_posted_at": null` would otherwise fail the parse, and [`is_stale`]
 /// reads a parse failure as stale — so that one topic would be refetched on
-/// every run for ever, spending the rate limit without ever erroring.
+/// every run, spending the rate limit without ever erroring.
 #[derive(Debug, Default, Deserialize)]
 struct StoredTopic {
     #[serde(default, deserialize_with = "discourse::null_as_default")]
@@ -377,11 +376,10 @@ struct StoredTopic {
 /// that somehow moves neither counter.
 ///
 /// The timestamp is compared **only when the stored copy has one**. Treating
-/// an absent stored value as the epoch would make every listing timestamp look
-/// newer, and the source would refetch its entire corpus on every run, for
-/// ever, spending the rate limit to learn nothing — silently, because each
-/// individual refetch looks like ordinary work. The two counters are always
-/// present and already answer the question.
+/// an absent stored value as the epoch would make every listing timestamp
+/// look newer, and the source would refetch its entire corpus on every run —
+/// silently, because each individual refetch looks like ordinary work. The
+/// two counters are always present and already answer the question.
 ///
 /// An unreadable local copy counts as stale: refetching costs one request and
 /// repairs the file, where trusting it would strand a corrupt topic for good.
@@ -473,19 +471,16 @@ pub(crate) fn progress_note(total: Option<u64>, stats: &SyncStats, elapsed: Dura
     };
     let processed = stats.processed() as u64;
     let pct = processed * 100 / total.max(1);
-    // Pace on everything examined, not just what needed fetching. Both
-    // narrower divisors have been wrong here in ways that reached an
-    // operator:
+    // Pace on everything examined, not just what needed fetching — both
+    // narrower divisors produce wildly wrong ETAs:
     //
-    // - dividing by `fetched` alone attributed an updating run's whole
-    //   elapsed time to its handful of new items — the 2026-08-19 EF-blog
-    //   sync (2 fetched, 17 updated in 19s) said "~1h36m left" against a
-    //   true ~11s;
-    // - dividing by `fetched + updated` then broke the routine full listing
-    //   walk, where nearly every topic is a free skip: ethresear.ch reported
-    //   "~1h31m left" on a walk that finished in 1m47s.
+    // - dividing by `fetched` alone attributes an updating run's whole
+    //   elapsed time to its handful of new items, projecting hours of
+    //   remaining work onto a run that finishes in seconds;
+    // - dividing by `fetched + updated` breaks the routine full listing
+    //   walk the same way, because there nearly every topic is a free skip.
     //
-    // `processed` is the honest divisor because it counts the same units
+    // `processed` is the right divisor because it counts the same units
     // `total` does, so the ratio is an average pace that self-corrects as a
     // run proceeds — early fetches stop dominating once the skips arrive.
     // It requires callers to keep `total` and `processed` measuring the same

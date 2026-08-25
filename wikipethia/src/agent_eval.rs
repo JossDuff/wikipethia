@@ -242,7 +242,7 @@ struct RunOutcome {
 
 /// One headless session. NOT `--bare`: bare mode restricts auth to
 /// ANTHROPIC_API_KEY only, so OAuth-authenticated CLIs answer "Not logged
-/// in" (measured). Isolation instead: `--strict-mcp-config` excludes every
+/// in". Isolation instead: `--strict-mcp-config` excludes every
 /// MCP server but ours, and the child runs from the artifacts dir so no
 /// project CLAUDE.md auto-discovers into the session (the user-level
 /// ~/.claude context can still load — a documented, constant-across-runs
@@ -302,7 +302,7 @@ fn run_one_inner(
             "--verbose",
             // The question is a positional; the separator keeps a
             // contributed question starting with '-' from being parsed
-            // as an option (measured: it errors the whole invocation).
+            // as an option, which errors the whole invocation.
             "--",
             question,
         ])
@@ -438,15 +438,15 @@ fn write_mcp_config(
 /// Spend one session proving a headless client can actually **call** the
 /// corpus tools, and abort the whole run if it cannot.
 ///
-/// [`probe_server`] is not enough, and 2026-08-19 is how we know. Claude Code
-/// 2.1.236 connects the MCP server, loads its instructions string, reports
-/// `"status": "connected"` — and never registers its tool schemas. A headless
-/// session then answers every question from pretraining. Nothing in the
-/// stream says so: the status guard in `run_one_inner` sees `connected` and
-/// passes, so a 33-question sweep would complete, report **`0 failed`**, and
-/// record a confident 0.000 against a 0.693 baseline. That reads as a
-/// catastrophic corpus regression caused by nothing at all, and it costs a
-/// full sweep to produce.
+/// [`probe_server`] is not enough: a client can connect the MCP server, load
+/// its instructions string, report `"status": "connected"` — and never
+/// register its tool schemas (one Claude Code release did exactly this). A
+/// headless session then answers every question from pretraining, and
+/// nothing in the stream says so: the status guard in `run_one_inner` sees
+/// `connected` and passes, so a full sweep would complete, report `0
+/// failed`, and record a confident near-zero baseline — what looks like a
+/// catastrophic corpus regression, caused by nothing, at the price of a
+/// full sweep.
 ///
 /// A false abort costs one re-run; a false baseline gets written down. So
 /// this probes on the configured model rather than a cheap tier — "the model
@@ -583,7 +583,7 @@ fn parse_stream_line(line: &str) -> Option<StreamEvent> {
 /// Strict: the document's own URL is cited. Thread: for forum posts, any
 /// URL from the same topic counts — a client that cites a thread's OP
 /// after finding it via a reply has served the reader; this is the column
-/// doc-id recall@10 structurally cannot measure (the M9 lesson).
+/// doc-id recall@10 structurally cannot measure.
 /// One question's expected URLs, in the two scoring shapes.
 ///
 /// `required` is all-of — every URL is wanted and counts separately.
@@ -731,9 +731,9 @@ mod tests {
     }
 
     /// The measurement fix this field exists for: several sources answer
-    /// "why does Ethereum have blobs?" equally well, and the opus run cited
-    /// the EIP where `expect` named the forum thread — scoring 0.00 for a
-    /// good answer. Any member of the group now earns the credit.
+    /// "why does Ethereum have blobs?" equally well, and an answer citing
+    /// the EIP where `expect` named the forum thread scored 0.00 despite
+    /// being a good answer. Any member of the group now earns the credit.
     #[test]
     fn an_alternatives_group_is_satisfied_by_any_member() {
         let expected = ExpectedUrls {

@@ -200,26 +200,17 @@ impl crate::Adapter for FeedAdapter {
 
     /// Re-derive recent items and write only what changed.
     ///
-    /// The old rule — a file on disk means done — meant an article corrected
-    /// after publication kept its first version forever. There is no cheaper
-    /// signal to use instead: `items` parses RSS 2.0, and neither real feed
-    /// carries a per-item `updated`, so the content itself is the only thing
-    /// that can be compared.
+    /// A file on disk does not mean done: an article corrected after
+    /// publication would keep its first version forever, and neither real
+    /// feed carries a per-item `updated`, so the content itself is the only
+    /// signal that can be compared.
     ///
-    /// For a feed whose descriptions are teasers that means one request per
-    /// item compared, and **both real feeds turn out to be full archives
-    /// rather than truncated windows** — 634 items for the EF blog, 174 for
-    /// vitalik.eth.limo. Comparing every one of them would be minutes of
-    /// rate-limited fetching on every run, for ever.
-    ///
-    /// **Both** feeds, measured 2026-08-19: an earlier version of this comment
-    /// claimed the EF blog's descriptions carried whole articles and that
-    /// comparing it was therefore free. They do not — all 634 are ~330-char
-    /// teasers, so [`is_full_content`] fires for neither real feed today and
-    /// the EF blog costs the same 30 requests per routine sync that vitalik
-    /// does. The branch is kept because it is a property of the feed, not of
-    /// the adapter, and a feed that starts serving full content should stop
-    /// costing requests the moment it does.
+    /// Both real feeds are full archives serving short teaser descriptions,
+    /// so comparing an item costs a request and comparing all of them would
+    /// be minutes of rate-limited fetching on every run. [`is_full_content`]
+    /// fires for neither today; the branch is kept because it is a property
+    /// of the feed, not of the adapter, and a feed that starts serving full
+    /// content should stop costing requests the moment it does.
     ///
     /// So a routine sync compares the newest [`RECHECK_RECENT`] items, where
     /// corrections realistically land, and `--full` compares the lot. An item
@@ -239,10 +230,9 @@ impl crate::Adapter for FeedAdapter {
         // How many items this run will actually look at — the feed's length
         // is the wrong denominator for a routine sync, which examines the
         // newest RECHECK_RECENT plus whatever it has never seen and leaves
-        // the rest untouched. Feeding `progress_note` the full 634 made it
-        // project the observed pace across ~600 items that were about to be
-        // skipped in microseconds: "~1h36m left" for ~11s of real work.
-        // One `stat` per item, no requests.
+        // the rest untouched. Feeding `progress_note` the full feed length
+        // projects the observed pace across hundreds of items that are about
+        // to be skipped in microseconds. One `stat` per item, no requests.
         let planned = items
             .iter()
             .enumerate()
