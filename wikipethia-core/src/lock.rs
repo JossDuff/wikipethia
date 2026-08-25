@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 
 use crate::error::CoreError;
 
-const LOCK_KEY: &str = "writer.lock";
+pub(crate) const LOCK_KEY: &str = "writer.lock";
 
 /// Beyond this, a lock is assumed abandoned even if something answers to its
 /// pid — pids get recycled, and a lock that can only be cleared by hand
@@ -55,7 +55,13 @@ impl WriterLock {
         let mut conn = Connection::open(db)?;
         // Two writers starting together should queue for the fraction of a
         // second the transaction takes, not race to a spurious SQLITE_BUSY.
+        // Set before the first statement below — a read races the same way.
         conn.busy_timeout(Duration::from_secs(5))?;
+        // Refuse a newer corpus before writing the lock row into it —
+        // `build`/`update` take the lock before any `Store::open` runs, so
+        // without this the refusal arrives one meta-row too late.
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        crate::store::check_schema_version(version)?;
         // The lock is taken before `Store::open` has necessarily run — on
         // clone day the database file does not exist yet — so it creates the
         // table it needs. Shared const, not a restatement: an earlier

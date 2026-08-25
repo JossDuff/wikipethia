@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use anyhow::Context;
 use wikipethia_core::Store;
 use wikipethia_embed::FastEmbedder;
 use rmcp::ServiceExt;
@@ -24,7 +25,8 @@ use tools::CorpusServer;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse()?;
-    let store = Store::open_existing(&args.db)?;
+    let store = Store::open_existing(&args.db)
+        .with_context(|| format!("opening {}", args.db.display()))?;
     if store.count()? == 0 {
         // Failing the connection beats serving an empty corpus silently —
         // this line shows up in the client's MCP logs.

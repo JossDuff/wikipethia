@@ -58,7 +58,7 @@ a new user meets it.
 wikipethia build  [--source <id>]      # clone day: sync + index + embed
 wikipethia update [--source <id>]      # same three stages, incrementally
 wikipethia status                      # docs/vectors per source; READY or not
-wikipethia sync   [--source <id>] [--limit N] [--full] [--force]
+wikipethia sync   [--source <id>] [--limit N] [--full] [--force] [--db <path>]
 wikipethia index  [--source <id>] [--force]
 wikipethia embed  [--force]
 wikipethia search "<query>" [--limit N]
@@ -66,6 +66,7 @@ wikipethia dedup  [--threshold 0.95] [--source <id>]
 wikipethia eval                        # retrieval: recall@10
 wikipethia agent-eval [--limit N] [--model haiku]
 wikipethia agent-eval --regrade <dir>  # re-score, no spend
+wikipethia publish [--tag <t>] [--out dist] [--dry-run]  # maintainer: snapshot → zstd → GitHub release
 wikipethia-mcp [--db <path>] [--http <addr> [--allow-host <name>]]
 ```
 
@@ -77,6 +78,16 @@ and `update` is the one meant for a timer. `refresh` is a kept alias for
 refetches regardless of what is on disk. Together they are the only way to
 see a post edited in place — that moves no upstream timestamp — and they
 cost what the first crawl cost. Not a routine.
+
+Sync checkpoints live in the database (`meta`, `checkpoint.<id>`), so a
+published corpus carries them and a downloader's `update` walks
+incrementally. `publish` also stamps `mirror.absent.<id>` into the snapshot:
+while set, sync declines the full-listings walk and index skips its prune
+pass (both assume the local raw mirror is complete, and a download ships
+without one). Cleared only on real evidence of a rebuilt mirror — a
+completed `sync --full` for a forum, a checkpoint-advancing tarball run for
+a repo, never for a feed (a feed can only re-mirror what its live feed.xml
+still lists).
 
 `index` and `embed` take an advisory lock on the database (a `meta` row).
 A second writer fails fast rather than interleaving: `chunks.id` has no

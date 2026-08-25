@@ -18,7 +18,10 @@ use crate::error::CoreError;
 /// The vector table `chunks_vec` is deliberately NOT part of the schema —
 /// its dimension belongs to the embedding model, so
 /// [`Store::ensure_embedding_space`] creates it lazily.
-const SCHEMA_VERSION: i64 = 4;
+///
+/// Public so `publish` can put it in release notes: a downloader comparing
+/// a release against their binary needs both numbers.
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The `meta` key/value table, kept out of [`SCHEMA`] because [`WriterLock`]
 /// needs it before a [`Store`] has necessarily opened the file — on clone day
@@ -176,6 +179,20 @@ pub struct Store {
     has_vec: bool,
 }
 
+/// Refuse a corpus stamped by a newer wikipethia. Every open path runs this
+/// — writable ([`Store::init`]), read-only, and the writer lock — because
+/// each of them would otherwise fail later and worse: `init` by re-stamping
+/// the version downward, the others with a confusing query error.
+pub(crate) fn check_schema_version(found: i64) -> Result<(), CoreError> {
+    if found > SCHEMA_VERSION {
+        return Err(CoreError::SchemaTooNew {
+            found,
+            supported: SCHEMA_VERSION,
+        });
+    }
+    Ok(())
+}
+
 /// Register sqlite-vec for every connection opened after this call.
 /// Process-global; auto-extensions run at connection creation, so this must
 /// precede `Connection::open`.
@@ -271,6 +288,11 @@ impl Store {
         let attempt = |query: &str| -> Result<Self, CoreError> {
             let conn =
                 Connection::open_with_flags(format!("file:{}?{query}", path.display()), flags)?;
+            // init never runs on this path, so its version refusal is
+            // restated here — the pragma read doubles as the probe statement
+            // this closure needs anyway (see the comment above).
+            let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            check_schema_version(version)?;
             let has_vec = table_exists(&conn, "chunks_vec")?;
             Ok(Self { conn, has_vec })
         };
@@ -286,10 +308,18 @@ impl Store {
     }
 
     fn init(mut conn: Connection) -> Result<Self, CoreError> {
+        // Version first, before anything writes: a corpus from a newer
+        // wikipethia must be refused untouched, and the WAL pragma below
+        // already modifies the file.
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        check_schema_version(version)?;
         // journal_mode is a query, not a statement — it returns the resulting
         // mode as a row ("memory" for in-memory databases, "wal" on disk).
         conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        // Sync persists checkpoints through a Store without holding the
+        // writer lock, so it must wait out a concurrent index/embed
+        // transaction rather than surface an immediate SQLITE_BUSY.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(META_SCHEMA)?;
         conn.execute_batch(SCHEMA)?;
         if version < 2 {
@@ -298,6 +328,19 @@ impl Store {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         let has_vec = table_exists(&conn, "chunks_vec")?;
         Ok(Self { conn, has_vec })
+    }
+
+    /// Write a self-contained snapshot of this corpus to `dest`: WAL fully
+    /// absorbed (no `-wal`/`-shm` sidecars), free pages dropped,
+    /// `user_version` preserved. The publishable form of the database —
+    /// `open_read_only`'s `immutable=1` path reads only the main file, so a
+    /// straight copy of a live WAL database can silently miss recent writes.
+    ///
+    /// `dest` must not exist; SQLite refuses to vacuum into an existing file.
+    pub fn vacuum_into(&self, dest: &Path) -> Result<(), CoreError> {
+        self.conn
+            .execute("VACUUM INTO ?1", [dest.to_string_lossy().as_ref()])?;
+        Ok(())
     }
 
     pub fn upsert(&mut self, docs: &[Document]) -> Result<usize, CoreError> {
@@ -1084,6 +1127,55 @@ impl Store {
             }
         }
         Ok(fetched)
+    }
+
+    /// Per-source sync checkpoint, an opaque JSON string owned by the fetch
+    /// layer. Living in the database rather than beside the raw files means
+    /// a published corpus carries its own high-water marks — a downloader's
+    /// first `update` walks incrementally instead of recrawling everything.
+    ///
+    /// Typed wrappers rather than public `meta_get`/`meta_set`: the prefix
+    /// keeps callers away from `writer.lock` and `embedding.*`, and source
+    /// ids cannot collide with either.
+    pub fn checkpoint(&self, source_id: &str) -> Result<Option<String>, CoreError> {
+        self.meta_get(&format!("checkpoint.{source_id}"))
+    }
+
+    pub fn set_checkpoint(&self, source_id: &str, json: &str) -> Result<(), CoreError> {
+        self.meta_set(&format!("checkpoint.{source_id}"), json)
+    }
+
+    /// Whether this corpus was published without its raw-file mirror.
+    ///
+    /// `publish` stamps the flag into the snapshot for every source; while
+    /// it is set, sync declines the full-listings walk (file presence is
+    /// what makes that walk cheap, and the files aren't there) and index
+    /// skips the prune pass (which reads a missing raw file as an upstream
+    /// deletion). A completed mirror-rebuilding sync clears it.
+    pub fn mirror_absent(&self, source_id: &str) -> Result<bool, CoreError> {
+        Ok(self.meta_get(&format!("mirror.absent.{source_id}"))?.is_some())
+    }
+
+    pub fn set_mirror_absent(&self, source_id: &str, absent: bool) -> Result<(), CoreError> {
+        let key = format!("mirror.absent.{source_id}");
+        if absent {
+            self.meta_set(&key, "true")
+        } else {
+            self.conn.execute("DELETE FROM meta WHERE key = ?1", [&key])?;
+            Ok(())
+        }
+    }
+
+    /// Remove any writer-lock row from this database. For snapshots:
+    /// `publish` vacuums while holding the lock — the fence against
+    /// snapshotting a half-built corpus — so the committed row rides into
+    /// the copy, where it would haunt downloaders as a phantom writer
+    /// (`Busy` for anyone whose machine has a live process at the
+    /// maintainer's recycled pid, an "abandoned lock" note for the rest).
+    pub fn clear_writer_lock(&self) -> Result<(), CoreError> {
+        self.conn
+            .execute("DELETE FROM meta WHERE key = ?1", [crate::lock::LOCK_KEY])?;
+        Ok(())
     }
 
     fn meta_get(&self, key: &str) -> Result<Option<String>, CoreError> {

@@ -353,3 +353,103 @@ fn opening_a_corpus_that_does_not_exist_names_the_path() {
     // And it must not have created what it just said was missing.
     assert!(!missing.exists());
 }
+
+/// A corpus stamped by a newer wikipethia is refused on every open path, and
+/// left untouched — a writable open used to re-stamp `user_version` downward
+/// and then query the file with SQL written for the old schema.
+#[test]
+fn refuses_a_corpus_stamped_by_a_newer_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("corpus.sqlite");
+    {
+        let mut store = Store::open(&db).unwrap();
+        store.upsert(&[doc("v99")]).unwrap();
+    }
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.pragma_update(None, "user_version", 99).unwrap();
+    }
+
+    let refused = |result: Result<Store, wikipethia_core::CoreError>| match result {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("opened a corpus stamped by a newer schema"),
+    };
+    let err = refused(Store::open(&db));
+    assert!(err.contains("newer wikipethia"), "{err}");
+    // The lock too: build/update acquire it before any Store::open, so
+    // without its own check it would write a meta row into the newer file.
+    let err = match wikipethia_core::WriterLock::acquire(&db, "test") {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("locked a corpus stamped by a newer schema"),
+    };
+    assert!(err.contains("newer wikipethia"), "{err}");
+    // Both refusals left the stamp alone.
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+    assert_eq!(version, 99);
+    drop(conn);
+
+    // The read-only ladder refuses too — init never runs there, so the
+    // check is restated on that path and this is what exercises it.
+    let mut perms = fs::metadata(&db).unwrap().permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(&db, perms).unwrap();
+    let err = refused(Store::open_existing(&db));
+    assert!(err.contains("newer wikipethia"), "{err}");
+}
+
+/// Checkpoints and the mirror flag live in `meta` behind typed accessors —
+/// prefixed keys, so they can never read or clobber `writer.lock`.
+#[test]
+fn checkpoints_and_mirror_flags_roundtrip_in_meta() {
+    let store = Store::open_in_memory().unwrap();
+    assert_eq!(store.checkpoint("ethresearch").unwrap(), None);
+    store.set_checkpoint("ethresearch", r#"{"bumped_watermark":"2026-01-01"}"#).unwrap();
+    assert_eq!(
+        store.checkpoint("ethresearch").unwrap().as_deref(),
+        Some(r#"{"bumped_watermark":"2026-01-01"}"#)
+    );
+    store.set_checkpoint("ethresearch", r#"{"bumped_watermark":"2026-02-02"}"#).unwrap();
+    assert_eq!(
+        store.checkpoint("ethresearch").unwrap().as_deref(),
+        Some(r#"{"bumped_watermark":"2026-02-02"}"#)
+    );
+
+    assert!(!store.mirror_absent("eips").unwrap());
+    store.set_mirror_absent("eips", true).unwrap();
+    assert!(store.mirror_absent("eips").unwrap());
+    store.set_mirror_absent("eips", false).unwrap();
+    assert!(!store.mirror_absent("eips").unwrap());
+
+    // A source id can never alias the lock row.
+    assert_eq!(store.checkpoint("writer.lock").unwrap(), None);
+}
+
+/// `publish` vacuums while holding the writer lock, so the lock row rides
+/// into the snapshot — where, to a downloader whose machine has a live
+/// process at the recycled pid, it is an active writer. The stamping pass
+/// strips it with `clear_writer_lock`; this proves both the hazard and the
+/// cure, using this test's own (live) pid as the phantom.
+#[test]
+fn a_snapshot_taken_under_the_writer_lock_can_shed_the_lock_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("corpus.sqlite");
+    let mut store = Store::open(&db).unwrap();
+    store.upsert(&[doc("locked")]).unwrap();
+
+    let lock = wikipethia_core::WriterLock::acquire(&db, "publish").unwrap();
+    let snapshot = dir.path().join("snapshot.sqlite");
+    store.vacuum_into(&snapshot).unwrap();
+    drop(lock);
+
+    // The hazard: the copied row names this very process, so a second
+    // acquire on the snapshot sees a live holder and refuses.
+    match wikipethia_core::WriterLock::acquire(&snapshot, "update") {
+        Err(e) => assert!(e.to_string().contains("another writer"), "{e}"),
+        Ok(_) => panic!("the shipped lock row should have refused a second writer"),
+    }
+
+    // The cure.
+    Store::open(&snapshot).unwrap().clear_writer_lock().unwrap();
+    drop(wikipethia_core::WriterLock::acquire(&snapshot, "update").expect("lock row stripped"));
+}

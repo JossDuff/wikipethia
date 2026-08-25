@@ -442,3 +442,33 @@ fn opening_a_v2_database_migrates_to_current() {
         .unwrap();
     assert!(hits.iter().any(|h| h.doc_id == "test/wexlurb"));
 }
+
+/// The published artifact is a `VACUUM INTO` snapshot, and the property that
+/// matters is capture-while-live: the source connection stays open, so
+/// anything still sitting in its WAL must land in the copy — including the
+/// sqlite-vec shadow tables, which are ordinary tables to VACUUM.
+#[test]
+fn vacuum_into_captures_a_live_corpus_wal_and_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("live.sqlite");
+    let mut store = Store::open(&src).unwrap();
+    store
+        .upsert(&[doc("test/wexlurb", "Wexlurb", &"The wexlurb is a car. ".repeat(10))])
+        .unwrap();
+    embed_all(&mut store, &FakeEmbedder);
+
+    let dest = dir.path().join("snapshot.sqlite");
+    store.vacuum_into(&dest).unwrap();
+    drop(store);
+
+    // Self-contained before anything reopens it: an immutable-mount reader
+    // sees only the main file, so the snapshot must arrive without sidecars.
+    assert!(!dir.path().join("snapshot.sqlite-wal").exists());
+
+    let copy = Store::open_existing(&dest).unwrap();
+    assert_eq!(copy.count().unwrap(), 1);
+    assert!(copy.embedding_count().unwrap() > 0, "vectors travelled");
+    let query_vec = FakeEmbedder.embed_query("automobile").unwrap();
+    let hits = copy.hybrid_search("automobile", Some(&query_vec), 10).unwrap();
+    assert!(hits.iter().any(|h| h.doc_id == "test/wexlurb"));
+}

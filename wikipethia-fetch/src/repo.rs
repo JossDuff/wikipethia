@@ -400,7 +400,12 @@ impl crate::Adapter for RepoAdapter {
     /// date (no frontmatter `created:`, no fresh dates.json entry). The
     /// dates pass is driven from disk state, so an interrupted run resumes
     /// where it stopped — dates.json persists after every fetch.
-    fn sync(&self, fetcher: &mut dyn Fetcher, opts: &SyncIntent) -> Result<SyncStats, FetchError> {
+    fn sync(
+        &self,
+        fetcher: &mut dyn Fetcher,
+        opts: &SyncIntent,
+        state: &SyncState,
+    ) -> Result<(SyncStats, Option<SyncState>), FetchError> {
         let limit = opts.limit;
         // The tarball is one silent request that can take minutes for
         // asset-heavy repos — without this line, that whole window is
@@ -411,7 +416,6 @@ impl crate::Adapter for RepoAdapter {
         // is by far the most expensive request in a routine update. Read the
         // ref's head instead — one small feed — and stop there when nothing
         // has moved.
-        let mut state = SyncState::load(&self.data_dir);
         let fingerprint = self.config_fingerprint();
         let head = fetcher
             .get_text(&branch_atom_url(&self.repo_url, &self.branch))
@@ -438,7 +442,7 @@ impl crate::Adapter for RepoAdapter {
             // tarball every run, with nothing in the log to say why.
             let mut dates = self.load_dates();
             self.fill_dates(fetcher, &mut dates)?;
-            return Ok(SyncStats::default());
+            return Ok((SyncStats::default(), None));
         }
 
         eprintln!(
@@ -564,18 +568,19 @@ impl crate::Adapter for RepoAdapter {
         }
         self.fill_dates(fetcher, &mut dates)?;
 
-        // Record what produced this tree, last: everything above must have
+        // Claim what produced this tree, last: everything above must have
         // succeeded for the SHA to describe what is actually on disk. A
         // `--limit` run unpacked an arbitrary slice of the commit, so it has
         // no business claiming the whole of it is synced.
-        if let Some(sha) = head
-            && limit.is_none()
-        {
-            state.head_sha = sha;
-            state.config_fingerprint = fingerprint;
-            state.save(&self.data_dir)?;
-        }
-        Ok(stats)
+        let advanced = match head {
+            Some(sha) if limit.is_none() => Some(SyncState {
+                head_sha: sha,
+                config_fingerprint: fingerprint,
+                ..state.clone()
+            }),
+            _ => None,
+        };
+        Ok((stats, advanced))
     }
 
     fn parse_file(&self, path: &Path) -> Result<Vec<Document>, CoreError> {

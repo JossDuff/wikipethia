@@ -9,7 +9,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use wikipethia_fetch::discourse::{about_url, latest_url, posts_batch_url, topic_url};
-use wikipethia_fetch::{FetchError, Fetcher, SyncOptions, sync};
+use wikipethia_fetch::{FetchError, Fetcher, SyncOptions, SyncState, sync};
 use serde_json::Value;
 
 const BASE: &str = "https://forum.test";
@@ -178,7 +178,7 @@ fn full_walk_terminates_on_null_more_topics_url_and_merges_batches() {
     let dir = tempfile::tempdir().unwrap();
     let (mut fetcher, requests) = FakeFetcher::for_forum();
 
-    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (stats, _) = sync(&mut fetcher, &opts(dir.path(), None), &SyncState::default()).unwrap();
     assert_eq!(stats.fetched, 3);
     assert_eq!(stats.skipped, 0);
 
@@ -220,11 +220,12 @@ fn full_walk_terminates_on_null_more_topics_url_and_merges_batches() {
 fn resume_skips_topics_already_on_disk_without_any_request() {
     let dir = tempfile::tempdir().unwrap();
     let (mut fetcher, _) = FakeFetcher::for_forum();
-    sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (_, advanced) = sync(&mut fetcher, &opts(dir.path(), None), &SyncState::default()).unwrap();
 
     // "Killed and restarted": everything is on disk, nothing may be refetched.
     let (mut fetcher, requests) = FakeFetcher::for_forum();
-    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (stats, _) =
+        sync(&mut fetcher, &opts(dir.path(), None), &advanced.unwrap()).unwrap();
     assert_eq!(stats.fetched, 0);
     assert_eq!(stats.skipped, 3);
     assert!(
@@ -246,7 +247,7 @@ fn a_leftover_tmp_file_is_not_treated_as_a_checkpoint() {
     fs::write(topics.join("426.json.tmp"), "{\"trunc").unwrap();
 
     let (mut fetcher, _) = FakeFetcher::for_forum();
-    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (stats, _) = sync(&mut fetcher, &opts(dir.path(), None), &SyncState::default()).unwrap();
     assert_eq!(stats.fetched, 3, "426 must be refetched despite the .tmp");
     assert_eq!(post_field(&read_topic(dir.path(), 426), "id").len(), 6);
     assert!(!topics.join("426.json.tmp").exists());
@@ -257,12 +258,14 @@ fn limit_counts_skips_so_the_file_count_holds_across_restarts() {
     let dir = tempfile::tempdir().unwrap();
 
     let (mut fetcher, _) = FakeFetcher::for_forum();
-    let stats = sync(&mut fetcher, &opts(dir.path(), Some(1))).unwrap();
+    let (stats, _) =
+        sync(&mut fetcher, &opts(dir.path(), Some(1)), &SyncState::default()).unwrap();
     assert_eq!((stats.fetched, stats.skipped), (1, 0));
 
     // Restart with --limit 2: the topic on disk counts toward the limit.
     let (mut fetcher, requests) = FakeFetcher::for_forum();
-    let stats = sync(&mut fetcher, &opts(dir.path(), Some(2))).unwrap();
+    let (stats, _) =
+        sync(&mut fetcher, &opts(dir.path(), Some(2)), &SyncState::default()).unwrap();
     assert_eq!((stats.fetched, stats.skipped), (1, 1));
     assert!(!requests.borrow().iter().any(|u| u.contains("/t/426")));
 
@@ -284,7 +287,7 @@ fn an_empty_topics_page_terminates_the_walk() {
         )]),
         requests: Rc::new(RefCell::new(Vec::new())),
     };
-    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (stats, _) = sync(&mut fetcher, &opts(dir.path(), None), &SyncState::default()).unwrap();
     assert_eq!(stats, wikipethia_fetch::SyncStats::default());
 }
 
@@ -301,7 +304,8 @@ fn an_empty_topics_page_terminates_the_walk() {
 fn a_reply_to_a_stored_topic_is_refetched_next_run() {
     let dir = tempfile::tempdir().unwrap();
     let (mut fetcher, _) = FakeFetcher::for_forum();
-    sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (_, advanced) = sync(&mut fetcher, &opts(dir.path(), None), &SyncState::default()).unwrap();
+    let checkpoint = advanced.unwrap();
 
     // Someone replies to 426: the listing's counters move, and (as on the
     // live forum) the topic payload's move with them.
@@ -318,7 +322,7 @@ fn a_reply_to_a_stored_topic_is_refetched_next_run() {
     bump(&mut topic);
     fetcher.responses.insert(topic_url(BASE, 426), topic);
 
-    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (stats, _) = sync(&mut fetcher, &opts(dir.path(), None), &checkpoint).unwrap();
     assert_eq!(stats.updated, 1, "426 gained a reply");
     assert_eq!(stats.fetched, 0, "nothing is new");
     assert_eq!(stats.skipped, 2, "the other two are untouched");
@@ -337,13 +341,14 @@ fn a_reply_to_a_stored_topic_is_refetched_next_run() {
 fn an_incremental_walk_stops_once_it_is_reading_old_news() {
     let dir = tempfile::tempdir().unwrap();
     let (mut fetcher, _) = quiet_forum(10, "2026-01-01T00:00:00.000Z");
-    sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (_, advanced) = sync(&mut fetcher, &opts(dir.path(), None), &SyncState::default()).unwrap();
 
     // Nothing has happened since. The walk must give up early rather than
     // page through all ten — that difference is ~236 pages per run on the
     // real forums.
     let (mut fetcher, requests) = quiet_forum(10, "2026-01-01T00:00:00.000Z");
-    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (stats, _) =
+        sync(&mut fetcher, &opts(dir.path(), None), &advanced.unwrap()).unwrap();
     assert!(stats.stopped_early, "the checkpoint must end the walk");
     assert_eq!(stats.fetched, 0);
     assert_eq!(stats.updated, 0);
@@ -365,11 +370,12 @@ fn a_pinned_topic_at_the_top_does_not_end_the_walk() {
     page0["topic_list"]["topics"][0]["pinned"] = serde_json::json!(true);
     page0["topic_list"]["topics"][0]["bumped_at"] = serde_json::json!("2017-08-17T22:57:31.812Z");
     fetcher.responses.insert(latest_url(BASE, 0), page0.clone());
-    sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (_, advanced) = sync(&mut fetcher, &opts(dir.path(), None), &SyncState::default()).unwrap();
 
     let (mut fetcher, requests) = quiet_forum(3, "2026-06-01T00:00:00.000Z");
     fetcher.responses.insert(latest_url(BASE, 0), page0);
-    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (stats, _) =
+        sync(&mut fetcher, &opts(dir.path(), None), &advanced.unwrap()).unwrap();
     assert!(
         pages_requested(&requests) > 1,
         "the walk must get past the pinned entry, got {} page(s)",
@@ -385,40 +391,55 @@ fn an_interrupted_walk_leaves_the_checkpoint_unadvanced() {
     // high-water mark would tell the next run that everything below is
     // covered, when the walk never reached it.
     let (mut fetcher, _) = quiet_forum(4, "2026-01-01T00:00:00.000Z");
-    sync(&mut fetcher, &opts(dir.path(), Some(5))).unwrap();
+    let (_, advanced) =
+        sync(&mut fetcher, &opts(dir.path(), Some(5)), &SyncState::default()).unwrap();
     assert!(
-        !dir.path().join("sync.json").exists(),
+        advanced.is_none(),
         "a capped run has not covered the listing and must claim nothing"
     );
 
     // Proof it matters: the next uncapped run still reaches everything.
     let (mut fetcher, _) = quiet_forum(4, "2026-01-01T00:00:00.000Z");
-    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (stats, advanced) =
+        sync(&mut fetcher, &opts(dir.path(), None), &SyncState::default()).unwrap();
     assert_eq!(stats.fetched, 115, "the 115 topics the capped run never saw");
-    assert!(dir.path().join("sync.json").exists());
+    assert!(advanced.is_some(), "an uncapped complete walk claims its high-water mark");
 }
 
 #[test]
-fn an_unreadable_checkpoint_degrades_to_a_full_walk() {
+fn a_garbled_checkpoint_degrades_to_a_full_walk() {
     let dir = tempfile::tempdir().unwrap();
     let (mut fetcher, _) = quiet_forum(3, "2026-01-01T00:00:00.000Z");
-    sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
-    fs::write(dir.path().join("sync.json"), "{ truncated").unwrap();
+    sync(&mut fetcher, &opts(dir.path(), None), &SyncState::default()).unwrap();
 
     // Failing safe means doing more work, never less: a checkpoint that
-    // cannot be read must not be believed.
+    // cannot be parsed must not be believed. `from_json` is infallible by
+    // design — garbage reads as "nothing known".
+    let garbled = SyncState::from_json("{ truncated");
+    assert_eq!(garbled, SyncState::default());
     let (mut fetcher, requests) = quiet_forum(3, "2026-01-01T00:00:00.000Z");
-    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (stats, _) = sync(&mut fetcher, &opts(dir.path(), None), &garbled).unwrap();
     assert!(!stats.stopped_early);
     assert_eq!(pages_requested(&requests), 3, "every page is walked again");
     assert_eq!(stats.skipped, 90, "but nothing is refetched");
 }
 
 #[test]
+fn a_checkpoint_survives_its_json_round_trip() {
+    let state = SyncState {
+        bumped_watermark: "2026-01-01T00:00:00.000Z".into(),
+        head_sha: "abc123".into(),
+        config_fingerprint: "main|eips|md".into(),
+    };
+    assert_eq!(SyncState::from_json(&state.to_json()), state);
+}
+
+#[test]
 fn full_widens_the_walk_and_force_refetches_what_it_finds() {
     let dir = tempfile::tempdir().unwrap();
     let (mut fetcher, _) = quiet_forum(3, "2026-01-01T00:00:00.000Z");
-    sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (_, advanced) = sync(&mut fetcher, &opts(dir.path(), None), &SyncState::default()).unwrap();
+    let checkpoint = advanced.unwrap();
 
     // --full alone: every page is read, nothing is refetched. This is the
     // sweep for a topic the incremental walk would never reach.
@@ -427,7 +448,7 @@ fn full_widens_the_walk_and_force_refetches_what_it_finds() {
         full: true,
         ..opts(dir.path(), None)
     };
-    let stats = sync(&mut fetcher, &full).unwrap();
+    let (stats, _) = sync(&mut fetcher, &full, &checkpoint).unwrap();
     assert_eq!(pages_requested(&requests), 3);
     assert_eq!(stats.skipped, 90);
     assert_eq!(stats.updated, 0);
@@ -440,7 +461,7 @@ fn full_widens_the_walk_and_force_refetches_what_it_finds() {
         force: true,
         ..opts(dir.path(), None)
     };
-    let stats = sync(&mut fetcher, &sweep).unwrap();
+    let (stats, _) = sync(&mut fetcher, &sweep, &checkpoint).unwrap();
     assert_eq!(stats.updated, 90, "every topic rewritten from upstream");
     assert_eq!(stats.skipped, 0);
 }
@@ -458,7 +479,7 @@ fn a_null_in_the_listing_does_not_abort_the_walk() {
     page0["topic_list"]["topics"][0]["last_posted_at"] = Value::Null;
     fetcher.responses.insert(latest_url(BASE, 0), page0);
 
-    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (stats, _) = sync(&mut fetcher, &opts(dir.path(), None), &SyncState::default()).unwrap();
     assert_eq!(stats.fetched, 3, "every topic still landed");
 }
 
@@ -466,7 +487,8 @@ fn a_null_in_the_listing_does_not_abort_the_walk() {
 fn a_stored_topic_with_a_null_timestamp_is_not_refetched_for_ever() {
     let dir = tempfile::tempdir().unwrap();
     let (mut fetcher, _) = FakeFetcher::for_forum();
-    sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (_, advanced) = sync(&mut fetcher, &opts(dir.path(), None), &SyncState::default()).unwrap();
+    let checkpoint = advanced.unwrap();
 
     // A parse failure counts as stale, so a null here would mean one topic
     // refetched on every run from now on — spending the rate limit silently,
@@ -477,7 +499,7 @@ fn a_stored_topic_with_a_null_timestamp_is_not_refetched_for_ever() {
     fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
 
     let (mut fetcher, requests) = FakeFetcher::for_forum();
-    let stats = sync(&mut fetcher, &opts(dir.path(), None)).unwrap();
+    let (stats, _) = sync(&mut fetcher, &opts(dir.path(), None), &checkpoint).unwrap();
     assert_eq!(stats.updated, 0, "a null timestamp is unknown, not ancient");
     assert!(!requests.borrow().iter().any(|u| u.contains("/t/426")));
     assert_eq!(stats.skipped, 3);
