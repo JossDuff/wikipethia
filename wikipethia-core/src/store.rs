@@ -1166,6 +1166,18 @@ impl Store {
         }
     }
 
+    /// Remove any writer-lock row from this database. For snapshots:
+    /// `publish` vacuums while holding the lock — the fence against
+    /// snapshotting a half-built corpus — so the committed row rides into
+    /// the copy, where it would haunt downloaders as a phantom writer
+    /// (`Busy` for anyone whose machine has a live process at the
+    /// maintainer's recycled pid, an "abandoned lock" note for the rest).
+    pub fn clear_writer_lock(&self) -> Result<(), CoreError> {
+        self.conn
+            .execute("DELETE FROM meta WHERE key = ?1", [crate::lock::LOCK_KEY])?;
+        Ok(())
+    }
+
     fn meta_get(&self, key: &str) -> Result<Option<String>, CoreError> {
         let mut stmt = self
             .conn

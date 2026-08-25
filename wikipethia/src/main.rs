@@ -265,6 +265,16 @@ fn main() -> anyhow::Result<()> {
             let table = Table::new(manifest.select(source.as_deref())?.iter().map(|s| s.id.as_str()));
             // The listing walk records checkpoints, so it needs the corpus —
             // unlike the --topic branch above, which never touches them.
+            // Creation is loud: a bare sync in the wrong directory would
+            // otherwise plant an empty corpus.sqlite and quietly strand its
+            // checkpoints there, while the real corpus goes stale.
+            if !db.exists() {
+                eprintln!(
+                    "note: creating {} to hold sync checkpoints — pass --db or set \
+                     WIKIPETHIA_DB if your corpus lives elsewhere",
+                    db.display()
+                );
+            }
             let store = Store::open(&db)
                 .with_context(|| format!("opening {} to record checkpoints", db.display()))?;
             sync_sources(&manifest, source.as_deref(), &intent, &table, &store).into_result()
@@ -404,7 +414,7 @@ fn pipeline(run: Run, source: Option<&str>, db: &Path) -> anyhow::Result<()> {
     // is dropped before the lock below — checkpoint upserts don't need the
     // one-writer fence, and holding a second connection across index/embed
     // would muddy the story the lock tells.
-    let store = Store::open(db)?;
+    let store = Store::open(db).with_context(|| format!("opening {}", db.display()))?;
     let synced = sync_sources(&manifest, source, &intent, &table, &store);
     drop(store);
     // One lock across both database stages: index and embed must not
@@ -526,8 +536,8 @@ fn sync_sources(
         // A downloaded corpus carries checkpoints but not the raw mirror,
         // and the full-listings walk is only cheap when file presence can
         // answer "do I have this?" — without the files it refetches every
-        // topic. Stay incremental until an explicit `--full` rebuilds the
-        // mirror (repos and feeds rebuild theirs on any routine sync).
+        // topic. Stay incremental until the mirror is rebuilt for real
+        // (see `mirror_rebuilt` for what counts, per kind).
         let mirror_absent = store.mirror_absent(&entry.id).unwrap_or(false);
         let mut per_source = *intent;
         if mirror_absent && !intent.full && intent.full_listings {
@@ -545,23 +555,15 @@ fn sync_sources(
         match adapter_for(entry).sync(&mut HttpClient::new(), &per_source, &state) {
             Ok((stats, advanced)) => {
                 let mut persist_failed = false;
+                let rebuilt = mirror_rebuilt(entry.kind, &per_source, advanced.is_some());
                 if let Some(next) = advanced
                     && let Err(err) = store.set_checkpoint(&entry.id, &next.to_json())
                 {
                     eprintln!("sync {}: recording checkpoint failed: {err:#}", entry.id);
                     persist_failed = true;
                 }
-                // An Ok return means every fetch landed (adapters propagate
-                // errors), so an unlimited walk of the right shape has just
-                // rebuilt the mirror: repos and feeds do so routinely,
-                // discourse only under `--full`.
-                let mirror_rebuilt = intent.limit.is_none()
-                    && match entry.kind {
-                        Kind::Repo | Kind::Feed => true,
-                        Kind::Discourse => intent.full,
-                    };
                 if mirror_absent
-                    && mirror_rebuilt
+                    && rebuilt
                     && let Err(err) = store.set_mirror_absent(&entry.id, false)
                 {
                     eprintln!("sync {}: clearing the mirror flag failed: {err:#}", entry.id);
@@ -583,6 +585,35 @@ fn sync_sources(
         }
     }
     outcome
+}
+
+/// Whether an Ok sync run just rebuilt the source's complete raw mirror —
+/// the only event that may clear `mirror.absent`. Judged from what the walk
+/// actually ran under (`opts`), not the caller's original intent.
+///
+/// - A repo rebuilds its mirror exactly when the tarball path ran to the
+///   end, and advancing the checkpoint is that path's last act — the
+///   unchanged-head shortcut returns no advance, so a partial mirror it
+///   skipped over can never clear the flag.
+/// - A feed can only ever re-mirror what the live feed.xml still lists, so
+///   a downloader's rebuilt feed mirror is complete only if the feed
+///   carries its full history — unverifiable from here, and the flag is
+///   what stands between an incomplete mirror and the prune pass. Never
+///   cleared; feeds cannot express removal anyway, so the skipped prune
+///   costs nothing.
+/// - A forum mirror is only rebuilt by an explicit `--full` walk; errors
+///   propagate as Err, so Ok means every fetch landed.
+///
+/// `--limit` caps any walk to an arbitrary slice and clears nothing.
+fn mirror_rebuilt(kind: Kind, opts: &SyncIntent, advanced: bool) -> bool {
+    if opts.limit.is_some() {
+        return false;
+    }
+    match kind {
+        Kind::Repo => advanced,
+        Kind::Feed => false,
+        Kind::Discourse => opts.full,
+    }
 }
 
 /// The last known checkpoint for a source: the database row, or — once — the
@@ -1172,6 +1203,33 @@ mod tests {
         assert_eq!(loaded, SyncState::default());
         // A default state is not worth a row.
         assert_eq!(store.checkpoint("testforum").unwrap(), None);
+    }
+
+    #[test]
+    fn mirror_rebuilt_requires_real_evidence_per_kind() {
+        let plain = SyncIntent::default();
+        let full = SyncIntent { full: true, ..SyncIntent::default() };
+        let limited = SyncIntent { limit: Some(5), full: true, ..SyncIntent::default() };
+
+        // Repo: only a run that advanced the checkpoint unpacked a tarball —
+        // the unchanged-head shortcut over a partial mirror advances nothing
+        // and must not clear the flag.
+        assert!(mirror_rebuilt(Kind::Repo, &plain, true));
+        assert!(!mirror_rebuilt(Kind::Repo, &plain, false));
+
+        // Feed: a rebuild can only re-mirror what the live feed still
+        // lists, so it is never evidence of a complete mirror.
+        assert!(!mirror_rebuilt(Kind::Feed, &plain, false));
+        assert!(!mirror_rebuilt(Kind::Feed, &full, false));
+
+        // Discourse: an explicit --full walk, and nothing less.
+        assert!(mirror_rebuilt(Kind::Discourse, &full, true));
+        assert!(mirror_rebuilt(Kind::Discourse, &full, false));
+        assert!(!mirror_rebuilt(Kind::Discourse, &plain, true));
+
+        // --limit caps any walk to an arbitrary slice.
+        assert!(!mirror_rebuilt(Kind::Discourse, &limited, true));
+        assert!(!mirror_rebuilt(Kind::Repo, &limited, true));
     }
 
     #[test]

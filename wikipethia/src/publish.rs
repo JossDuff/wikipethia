@@ -78,6 +78,9 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
         for source in &stats {
             snap.set_mirror_absent(&source.id, true)?;
         }
+        // The vacuum ran under our own writer lock, so its row is in the
+        // copy — a phantom writer to every downloader if it shipped.
+        snap.clear_writer_lock()?;
     }
     // A cleanly closed last connection removes its WAL sidecars; anything
     // still beside the snapshot would be silently missing from the artifact.

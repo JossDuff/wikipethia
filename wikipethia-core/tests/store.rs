@@ -424,3 +424,32 @@ fn checkpoints_and_mirror_flags_roundtrip_in_meta() {
     // A source id can never alias the lock row.
     assert_eq!(store.checkpoint("writer.lock").unwrap(), None);
 }
+
+/// `publish` vacuums while holding the writer lock, so the lock row rides
+/// into the snapshot — where, to a downloader whose machine has a live
+/// process at the recycled pid, it is an active writer. The stamping pass
+/// strips it with `clear_writer_lock`; this proves both the hazard and the
+/// cure, using this test's own (live) pid as the phantom.
+#[test]
+fn a_snapshot_taken_under_the_writer_lock_can_shed_the_lock_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("corpus.sqlite");
+    let mut store = Store::open(&db).unwrap();
+    store.upsert(&[doc("locked")]).unwrap();
+
+    let lock = wikipethia_core::WriterLock::acquire(&db, "publish").unwrap();
+    let snapshot = dir.path().join("snapshot.sqlite");
+    store.vacuum_into(&snapshot).unwrap();
+    drop(lock);
+
+    // The hazard: the copied row names this very process, so a second
+    // acquire on the snapshot sees a live holder and refuses.
+    match wikipethia_core::WriterLock::acquire(&snapshot, "update") {
+        Err(e) => assert!(e.to_string().contains("another writer"), "{e}"),
+        Ok(_) => panic!("the shipped lock row should have refused a second writer"),
+    }
+
+    // The cure.
+    Store::open(&snapshot).unwrap().clear_writer_lock().unwrap();
+    drop(wikipethia_core::WriterLock::acquire(&snapshot, "update").expect("lock row stripped"));
+}

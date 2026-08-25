@@ -118,8 +118,10 @@ incremental. README carries a systemd timer.
 | Repo | yes | yes | one commit-feed request; no tarball |
 | Feed | yes | yes, within the feed window | one request per item in the window |
 
-- **Discourse.** `data/<id>/sync.json` holds a `bumped_at` watermark,
-  written only by a walk that ended on its own terms — a run cut short by
+- **Discourse.** The corpus database holds a `bumped_at` watermark per
+  source (`meta` key `checkpoint.<id>`; moved there from
+  `data/<id>/sync.json` in M8 so a published corpus carries it), written
+  only by a walk that ended on its own terms — a run cut short by
   `--limit` or an error claims nothing. The walk stops after **60**
   consecutive non-pinned entries at or below it, not the first one:
   measured against the live forum, page 0 of ethresear.ch opens with a
