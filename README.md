@@ -35,6 +35,19 @@ That puts `wikipethia` and `wikipethia-mcp` on your PATH. To run from the build 
 
 Run the corpus-building commands (`build`, `update`, `sync`, `index`) from the clone.  They read `sources.toml` and write `data/` relative to the working directory. `search`, `status`, and `wikipethia-mcp` work from anywhere; set `WIKIPETHIA_DB` or pass `--db` to point them at your corpus.
 
+## Download a prebuilt corpus
+
+The fast path: skip the multi-hour build (and its polite forum crawl) by downloading the latest `corpus-*` release.
+
+```bash
+gh release download --pattern 'corpus-*'   # or grab the assets from the Releases page
+sha256sum -c corpus-*.sqlite.zst.sha256
+zstd -d corpus-*.sqlite.zst -o corpus.sqlite
+wikipethia status
+```
+
+Then connect it exactly as below. A downloaded corpus stays updatable: `wikipethia update` (from the clone) walks each source incrementally — the sync checkpoints travel inside the file. The one exception is the two blog feeds, which refetch in full once (~15 minutes); and until a `wikipethia sync --full --source <id>` rebuilds the local raw mirror, upstream deletions are not pruned.
+
 ## Running it
 
 Build the corpus.  Runs three stages (fetch → index → embed):
@@ -77,6 +90,7 @@ Then ask Ethereum questions! The model cites forum posts, EIPs, and specs with U
 | `dedup` | Report near-duplicate documents across sources. |
 | `eval` | Retrieval eval: recall@10 over `tests/eval/questions.toml`. |
 | `agent-eval` | Whole-loop eval through a headless Claude Code session. Consumes real usage. |
+| `publish` | Snapshot, compress, and release the corpus on GitHub. Maintainer command. |
 
 `--db <path>` selects the corpus, `--source <id>` limits a command to one source, and `refresh` is a kept alias for `update`. `--help` on any command has the rest.
 

@@ -338,13 +338,27 @@ the corpus quietly held less than it looked like. Nothing replaces it today;
 someone is watching. Worth a small CI job on `sources.toml` changes
 eventually, independent of any `add` command.
 
-**What remains, and it is what gates M12:** publish `corpus.sqlite` on merge — primary channel: a Hugging Face dataset
-repo (versioned, good bandwidth for a ~500 MB file, discoverable by exactly
-the RAG-builder audience; a parquet export of the documents gets the hub's
-browsable table viewer for free). GitHub release assets as a mirror; pin
-snapshots to IPFS if you want content-addressed builds. Peg release versions
-to hard forks rather than dates — "the Fusaka corpus" says what a snapshot
-knows in a way a timestamp doesn't.
+**Channel decision revised 2026-08-25 (superseding the HF-primary plan
+below in this section's history): GitHub releases only, from the
+maintainer's machine.** `wikipethia publish` snapshots (`VACUUM INTO`),
+compresses, hashes, and runs `gh release create` under a date tag
+(`corpus-YYYY-MM-DD` — Joss's call: the corpus moves continuously between
+forks, so a date says what a snapshot knows better than a fork name). No
+CI: the corpus lives on this desk, a clean build exceeds runner limits, and
+each release is a deliberate snapshot. Hugging Face is deferred to M14,
+whose training-corpus consumer is what would justify a second channel — the
+same artifact uploads there unchanged when that day comes (`hf_scripts/`
+already holds the parquet path).
+
+Two enablers shipped with it, because "download and it works" includes the
+next `update`: sync checkpoints live in the database (so the artifact
+carries its own high-water marks, and a downloader's update doesn't recrawl
+~7,100 topics), and `publish` stamps per-source `mirror.absent` flags into
+the snapshot (a downloaded corpus has no raw mirror, so sync stays
+incremental and index must not read missing raw files as deletions — it
+would otherwise delete nearly every document on the first update). A
+`PRAGMA user_version` refusal protects older binaries from newer corpora,
+which used to be silently down-stamped on open.
 
 **Gate:** a stranger can download a published corpus and point
 `wikipethia-mcp` at it without building one.
@@ -895,7 +909,8 @@ SHA, changed config, so the tarball was re-downloaded rather than skipped.
 list and its rationale ahead of any work.
 
 The corpus is gaining a second consumer beyond retrieval: a published
-dataset (M8's Hugging Face channel) usable as fine-tuning material. The
+dataset (the Hugging Face channel deferred out of M8, landing here) usable
+as fine-tuning material. The
 editorial line, decided while scoping: **Ethereum protocol research**.
 Application-layer material was considered and cut — ecosystem contract
 audits, OpenZeppelin, Solidity/Vyper docs, Flashbots, the Yellow Paper.
