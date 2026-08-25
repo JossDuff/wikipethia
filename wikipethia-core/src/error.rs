@@ -25,4 +25,13 @@ pub enum CoreError {
     // Worded as an instruction because the reader's next move is to wait.
     #[error("another writer holds this corpus: {0}. Wait for it, or stop it first")]
     Busy(String),
+
+    // A published corpus can outrun an installed binary. Refusing beats the
+    // alternative: every writable open used to re-stamp `user_version`
+    // downward and then query the file with SQL written for the old schema.
+    #[error(
+        "this corpus was built by a newer wikipethia (schema v{found}; this build supports \
+         v{supported}) — upgrade wikipethia, or download an older corpus"
+    )]
+    SchemaTooNew { found: i64, supported: i64 },
 }

@@ -353,3 +353,47 @@ fn opening_a_corpus_that_does_not_exist_names_the_path() {
     // And it must not have created what it just said was missing.
     assert!(!missing.exists());
 }
+
+/// A corpus stamped by a newer wikipethia is refused on every open path, and
+/// left untouched — a writable open used to re-stamp `user_version` downward
+/// and then query the file with SQL written for the old schema.
+#[test]
+fn refuses_a_corpus_stamped_by_a_newer_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("corpus.sqlite");
+    {
+        let mut store = Store::open(&db).unwrap();
+        store.upsert(&[doc("v99")]).unwrap();
+    }
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.pragma_update(None, "user_version", 99).unwrap();
+    }
+
+    let refused = |result: Result<Store, wikipethia_core::CoreError>| match result {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("opened a corpus stamped by a newer schema"),
+    };
+    let err = refused(Store::open(&db));
+    assert!(err.contains("newer wikipethia"), "{err}");
+    // The lock too: build/update acquire it before any Store::open, so
+    // without its own check it would write a meta row into the newer file.
+    let err = match wikipethia_core::WriterLock::acquire(&db, "test") {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("locked a corpus stamped by a newer schema"),
+    };
+    assert!(err.contains("newer wikipethia"), "{err}");
+    // Both refusals left the stamp alone.
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+    assert_eq!(version, 99);
+    drop(conn);
+
+    // The read-only ladder refuses too — init never runs there, so the
+    // check is restated on that path and this is what exercises it.
+    let mut perms = fs::metadata(&db).unwrap().permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(&db, perms).unwrap();
+    let err = refused(Store::open_existing(&db));
+    assert!(err.contains("newer wikipethia"), "{err}");
+}

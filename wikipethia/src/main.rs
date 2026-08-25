@@ -507,7 +507,7 @@ fn corpus_exists(db: &Path) -> anyhow::Result<()> {
 /// pure BM25 — so the first sign of trouble was an answer that felt slightly
 /// off, mid-conversation, with nothing to check it against.
 fn status(db: &Path) -> anyhow::Result<()> {
-    let store = Store::open_existing(db)?;
+    let store = Store::open_existing(db).with_context(|| format!("opening {}", db.display()))?;
     let documents = store.count()?;
     let embedded = store.embedding_count()?;
     let missing = store.missing_embedding_count()?;

@@ -18,7 +18,10 @@ use crate::error::CoreError;
 /// The vector table `chunks_vec` is deliberately NOT part of the schema —
 /// its dimension belongs to the embedding model, so
 /// [`Store::ensure_embedding_space`] creates it lazily.
-const SCHEMA_VERSION: i64 = 4;
+///
+/// Public so `publish` can put it in release notes: a downloader comparing
+/// a release against their binary needs both numbers.
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The `meta` key/value table, kept out of [`SCHEMA`] because [`WriterLock`]
 /// needs it before a [`Store`] has necessarily opened the file — on clone day
@@ -176,6 +179,20 @@ pub struct Store {
     has_vec: bool,
 }
 
+/// Refuse a corpus stamped by a newer wikipethia. Every open path runs this
+/// — writable ([`Store::init`]), read-only, and the writer lock — because
+/// each of them would otherwise fail later and worse: `init` by re-stamping
+/// the version downward, the others with a confusing query error.
+pub(crate) fn check_schema_version(found: i64) -> Result<(), CoreError> {
+    if found > SCHEMA_VERSION {
+        return Err(CoreError::SchemaTooNew {
+            found,
+            supported: SCHEMA_VERSION,
+        });
+    }
+    Ok(())
+}
+
 /// Register sqlite-vec for every connection opened after this call.
 /// Process-global; auto-extensions run at connection creation, so this must
 /// precede `Connection::open`.
@@ -271,6 +288,11 @@ impl Store {
         let attempt = |query: &str| -> Result<Self, CoreError> {
             let conn =
                 Connection::open_with_flags(format!("file:{}?{query}", path.display()), flags)?;
+            // init never runs on this path, so its version refusal is
+            // restated here — the pragma read doubles as the probe statement
+            // this closure needs anyway (see the comment above).
+            let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            check_schema_version(version)?;
             let has_vec = table_exists(&conn, "chunks_vec")?;
             Ok(Self { conn, has_vec })
         };
@@ -286,10 +308,14 @@ impl Store {
     }
 
     fn init(mut conn: Connection) -> Result<Self, CoreError> {
+        // Version first, before anything writes: a corpus from a newer
+        // wikipethia must be refused untouched, and the WAL pragma below
+        // already modifies the file.
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        check_schema_version(version)?;
         // journal_mode is a query, not a statement — it returns the resulting
         // mode as a row ("memory" for in-memory databases, "wal" on disk).
         conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         conn.execute_batch(META_SCHEMA)?;
         conn.execute_batch(SCHEMA)?;
         if version < 2 {

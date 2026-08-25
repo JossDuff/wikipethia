@@ -17,4 +17,4 @@ pub use document::Document;
 pub use embed::Embedder;
 pub use error::CoreError;
 pub use lock::WriterLock;
-pub use store::{SearchHit, Store};
+pub use store::{SCHEMA_VERSION, SearchHit, Store};

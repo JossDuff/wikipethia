@@ -53,6 +53,11 @@ impl WriterLock {
     /// Take the lock for `command`, or fail describing who holds it.
     pub fn acquire(db: &Path, command: &str) -> Result<Self, CoreError> {
         let mut conn = Connection::open(db)?;
+        // Refuse a newer corpus before writing the lock row into it —
+        // `build`/`update` take the lock before any `Store::open` runs, so
+        // without this the refusal arrives one meta-row too late.
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        crate::store::check_schema_version(version)?;
         // Two writers starting together should queue for the fraction of a
         // second the transaction takes, not race to a spurious SQLITE_BUSY.
         conn.busy_timeout(Duration::from_secs(5))?;
