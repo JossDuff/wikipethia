@@ -316,6 +316,10 @@ impl Store {
         // journal_mode is a query, not a statement — it returns the resulting
         // mode as a row ("memory" for in-memory databases, "wal" on disk).
         conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
+        // Sync persists checkpoints through a Store without holding the
+        // writer lock, so it must wait out a concurrent index/embed
+        // transaction rather than surface an immediate SQLITE_BUSY.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(META_SCHEMA)?;
         conn.execute_batch(SCHEMA)?;
         if version < 2 {
@@ -1110,6 +1114,43 @@ impl Store {
             }
         }
         Ok(fetched)
+    }
+
+    /// Per-source sync checkpoint, an opaque JSON string owned by the fetch
+    /// layer. Living in the database rather than beside the raw files means
+    /// a published corpus carries its own high-water marks — a downloader's
+    /// first `update` walks incrementally instead of recrawling everything.
+    ///
+    /// Typed wrappers rather than public `meta_get`/`meta_set`: the prefix
+    /// keeps callers away from `writer.lock` and `embedding.*`, and source
+    /// ids cannot collide with either.
+    pub fn checkpoint(&self, source_id: &str) -> Result<Option<String>, CoreError> {
+        self.meta_get(&format!("checkpoint.{source_id}"))
+    }
+
+    pub fn set_checkpoint(&self, source_id: &str, json: &str) -> Result<(), CoreError> {
+        self.meta_set(&format!("checkpoint.{source_id}"), json)
+    }
+
+    /// Whether this corpus was published without its raw-file mirror.
+    ///
+    /// `publish` stamps the flag into the snapshot for every source; while
+    /// it is set, sync declines the full-listings walk (file presence is
+    /// what makes that walk cheap, and the files aren't there) and index
+    /// skips the prune pass (which reads a missing raw file as an upstream
+    /// deletion). A completed mirror-rebuilding sync clears it.
+    pub fn mirror_absent(&self, source_id: &str) -> Result<bool, CoreError> {
+        Ok(self.meta_get(&format!("mirror.absent.{source_id}"))?.is_some())
+    }
+
+    pub fn set_mirror_absent(&self, source_id: &str, absent: bool) -> Result<(), CoreError> {
+        let key = format!("mirror.absent.{source_id}");
+        if absent {
+            self.meta_set(&key, "true")
+        } else {
+            self.conn.execute("DELETE FROM meta WHERE key = ?1", [&key])?;
+            Ok(())
+        }
     }
 
     fn meta_get(&self, key: &str) -> Result<Option<String>, CoreError> {

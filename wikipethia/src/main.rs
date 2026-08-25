@@ -18,7 +18,7 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use wikipethia_core::{Embedder, Store, WriterLock, store::EmbeddedChunk};
 use wikipethia_embed::{DIM, FastEmbedder, MODEL_ID};
-use wikipethia_fetch::{Adapter, HttpClient, SyncIntent};
+use wikipethia_fetch::{Adapter, HttpClient, SyncIntent, SyncState};
 
 use manifest::{Kind, Manifest, adapter_for};
 use report::{Run, Table};
@@ -60,6 +60,11 @@ enum Command {
         /// a whole source; expect it to take as long as the first sync did.
         #[arg(long)]
         force: bool,
+        /// Database file holding the sync checkpoints (created if missing —
+        /// they have to live somewhere on a fresh clone, and the corpus is
+        /// the one file that travels).
+        #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
+        db: PathBuf,
     },
     /// Parse raw files on disk into documents and persist to SQLite.
     Index {
@@ -203,6 +208,7 @@ fn main() -> anyhow::Result<()> {
             topic,
             full,
             force,
+            db,
         } => {
             let manifest = Manifest::load()?;
             // A bare `sync` keeps the cheap checkpointed walk; `build` and
@@ -237,7 +243,11 @@ fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             let table = Table::new(manifest.select(source.as_deref())?.iter().map(|s| s.id.as_str()));
-            sync_sources(&manifest, source.as_deref(), &intent, &table).into_result()
+            // The listing walk records checkpoints, so it needs the corpus —
+            // unlike the --topic branch above, which never touches them.
+            let store = Store::open(&db)
+                .with_context(|| format!("opening {} to record checkpoints", db.display()))?;
+            sync_sources(&manifest, source.as_deref(), &intent, &table, &store).into_result()
         }
         Command::Index { source, db, force } => index(source.as_deref(), &db, force),
         Command::Build { source, db } => pipeline(Run::Build, source.as_deref(), &db),
@@ -364,7 +374,13 @@ fn pipeline(run: Run, source: Option<&str>, db: &Path) -> anyhow::Result<()> {
         full_listings: true,
         ..SyncIntent::default()
     };
-    let synced = sync_sources(&manifest, source, &intent, &table);
+    // The sync stage reads and records checkpoints in the corpus. Its store
+    // is dropped before the lock below — checkpoint upserts don't need the
+    // one-writer fence, and holding a second connection across index/embed
+    // would muddy the story the lock tells.
+    let store = Store::open(db)?;
+    let synced = sync_sources(&manifest, source, &intent, &table, &store);
+    drop(store);
     // One lock across both database stages: index and embed must not
     // interleave with each other or with a hand-run stage, and releasing
     // between them would leave exactly the gap worth closing. Re-acquired
@@ -450,11 +466,16 @@ impl SyncOutcome {
 /// Sync every selected source, tolerating per-source failures — an
 /// unattended multi-source sync must not let one flaky forum starve the
 /// others. The caller still exits non-zero if anything failed.
+///
+/// Checkpoints live in `store` and pass through here by value: adapters read
+/// the last one and return the advanced one, and this is the only place that
+/// persists it.
 fn sync_sources(
     manifest: &Manifest,
     source: Option<&str>,
     intent: &SyncIntent,
     table: &Table,
+    store: &Store,
 ) -> SyncOutcome {
     let mut outcome = SyncOutcome::default();
     let entries = match manifest.select(source) {
@@ -467,12 +488,64 @@ fn sync_sources(
     };
     for entry in entries {
         let started = std::time::Instant::now();
+        let state = match load_checkpoint(store, &entry.id, &manifest::data_dir(&entry.id)) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!("sync {} failed: {err:#}", entry.id);
+                table.row(&entry.id, "FAILED — see the error above");
+                outcome.failed.push(entry.id.clone());
+                continue;
+            }
+        };
+        // A downloaded corpus carries checkpoints but not the raw mirror,
+        // and the full-listings walk is only cheap when file presence can
+        // answer "do I have this?" — without the files it refetches every
+        // topic. Stay incremental until an explicit `--full` rebuilds the
+        // mirror (repos and feeds rebuild theirs on any routine sync).
+        let mirror_absent = store.mirror_absent(&entry.id).unwrap_or(false);
+        let mut per_source = *intent;
+        if mirror_absent && !intent.full && intent.full_listings {
+            per_source.full_listings = false;
+            if entry.kind == Kind::Discourse {
+                eprintln!(
+                    "sync {}: raw mirror not local (downloaded corpus) — walking \
+                     incrementally; `wikipethia sync --full --source {}` rebuilds the mirror",
+                    entry.id, entry.id
+                );
+            }
+        }
         // One fresh client per source, sources strictly sequential —
         // this is what keeps "one request per second per host" true.
-        match adapter_for(entry).sync(&mut HttpClient::new(), intent) {
-            Ok(stats) => {
+        match adapter_for(entry).sync(&mut HttpClient::new(), &per_source, &state) {
+            Ok((stats, advanced)) => {
+                let mut persist_failed = false;
+                if let Some(next) = advanced
+                    && let Err(err) = store.set_checkpoint(&entry.id, &next.to_json())
+                {
+                    eprintln!("sync {}: recording checkpoint failed: {err:#}", entry.id);
+                    persist_failed = true;
+                }
+                // An Ok return means every fetch landed (adapters propagate
+                // errors), so an unlimited walk of the right shape has just
+                // rebuilt the mirror: repos and feeds do so routinely,
+                // discourse only under `--full`.
+                let mirror_rebuilt = intent.limit.is_none()
+                    && match entry.kind {
+                        Kind::Repo | Kind::Feed => true,
+                        Kind::Discourse => intent.full,
+                    };
+                if mirror_absent
+                    && mirror_rebuilt
+                    && let Err(err) = store.set_mirror_absent(&entry.id, false)
+                {
+                    eprintln!("sync {}: clearing the mirror flag failed: {err:#}", entry.id);
+                    persist_failed = true;
+                }
                 if stats.changed() || stats.pruned > 0 {
                     outcome.changed.push(entry.id.clone());
+                }
+                if persist_failed {
+                    outcome.failed.push(entry.id.clone());
                 }
                 table.timed_row(&entry.id, &report::describe_sync(&stats), started.elapsed());
             }
@@ -484,6 +557,34 @@ fn sync_sources(
         }
     }
     outcome
+}
+
+/// The last known checkpoint for a source: the database row, or — once — the
+/// pre-M8 `data/<id>/sync.json`, imported and then deleted. The import
+/// persists before the file is removed, so an interruption between the two
+/// re-imports rather than losing the checkpoint. Missing or garbled either
+/// way reads as "nothing known", which costs a full walk and never skips work.
+fn load_checkpoint(store: &Store, source_id: &str, data_dir: &Path) -> anyhow::Result<SyncState> {
+    if let Some(json) = store.checkpoint(source_id)? {
+        return Ok(SyncState::from_json(&json));
+    }
+    let legacy_path = data_dir.join("sync.json");
+    let Ok(text) = fs::read_to_string(&legacy_path) else {
+        return Ok(SyncState::default());
+    };
+    let state = SyncState::from_json(&text);
+    if state != SyncState::default() {
+        store
+            .set_checkpoint(source_id, &state.to_json())
+            .with_context(|| format!("importing legacy checkpoint {}", legacy_path.display()))?;
+    }
+    if let Err(err) = fs::remove_file(&legacy_path) {
+        eprintln!(
+            "warn: imported {} but could not remove it: {err} — the database copy wins from now on",
+            legacy_path.display()
+        );
+    }
+    Ok(state)
 }
 
 /// Fail before anything can create the file at `db`.
@@ -853,8 +954,16 @@ fn index_with(
         // Prune index entries whose raw files disappeared (upstream
         // deletions/renames — sync already pruned the raw files). Only when
         // this source parsed cleanly: a failed file's documents are absent
-        // from seen_ids and must not read as deletions.
-        if counts.errors == 0 {
+        // from seen_ids and must not read as deletions. And never on a
+        // downloaded corpus, whose documents have no raw files at all —
+        // pruning there would read the entire source as deleted.
+        if store.mirror_absent(&entry.id)? {
+            eprintln!(
+                "index {}: raw mirror not local (downloaded corpus) — skipping the deletion \
+                 pass; `wikipethia sync --full --source {}` rebuilds the mirror",
+                entry.id, entry.id
+            );
+        } else if counts.errors == 0 {
             for id in store.doc_ids(Some(&entry.id))? {
                 if !seen_ids.contains(&id) {
                     store.delete_document(&id)?;
@@ -969,4 +1078,72 @@ fn index_raw_file(
         store.upsert(&docs)?
     };
     Ok((written, docs.len()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(watermark: &str) -> SyncState {
+        SyncState {
+            bumped_watermark: watermark.into(),
+            ..SyncState::default()
+        }
+    }
+
+    #[test]
+    fn a_legacy_sync_json_is_imported_once_and_deleted() {
+        let store = Store::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("sync.json");
+        fs::write(&legacy, state("2026-01-01T00:00:00.000Z").to_json()).unwrap();
+
+        let loaded = load_checkpoint(&store, "testforum", dir.path()).unwrap();
+        assert_eq!(loaded, state("2026-01-01T00:00:00.000Z"));
+        assert!(!legacy.exists(), "the imported file must not linger as a second truth");
+        assert_eq!(
+            store.checkpoint("testforum").unwrap(),
+            Some(state("2026-01-01T00:00:00.000Z").to_json())
+        );
+    }
+
+    #[test]
+    fn the_database_stays_canonical_over_a_reappearing_legacy_file() {
+        let store = Store::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        store
+            .set_checkpoint("testforum", &state("2026-02-02T00:00:00.000Z").to_json())
+            .unwrap();
+        // A restored backup drops an old sync.json back in place; it must
+        // neither be believed nor deleted — it was never imported.
+        let legacy = dir.path().join("sync.json");
+        fs::write(&legacy, state("2020-01-01T00:00:00.000Z").to_json()).unwrap();
+
+        let loaded = load_checkpoint(&store, "testforum", dir.path()).unwrap();
+        assert_eq!(loaded, state("2026-02-02T00:00:00.000Z"));
+        assert!(legacy.exists());
+    }
+
+    #[test]
+    fn no_checkpoint_anywhere_reads_as_nothing_known() {
+        let store = Store::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let loaded = load_checkpoint(&store, "testforum", dir.path()).unwrap();
+        assert_eq!(loaded, SyncState::default());
+        // A default state is not worth a row.
+        assert_eq!(store.checkpoint("testforum").unwrap(), None);
+    }
+
+    #[test]
+    fn a_garbled_legacy_file_imports_nothing_but_is_still_removed() {
+        let store = Store::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("sync.json");
+        fs::write(&legacy, "{ truncated").unwrap();
+
+        let loaded = load_checkpoint(&store, "testforum", dir.path()).unwrap();
+        assert_eq!(loaded, SyncState::default());
+        assert_eq!(store.checkpoint("testforum").unwrap(), None);
+        assert!(!legacy.exists(), "garbage is not a checkpoint and must not stay one");
+    }
 }

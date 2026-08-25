@@ -292,10 +292,17 @@ fn host(url: &str) -> &str {
     rest.split('/').next().unwrap_or(rest)
 }
 
+/// Where a source's raw files live. One definition shared by the adapter
+/// constructors and the checkpoint migration, so the layout cannot drift
+/// between them.
+pub fn data_dir(source_id: &str) -> PathBuf {
+    PathBuf::from("data").join(source_id)
+}
+
 /// The one place a manifest entry becomes a concrete adapter. New kinds add
 /// a variant and an arm here.
 pub fn adapter_for(source: &Source) -> Box<dyn Adapter> {
-    let data_dir = PathBuf::from("data").join(&source.id);
+    let data_dir = data_dir(&source.id);
     match &source.spec {
         SourceSpec::Discourse => Box::new(discourse_adapter(source)),
         SourceSpec::Repo {
@@ -328,7 +335,7 @@ pub fn discourse_adapter(source: &Source) -> DiscourseAdapter {
     DiscourseAdapter {
         source_id: source.id.clone(),
         base_url: source.url.clone(),
-        data_dir: PathBuf::from("data").join(&source.id),
+        data_dir: data_dir(&source.id),
     }
 }
 

@@ -397,3 +397,30 @@ fn refuses_a_corpus_stamped_by_a_newer_schema() {
     let err = refused(Store::open_existing(&db));
     assert!(err.contains("newer wikipethia"), "{err}");
 }
+
+/// Checkpoints and the mirror flag live in `meta` behind typed accessors —
+/// prefixed keys, so they can never read or clobber `writer.lock`.
+#[test]
+fn checkpoints_and_mirror_flags_roundtrip_in_meta() {
+    let store = Store::open_in_memory().unwrap();
+    assert_eq!(store.checkpoint("ethresearch").unwrap(), None);
+    store.set_checkpoint("ethresearch", r#"{"bumped_watermark":"2026-01-01"}"#).unwrap();
+    assert_eq!(
+        store.checkpoint("ethresearch").unwrap().as_deref(),
+        Some(r#"{"bumped_watermark":"2026-01-01"}"#)
+    );
+    store.set_checkpoint("ethresearch", r#"{"bumped_watermark":"2026-02-02"}"#).unwrap();
+    assert_eq!(
+        store.checkpoint("ethresearch").unwrap().as_deref(),
+        Some(r#"{"bumped_watermark":"2026-02-02"}"#)
+    );
+
+    assert!(!store.mirror_absent("eips").unwrap());
+    store.set_mirror_absent("eips", true).unwrap();
+    assert!(store.mirror_absent("eips").unwrap());
+    store.set_mirror_absent("eips", false).unwrap();
+    assert!(!store.mirror_absent("eips").unwrap());
+
+    // A source id can never alias the lock row.
+    assert_eq!(store.checkpoint("writer.lock").unwrap(), None);
+}

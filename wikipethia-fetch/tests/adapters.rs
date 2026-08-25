@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 use std::rc::Rc;
 
-use wikipethia_fetch::{Adapter, FeedAdapter, FetchError, Fetcher, RepoAdapter, SyncIntent};
+use wikipethia_fetch::{Adapter, FeedAdapter, FetchError, Fetcher, RepoAdapter, SyncIntent, SyncState};
 use serde_json::Value;
 
 /// A plain sync: no cap, no widening, no forced refetch. What the CLI passes
@@ -108,7 +108,7 @@ fn repo_sync_unpacks_filters_and_dates() {
     let adapter = repo_adapter(dir.path(), &["EIPS", "specs"]);
     let (mut web, requests) = repo_web();
 
-    let stats = adapter.sync(&mut web, &everything()).unwrap();
+    let (stats, _) = adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
     assert_eq!(stats.fetched, 2, "two wanted .md files in the tarball");
 
     // Prefix stripped, paths filter applied: README.md and the .svg are out.
@@ -127,7 +127,7 @@ fn repo_sync_unpacks_filters_and_dates() {
 
     // Resync: byte-identical files are skipped, no atom refetch.
     let (mut web2, requests2) = repo_web();
-    let stats = adapter.sync(&mut web2, &everything()).unwrap();
+    let (stats, _) = adapter.sync(&mut web2, &everything(), &SyncState::default()).unwrap();
     assert_eq!(stats.fetched, 0);
     assert_eq!(stats.skipped, 2);
     assert!(requests2.borrow().iter().all(|u| *u != SPEC_ATOM));
@@ -138,13 +138,13 @@ fn repo_sync_prunes_files_removed_upstream() {
     let dir = tempfile::tempdir().unwrap();
     let adapter = repo_adapter(dir.path(), &["EIPS", "specs"]);
     let (mut web, _) = repo_web();
-    adapter.sync(&mut web, &everything()).unwrap();
+    adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
 
     // A file that exists locally but not in the (next) tarball disappears.
     let stray = dir.path().join("files/EIPS/eip-9999.md");
     fs::write(&stray, "---\neip: 9999\ncreated: 2020-01-01\n---\ngone").unwrap();
     let (mut web2, _) = repo_web();
-    adapter.sync(&mut web2, &everything()).unwrap();
+    adapter.sync(&mut web2, &everything(), &SyncState::default()).unwrap();
     assert!(!stray.exists(), "upstream-removed file must be pruned");
 }
 
@@ -153,7 +153,7 @@ fn a_tarball_matching_nothing_refuses_to_wipe_the_local_mirror() {
     let dir = tempfile::tempdir().unwrap();
     let adapter = repo_adapter(dir.path(), &["EIPS", "specs"]);
     let (mut web, _) = repo_web();
-    adapter.sync(&mut web, &everything()).unwrap();
+    adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
     assert!(dir.path().join("files/EIPS/eip-1.md").exists());
 
     // Upstream restructures under the SAME configured paths: the new
@@ -164,7 +164,7 @@ fn a_tarball_matching_nothing_refuses_to_wipe_the_local_mirror() {
     let mut web2 = FakeWeb::default();
     web2.bytes
         .insert(TARBALL.into(), fixture_bytes("repo_restructured.tar.gz"));
-    let err = adapter.sync(&mut web2, &everything()).unwrap_err();
+    let err = adapter.sync(&mut web2, &everything(), &SyncState::default()).unwrap_err();
     let msg = format!("{err}");
     assert!(msg.contains("matched 0 files"), "{msg}");
     assert!(msg.contains("paths"), "error must point at the likely cause: {msg}");
@@ -180,7 +180,7 @@ fn repo_parse_frontmatter_and_spec_paths() {
     let dir = tempfile::tempdir().unwrap();
     let adapter = repo_adapter(dir.path(), &["EIPS", "specs"]);
     let (mut web, _) = repo_web();
-    adapter.sync(&mut web, &everything()).unwrap();
+    adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
 
     // EIP path: everything from frontmatter.
     let docs = adapter
@@ -215,7 +215,7 @@ fn repo_raw_files_walks_recursively_sorted() {
     let dir = tempfile::tempdir().unwrap();
     let adapter = repo_adapter(dir.path(), &["EIPS", "specs"]);
     let (mut web, _) = repo_web();
-    adapter.sync(&mut web, &everything()).unwrap();
+    adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
     let names: Vec<String> = adapter
         .raw_files()
         .unwrap()
@@ -253,7 +253,7 @@ fn feed_sync_fetches_posts_and_checkpoints() {
         .insert("https://vitalik.eth.limo/general/2026/05/18/fv.html".into(), post);
     let requests = Rc::clone(&web.requests);
 
-    let stats = adapter.sync(&mut web, &everything()).unwrap();
+    let (stats, _) = adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
     assert_eq!(stats.fetched, 2);
     assert!(dir.path().join("feed.xml").exists());
     assert!(dir.path().join("posts/general-2026-05-18-fv.json").exists());
@@ -266,7 +266,7 @@ fn feed_sync_fetches_posts_and_checkpoints() {
         .unwrap()
         .modified()
         .unwrap();
-    let stats = adapter.sync(&mut web, &everything()).unwrap();
+    let (stats, _) = adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
     assert_eq!(stats.fetched, 0);
     assert_eq!(stats.updated, 0);
     assert_eq!(stats.skipped, 2);
@@ -294,14 +294,14 @@ fn feed_sync_picks_up_an_article_edited_after_publication() {
     let post = fixture_text("post_vitalik.html");
     web.texts.insert(OBFUSCATION.into(), post.clone());
     web.texts.insert(FV.into(), post.clone());
-    adapter.sync(&mut web, &everything()).unwrap();
+    adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
 
     // The author fixes a typo. Nothing in the feed changes: no per-item
     // timestamp exists to move, and the file is still right there on disk —
     // which is exactly why presence-means-done froze corrections out.
     web.texts
         .insert(FV.into(), post.replace("Provers are slow", "Provers are fast"));
-    let stats = adapter.sync(&mut web, &everything()).unwrap();
+    let (stats, _) = adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
     assert_eq!(stats.updated, 1, "the edited article");
     assert_eq!(stats.skipped, 1, "the untouched one");
     assert_eq!(stats.fetched, 0, "neither article is new");
@@ -322,7 +322,7 @@ fn feed_full_content_description_skips_the_post_fetch() {
         fixture_text("feed_efblog.xml"),
     );
     // Deliberately NO fixture for the post URL: a fetch attempt would error.
-    let stats = adapter.sync(&mut web, &everything()).unwrap();
+    let (stats, _) = adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
     assert_eq!(stats.fetched, 1);
 
     // And the wrapper parses into a document with the feed's metadata.
@@ -352,7 +352,7 @@ fn feed_parse_extracts_article_text_from_fetched_html() {
     );
     web.texts
         .insert("https://vitalik.eth.limo/general/2026/05/18/fv.html".into(), post);
-    adapter.sync(&mut web, &everything()).unwrap();
+    adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
 
     let docs = adapter
         .parse_file(&dir.path().join("posts/general-2026-05-18-fv.json"))
@@ -401,13 +401,13 @@ fn interrupted_dates_pass_resumes_from_disk_state() {
     let dir = tempfile::tempdir().unwrap();
     let adapter = repo_adapter(dir.path(), &["EIPS", "specs"]);
     let (mut web, _) = repo_web();
-    adapter.sync(&mut web, &everything()).unwrap();
+    adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
 
     // Simulate an interruption having lost the dates file: files exist and
     // are byte-identical, but the date is gone.
     fs::remove_file(dir.path().join("dates.json")).unwrap();
     let (mut web2, requests2) = repo_web();
-    let stats = adapter.sync(&mut web2, &everything()).unwrap();
+    let (stats, _) = adapter.sync(&mut web2, &everything(), &SyncState::default()).unwrap();
     assert_eq!(stats.fetched, 0, "files unchanged");
     let atom_hits = requests2.borrow().iter().filter(|u| *u == SPEC_ATOM).count();
     assert_eq!(atom_hits, 1, "the dateless spec file must be re-dated");
@@ -431,7 +431,7 @@ fn a_dead_article_link_is_skipped_not_fatal() {
         "https://vitalik.eth.limo/general/2026/05/18/fv.html".into(),
         fixture_text("post_vitalik.html"),
     );
-    let stats = adapter.sync(&mut web, &everything()).unwrap();
+    let (stats, _) = adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
     assert_eq!(stats.fetched, 1, "the live item must not be starved");
     assert!(dir.path().join("posts/general-2026-05-18-fv.json").exists());
     assert!(!dir
@@ -445,15 +445,16 @@ fn repo_sync_skips_the_tarball_when_the_head_commit_has_not_moved() {
     let dir = tempfile::tempdir().unwrap();
     let adapter = repo_adapter(dir.path(), &["EIPS", "specs"]);
     let (mut web, requests) = repo_web_with_head();
-    adapter.sync(&mut web, &everything()).unwrap();
+    let (_, advanced) = adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
     assert!(tarball_requested(&requests), "the first sync must fetch it");
 
     // Nothing has been pushed. The tarball is the most expensive request in a
     // routine update — six minutes for EIPs — and it would teach nothing.
     let (mut web2, requests2) = repo_web_with_head();
-    let stats = adapter.sync(&mut web2, &everything()).unwrap();
+    let (stats, advanced) = adapter.sync(&mut web2, &everything(), &advanced.unwrap()).unwrap();
     assert!(!tarball_requested(&requests2), "unchanged head, no download");
     assert_eq!(stats, wikipethia_fetch::SyncStats::default());
+    assert!(advanced.is_none(), "a skipped sync claims nothing");
     assert!(dir.path().join("files/EIPS/eip-1.md").exists(), "and nothing is lost");
 }
 
@@ -461,8 +462,8 @@ fn repo_sync_skips_the_tarball_when_the_head_commit_has_not_moved() {
 fn a_paths_change_forces_a_resync_even_when_upstream_stands_still() {
     let dir = tempfile::tempdir().unwrap();
     let (mut web, _) = repo_web_with_head();
-    repo_adapter(dir.path(), &["EIPS"])
-        .sync(&mut web, &everything())
+    let (_, advanced) = repo_adapter(dir.path(), &["EIPS"])
+        .sync(&mut web, &everything(), &SyncState::default())
         .unwrap();
     assert!(!dir.path().join("files/specs/phase0/beacon-chain.md").exists());
 
@@ -470,8 +471,8 @@ fn a_paths_change_forces_a_resync_even_when_upstream_stands_still() {
     // a SHA check alone would skip the download and the new path would stay
     // missing until someone else happened to push.
     let (mut web2, requests2) = repo_web_with_head();
-    let stats = repo_adapter(dir.path(), &["EIPS", "specs"])
-        .sync(&mut web2, &everything())
+    let (stats, _) = repo_adapter(dir.path(), &["EIPS", "specs"])
+        .sync(&mut web2, &everything(), &advanced.unwrap())
         .unwrap();
     assert!(tarball_requested(&requests2), "the config changed, so the tree must be re-read");
     assert_eq!(stats.fetched, 1, "the newly wanted file");
@@ -483,14 +484,14 @@ fn force_overrides_the_unchanged_head_shortcut() {
     let dir = tempfile::tempdir().unwrap();
     let adapter = repo_adapter(dir.path(), &["EIPS", "specs"]);
     let (mut web, _) = repo_web_with_head();
-    adapter.sync(&mut web, &everything()).unwrap();
+    let (_, advanced) = adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
 
     let (mut web2, requests2) = repo_web_with_head();
     let forced = SyncIntent {
         force: true,
         ..SyncIntent::default()
     };
-    adapter.sync(&mut web2, &forced).unwrap();
+    adapter.sync(&mut web2, &forced, &advanced.unwrap()).unwrap();
     assert!(tarball_requested(&requests2), "--force must reach past the checkpoint");
 }
 
@@ -532,13 +533,13 @@ fn a_routine_feed_sync_only_rechecks_recent_items() {
         );
     }
     let requests = Rc::clone(&web.requests);
-    adapter.sync(&mut web, &everything()).unwrap();
+    adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
     assert_eq!(fs::read_dir(dir.path().join("posts")).unwrap().count(), 42);
 
     // Second run: only the newest 30 are re-read. The two real articles sit
     // at positions 40 and 41 and cost nothing.
     requests.borrow_mut().clear();
-    let stats = adapter.sync(&mut web, &everything()).unwrap();
+    let (stats, _) = adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
     assert_eq!(stats.skipped, 42, "everything is unchanged either way");
     assert_eq!(requests.borrow().len(), 31, "the feed plus 30 articles");
     assert!(
@@ -553,7 +554,7 @@ fn a_routine_feed_sync_only_rechecks_recent_items() {
         full: true,
         ..SyncIntent::default()
     };
-    adapter.sync(&mut web, &full).unwrap();
+    adapter.sync(&mut web, &full, &SyncState::default()).unwrap();
     assert!(requests.borrow().iter().any(|u| u == FV));
 }
 
@@ -565,7 +566,7 @@ fn a_full_content_feed_still_notices_corrections_to_old_articles() {
     let mut web = FakeWeb::default();
     web.texts
         .insert("https://blog.ethereum.org/en/feed.xml".into(), feed.clone());
-    adapter.sync(&mut web, &everything()).unwrap();
+    adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
 
     // Pad the feed so the real item sits well past the recheck window. For a
     // feed that carries whole articles in its descriptions, comparing it
@@ -593,7 +594,7 @@ fn a_full_content_feed_still_notices_corrections_to_old_articles() {
     web2.texts
         .insert("https://blog.ethereum.org/en/feed.xml".into(), corrected);
     let requests = Rc::clone(&web2.requests);
-    let stats = adapter.sync(&mut web2, &everything()).unwrap();
+    let (stats, _) = adapter.sync(&mut web2, &everything(), &SyncState::default()).unwrap();
     assert_eq!(stats.updated, 1, "the corrected article");
     assert_eq!(
         requests.borrow().len(),

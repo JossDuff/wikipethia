@@ -16,7 +16,7 @@ use serde_json::{Map, Value, json};
 use crate::error::FetchError;
 use crate::html::html_to_text;
 use crate::sync::{
-    Fetcher, SyncIntent, SyncStats, progress_note, write_atomic, write_atomic_bytes,
+    Fetcher, SyncIntent, SyncState, SyncStats, progress_note, write_atomic, write_atomic_bytes,
 };
 
 /// How far down a feed a routine sync looks for edits. Feeds are newest
@@ -216,7 +216,15 @@ impl crate::Adapter for FeedAdapter {
     /// corrections realistically land, and `--full` compares the lot. An item
     /// with no local copy is always fetched wherever it sits in the feed, so
     /// this bounds edit detection only — never discovery.
-    fn sync(&self, fetcher: &mut dyn Fetcher, opts: &SyncIntent) -> Result<SyncStats, FetchError> {
+    fn sync(
+        &self,
+        fetcher: &mut dyn Fetcher,
+        opts: &SyncIntent,
+        // Feeds keep no checkpoint (see the module note on stored state):
+        // the recheck window plus stored-wrapper comparison is the whole of
+        // their incrementality, so the state passes through untouched.
+        _state: &SyncState,
+    ) -> Result<(SyncStats, Option<SyncState>), FetchError> {
         let limit = opts.limit;
         let feed_xml = fetcher.get_text(&self.feed_url)?;
         fs::create_dir_all(self.data_dir.join("posts")).map_err(|source| FetchError::Io {
@@ -361,7 +369,7 @@ impl crate::Adapter for FeedAdapter {
         if failed > 0 {
             eprintln!("warn: {failed} item(s) skipped on dead links — they retry next sync");
         }
-        Ok(stats)
+        Ok((stats, None))
     }
 
     fn parse(&self, raw: &Value) -> Result<Vec<Document>, CoreError> {

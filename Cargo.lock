@@ -3335,6 +3335,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "tempfile",
  "toml",
  "wikipethia-core",
  "wikipethia-embed",

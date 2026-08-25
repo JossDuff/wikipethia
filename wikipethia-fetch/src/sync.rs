@@ -67,12 +67,17 @@ impl<C: Clock> Fetcher for HttpClient<C> {
     }
 }
 
-/// Per-source sync checkpoint, at `data/<id>/sync.json`.
+/// Per-source sync checkpoint. Fetch owns the format; the caller owns
+/// persistence — the CLI stores it in the corpus database, which is how a
+/// published corpus carries its own high-water marks to a downloader.
 ///
-/// One file per source, shared by every adapter kind: each writes the fields
+/// One value per source, shared by every adapter kind: each reads the fields
 /// its own walk needs and ignores the rest, so a new kind's checkpoint is a
-/// new field rather than a new file. Empty strings mean "not known yet" and
+/// new field rather than a new value. Empty strings mean "not known yet" and
 /// always resolve to doing the full, correct amount of work.
+///
+/// Adapters receive the last known state and return the advanced one — or
+/// `None` when the walk earned no advance. They never persist it themselves.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SyncState {
@@ -89,25 +94,17 @@ pub struct SyncState {
 }
 
 impl SyncState {
-    fn path(data_dir: &Path) -> PathBuf {
-        data_dir.join("sync.json")
+    /// Infallible on purpose: a missing, truncated, or otherwise garbled
+    /// checkpoint reads as "nothing known", which costs a full walk and can
+    /// never skip work. The opposite failure — trusting a garbled watermark —
+    /// would silently freeze the corpus, and nothing downstream would report
+    /// an error.
+    pub fn from_json(text: &str) -> Self {
+        serde_json::from_str(text).unwrap_or_default()
     }
 
-    /// Infallible on purpose, mirroring `RepoAdapter::load_dates`: a missing,
-    /// truncated, or otherwise unreadable checkpoint reads as "nothing known",
-    /// which costs a full walk and can never skip work. The opposite failure —
-    /// trusting a garbled watermark — would silently freeze the corpus, and
-    /// nothing downstream would report an error.
-    pub fn load(data_dir: &Path) -> Self {
-        fs::read_to_string(Self::path(data_dir))
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
-    }
-
-    pub fn save(&self, data_dir: &Path) -> Result<(), FetchError> {
-        let bytes = serde_json::to_vec_pretty(self)?;
-        write_atomic_bytes(&Self::path(data_dir), &bytes)
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).expect("three strings always serialize")
     }
 }
 
@@ -217,14 +214,17 @@ impl SyncStats {
     }
 }
 
-pub fn sync(fetcher: &mut dyn Fetcher, opts: &SyncOptions) -> Result<SyncStats, FetchError> {
+pub fn sync(
+    fetcher: &mut dyn Fetcher,
+    opts: &SyncOptions,
+    state: &SyncState,
+) -> Result<(SyncStats, Option<SyncState>), FetchError> {
     let topics_dir = opts.data_dir.join("topics");
     fs::create_dir_all(&topics_dir).map_err(|source| FetchError::Io {
         path: topics_dir.clone(),
         source,
     })?;
 
-    let mut state = SyncState::load(&opts.data_dir);
     // `--full` reads the checkpoint but declines to act on it, so a walk can
     // be widened without throwing away what the last one learned.
     let walk_everything = opts.full || opts.full_listings;
@@ -343,11 +343,12 @@ pub fn sync(fetcher: &mut dyn Fetcher, opts: &SyncOptions) -> Result<SyncStats, 
     // forum, so recording it would tell the next run that everything below is
     // covered — when in fact the walk never reached it. Advance only on a walk
     // that ended on its own terms, and never backwards.
-    if complete && opts.limit.is_none() && high_water > state.bumped_watermark {
-        state.bumped_watermark = high_water;
-        state.save(&opts.data_dir)?;
-    }
-    Ok(stats)
+    let advanced = (complete && opts.limit.is_none() && high_water > state.bumped_watermark)
+        .then(|| SyncState {
+            bumped_watermark: high_water,
+            ..state.clone()
+        });
+    Ok((stats, advanced))
 }
 
 /// The stored fields that say whether upstream has moved past a local copy.
