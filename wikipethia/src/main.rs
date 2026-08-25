@@ -662,6 +662,20 @@ fn status(db: &Path) -> anyhow::Result<()> {
     println!();
 
     let stats = store.source_stats()?;
+    // Serving is unaffected, but updates behave differently (incremental
+    // walks, no deletion pruning) — say so here rather than letting the
+    // first `update`'s stderr be the only place it is ever explained.
+    let unmirrored = stats
+        .iter()
+        .filter(|s| store.mirror_absent(&s.id).unwrap_or(false))
+        .count();
+    if unmirrored > 0 {
+        println!(
+            "mirror     not local for {unmirrored} source{} (downloaded corpus) — updates stay \
+             incremental; `wikipethia sync --full --source <id>` rebuilds one",
+            report::plural(unmirrored)
+        );
+    }
     if stats.is_empty() {
         println!("no sources — run `wikipethia build`");
     } else {
