@@ -330,6 +330,19 @@ impl Store {
         Ok(Self { conn, has_vec })
     }
 
+    /// Write a self-contained snapshot of this corpus to `dest`: WAL fully
+    /// absorbed (no `-wal`/`-shm` sidecars), free pages dropped,
+    /// `user_version` preserved. The publishable form of the database —
+    /// `open_read_only`'s `immutable=1` path reads only the main file, so a
+    /// straight copy of a live WAL database can silently miss recent writes.
+    ///
+    /// `dest` must not exist; SQLite refuses to vacuum into an existing file.
+    pub fn vacuum_into(&self, dest: &Path) -> Result<(), CoreError> {
+        self.conn
+            .execute("VACUUM INTO ?1", [dest.to_string_lossy().as_ref()])?;
+        Ok(())
+    }
+
     pub fn upsert(&mut self, docs: &[Document]) -> Result<usize, CoreError> {
         self.upsert_with(docs, false)
     }

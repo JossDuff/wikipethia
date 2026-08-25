@@ -9,6 +9,7 @@
 mod agent_eval;
 mod eval;
 mod manifest;
+mod publish;
 mod report;
 
 use std::fs;
@@ -132,6 +133,25 @@ enum Command {
         /// Database file to inspect.
         #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
         db: PathBuf,
+    },
+    /// Snapshot the corpus and publish it as a GitHub release, so adopters
+    /// download in minutes what a build spends hours (and a full polite
+    /// crawl) producing. Maintainer command: runs `gh` locally, no CI.
+    Publish {
+        /// Database file to snapshot.
+        #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
+        db: PathBuf,
+        /// Release tag. Defaults to corpus-YYYY-MM-DD (today, UTC); a
+        /// second snapshot the same day needs an explicit tag.
+        #[arg(long)]
+        tag: Option<String>,
+        /// Directory the snapshot artifacts are written to.
+        #[arg(long, default_value = "dist")]
+        out: PathBuf,
+        /// Do everything local — snapshot, compress, hash, release notes —
+        /// print the `gh` command, and stop before running it.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Report near-duplicate documents across sources (e.g. a blog post
     /// cross-posted to a forum). Requires embeddings.
@@ -260,6 +280,12 @@ fn main() -> anyhow::Result<()> {
         } => dedup(&db, threshold, source.as_deref(), within_source),
         Command::Search { query, db, limit } => search(&query, &db, limit),
         Command::Status { db } => status(&db),
+        Command::Publish { db, tag, out, dry_run } => {
+            // Existence before the lock, same reason as Embed below: the
+            // lock's own open would create an empty file at a typo'd path.
+            corpus_exists(&db)?;
+            publish::run(&publish::Config { db, tag, out, dry_run })
+        }
         Command::Embed { db, force } => {
             // Existence first: `WriterLock::acquire` opens the path with
             // `Connection::open`, which CREATES it — so taking the lock before
