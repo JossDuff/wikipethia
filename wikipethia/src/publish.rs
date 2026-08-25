@@ -18,6 +18,8 @@ use wikipethia_core::store::SourceStats;
 use wikipethia_core::{SCHEMA_VERSION, Store, WriterLock};
 use wikipethia_embed::{DIM, MODEL_ID};
 
+use crate::manifest::{Kind, Manifest};
+
 /// Best ratio zstd offers without the long-window flags. Compression runs
 /// once per release on the maintainer's machine; every downloader pays the
 /// transfer, so the trade is lopsided in favor of spending minutes here.
@@ -38,6 +40,21 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
     let store = Store::open_existing(&cfg.db)
         .with_context(|| format!("opening {}", cfg.db.display()))?;
     let (stats, documents, vectors) = preflight(&store)?;
+    // The checkpoints ARE the product, as much as the documents: a snapshot
+    // without forum watermarks sends every downloader's first update on the
+    // full ~7,100-request recrawl publishing exists to prevent — verified
+    // the expensive way against a checkpoint-less snapshot. Repos and feeds
+    // are exempt: their refetch cost is mirror-driven, not checkpoint-driven.
+    // (This is also why publish runs from the clone: it reads sources.toml.)
+    for source in Manifest::load()?.sources.iter().filter(|s| s.kind == Kind::Discourse) {
+        if store.checkpoint(&source.id)?.is_none() {
+            bail!(
+                "no sync checkpoint recorded for {} — run `wikipethia update` once before \
+                 publishing (checkpoints live in the database now and migrate on first sync)",
+                source.id
+            );
+        }
+    }
 
     let tag = match &cfg.tag {
         Some(tag) => tag.clone(),
