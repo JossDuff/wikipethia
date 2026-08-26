@@ -3,10 +3,11 @@
 //! subcommand — this crate is a library and builds no binary of its own.
 //!
 //! In stdio mode stdout carries the protocol — every diagnostic in this
-//! crate must go to stderr, in both modes, for consistency. There is no
-//! `println!` anywhere in this crate; keep it that way.
+//! crate must go to stderr, in both modes, for consistency. Enforced, not
+//! just stated: clippy's `print_stdout` lint is denied crate-wide
+//! (`[lints]` in Cargo.toml), so a stray `println!` fails CI.
 
-pub mod tools;
+mod tools;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -28,27 +29,10 @@ use tools::CorpusServer;
 /// shutdown signal arrives (HTTP). Synchronous on purpose: the CLI binary
 /// is synchronous, and the tokio runtime lives entirely inside this call
 /// so the crawl and index paths never run under one by accident.
+///
+/// Flag validation (--allow-host needs --http, bare hostnames only) is
+/// clap's job in the CLI — this function trusts its arguments.
 pub fn run(db: PathBuf, http: Option<SocketAddr>, allow_hosts: Vec<String>) -> anyhow::Result<()> {
-    if http.is_none() && !allow_hosts.is_empty() {
-        anyhow::bail!("--allow-host only applies to --http mode");
-    }
-    for host in &allow_hosts {
-        // rmcp matches port-less entries against any port; a host:port
-        // value would build an entry that matches nothing and every
-        // client would 403 with no output.
-        if host.contains(':') || host.contains('/') {
-            anyhow::bail!(
-                "--allow-host takes a bare hostname (got {host:?}) — \
-                 no port, no scheme; it matches any port"
-            );
-        }
-    }
-    // The standalone binary read CORPUS_DB as a pre-rename fallback; the
-    // subcommand does not (no other subcommand ever did), but a set-and-
-    // ignored variable should not fail silently.
-    if std::env::var_os("CORPUS_DB").is_some() && std::env::var_os("WIKIPETHIA_DB").is_none() {
-        eprintln!("wikipethia mcp: CORPUS_DB is no longer read — set WIKIPETHIA_DB or pass --db");
-    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -119,7 +103,8 @@ async fn serve_http(
     // name in the list, so allow the bind address and any --allow-host
     // names (e.g. a Tailscale hostname) on top of the loopback defaults.
     // Port-less entries match any port in rmcp's matcher, so bare names
-    // are all that is needed (`run` rejects host:port values).
+    // are all that is needed (the CLI's --allow-host parser rejects
+    // host:port values).
     let mut hosts = vec!["localhost".to_string(), "127.0.0.1".to_string(), "::1".to_string()];
     hosts.push(bind.ip().to_string());
     hosts.extend(extra_hosts);

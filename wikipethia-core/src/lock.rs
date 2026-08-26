@@ -14,7 +14,7 @@
 //! chunk's content before inserting its vector and drops the ones that
 //! moved.
 //!
-//! Readers never take it: `wikipethia-mcp`'s queries must not queue behind a
+//! Readers never take it: `wikipethia mcp`'s queries must not queue behind a
 //! multi-hour embed.
 
 use std::path::Path;

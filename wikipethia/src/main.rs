@@ -29,6 +29,10 @@ use report::{Run, Table};
 #[command(
     name = "wikipethia",
     version,
+    // "which build am I running" is the first question when an MCP server
+    // misbehaves, and the client launches the subcommand — so `wikipethia
+    // mcp --version` must answer, not error.
+    propagate_version = true,
     about = "A curated local corpus of Ethereum research and standards"
 )]
 struct Cli {
@@ -144,12 +148,13 @@ enum Command {
         db: PathBuf,
         /// Serve streamable HTTP on this bind address (like 127.0.0.1:8642)
         /// instead of stdio.
-        #[arg(long, value_name = "ADDR")]
+        #[arg(long, value_name = "ADDR", value_parser = parse_bind_addr)]
         http: Option<SocketAddr>,
         /// Extra hostname to accept in HTTP mode on top of loopback and the
         /// bind address (e.g. a Tailscale name). Bare hostname, no port —
         /// it matches any port. Repeatable.
-        #[arg(long = "allow-host", value_name = "NAME")]
+        #[arg(long = "allow-host", value_name = "NAME", requires = "http",
+              value_parser = parse_allow_host)]
         allow_host: Vec<String>,
     },
     /// Snapshot the corpus and publish it as a GitHub release, so adopters
@@ -237,6 +242,26 @@ enum Command {
         #[arg(long)]
         regrade: Option<PathBuf>,
     },
+}
+
+/// SocketAddr's own parse error ("invalid socket address syntax") gives no
+/// hint that hostnames don't qualify — and `localhost:8642` is the single
+/// most likely thing a user types.
+fn parse_bind_addr(s: &str) -> Result<SocketAddr, String> {
+    s.parse()
+        .map_err(|e| format!("needs a bind address like 127.0.0.1:8642, not a hostname: {e}"))
+}
+
+/// rmcp matches port-less allowlist entries against any port; a host:port
+/// value would build an entry that matches nothing and every client would
+/// 403 with no output.
+fn parse_allow_host(s: &str) -> Result<String, String> {
+    if s.contains(':') || s.contains('/') {
+        return Err(format!(
+            "takes a bare hostname (got {s:?}) — no port, no scheme; it matches any port"
+        ));
+    }
+    Ok(s.to_string())
 }
 
 fn main() -> anyhow::Result<()> {

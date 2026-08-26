@@ -5,7 +5,7 @@
 //! 1. **stdout is results, stderr is narration.** A summary line goes to
 //!    stdout; per-item progress, warnings, and heartbeats go to stderr. So
 //!    `wikipethia update > log` keeps the shape of the run and leaves the chatter
-//!    on the terminal, and `wikipethia-mcp`'s protocol-only-stdout discipline has
+//!    on the terminal, and `wikipethia mcp`'s protocol-only-stdout discipline has
 //!    an analogue here.
 //! 2. **Nothing is printed for a no-op.** A routine run once emitted one
 //!    "already on disk" line per topic — thousands of them, none of them

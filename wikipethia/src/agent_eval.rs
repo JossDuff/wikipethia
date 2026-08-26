@@ -11,7 +11,7 @@
 //! functions below are unit-tested; the runner is exercised by running it.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -497,10 +497,21 @@ fn probe_server(cmd: &mut Command, timeout: Duration) -> anyhow::Result<()> {
     let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
-        .context("spawning wikipethia mcp for the pre-sweep probe")?;
-    child
+        .context("spawning `wikipethia mcp` for the pre-sweep probe")?;
+    // Captured, not nulled: when the child is a binary without the `mcp`
+    // subcommand (a stale build), it dies before reading stdin and its
+    // stderr is the only thing naming the real cause.
+    let stderr = child.stderr.take().expect("piped stderr");
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = String::new();
+        BufReader::new(stderr).read_to_string(&mut buf).ok();
+        buf
+    });
+    // Not `?`: a dead-on-arrival child surfaces here as a bare broken pipe,
+    // and the stderr gathered below diagnoses it better than EPIPE does.
+    let sent = child
         .stdin
         .take()
         .expect("piped stdin")
@@ -508,7 +519,8 @@ fn probe_server(cmd: &mut Command, timeout: Duration) -> anyhow::Result<()> {
             b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\
               \"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\
               \"clientInfo\":{\"name\":\"agent-eval-probe\",\"version\":\"0\"}}}\n",
-        )?;
+        )
+        .is_ok();
     let stdout = child.stdout.take().expect("piped stdout");
     let reader = std::thread::spawn(move || {
         BufReader::new(stdout).lines().next().and_then(Result::ok)
@@ -518,18 +530,31 @@ fn probe_server(cmd: &mut Command, timeout: Duration) -> anyhow::Result<()> {
         std::thread::sleep(Duration::from_millis(100));
     }
     // Kill unconditionally: on success the probe is done with the server;
-    // on deadline this EOFs stdout so the join below returns promptly.
+    // on deadline this EOFs both pipes so the joins below return promptly.
     child.kill().ok();
     child.wait().ok();
     let first = reader.join().expect("probe reader");
-    if !first.is_some_and(|l| l.contains("serverInfo")) {
-        bail!(
-            "the configured wikipethia server failed its initialize handshake — \
-             fix this before paid sessions run (check the binary, --db, and the \
-             fastembed cache)"
-        );
+    if sent && first.is_some_and(|l| l.contains("serverInfo")) {
+        return Ok(());
     }
-    Ok(())
+    let stderr_text = stderr_reader.join().expect("probe stderr reader");
+    let stderr_text = stderr_text.trim();
+    // The tail carries the exit reason; a warning-heavy healthy start
+    // that then hangs can push it past a screenful.
+    let mut tail_start = stderr_text.len().saturating_sub(2000);
+    while !stderr_text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    bail!(
+        "the configured wikipethia server failed its initialize handshake — \
+         fix this before paid sessions run (check the binary — a stale build \
+         has no `mcp` subcommand — plus --db and the fastembed cache).{}",
+        if stderr_text.is_empty() {
+            " The server printed nothing to stderr.".to_string()
+        } else {
+            format!("\n\nserver stderr:\n{}", &stderr_text[tail_start..])
+        }
+    );
 }
 
 enum StreamEvent {
@@ -682,6 +707,30 @@ fn thread_prefix(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A child that dies before the handshake (the stale-binary case: a
+    /// `wikipethia` without the `mcp` subcommand) must surface its own
+    /// stderr, not a bare broken pipe.
+    #[cfg(unix)]
+    #[test]
+    fn probe_failure_reports_the_childs_stderr() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo \"error: unrecognized subcommand 'mcp'\" >&2; exit 2"]);
+        let err = probe_server(&mut cmd, Duration::from_secs(5)).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unrecognized subcommand"), "got: {msg}");
+        assert!(msg.contains("stale build"), "got: {msg}");
+    }
+
+    /// The healthy path is indifferent to stderr chatter — warnings must
+    /// not fail the probe.
+    #[cfg(unix)]
+    #[test]
+    fn probe_success_ignores_stderr_chatter() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo 'a warning' >&2; echo '{\"serverInfo\":{}}'; sleep 5"]);
+        probe_server(&mut cmd, Duration::from_secs(5)).unwrap();
+    }
 
     fn required(urls: &[&str]) -> ExpectedUrls {
         ExpectedUrls {
