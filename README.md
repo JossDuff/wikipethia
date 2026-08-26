@@ -25,7 +25,6 @@ Needs Rust (stable, 2024 edition) and ~1.5GB of disk.
 
 ```bash
 git clone https://github.com/JossDuff/wikipethia && cd wikipethia
-# One binary: syncs the above sources, builds the corpus, and serves it over MCP
 cargo install --path wikipethia
 ```
 
@@ -33,48 +32,53 @@ That puts `wikipethia` on your PATH. To run from the build directory instead, us
 
 Run the corpus-building commands (`build`, `update`, `sync`, `index`) from the clone.  They read `sources.toml` and write `data/` relative to the working directory. `search`, `status`, and `wikipethia mcp` work from anywhere; set `WIKIPETHIA_DB` or pass `--db` to point them at your corpus.
 
-## Download a prebuilt corpus
+## Quickstart
 
-The fast path: skip the multi-hour build (and its polite forum crawl) by downloading the latest `corpus-*` release.
+Skip the multi-hour source sync by downloading the latest `corpus-*` release.
 
 ```bash
+cd wikipethia
+
+# Download the latest released corpus
 gh release download --pattern 'corpus-*'   # or grab the assets from the Releases page
+
+# verifies the downloaded corpus file wasn't corrupted or tampered with in transit
 sha256sum -c corpus-*.sqlite.zst.sha256
+
+# decompresses the downloaded corpus snapshot into a usable database file
 zstd -d corpus-*.sqlite.zst -o corpus.sqlite
+
+# Make sure wikipethia can access the corpus
 wikipethia status
-```
 
-Then connect it exactly as below. A downloaded corpus stays updatable: `wikipethia update` (from the clone) walks each source incrementally — the sync checkpoints travel inside the file. The one exception is the two blog feeds, which refetch in full once (~15 minutes); and until a `wikipethia sync --full --source <id>` rebuilds the local raw mirror, upstream deletions are not pruned.
-
-## Running it
-
-Build the corpus.  Runs three stages (fetch → index → embed):
-
-```bash
-wikipethia build
-```
-
-Expect several hours, most of it embedding (CPU) and a polite one-request-per-second crawl. Interrupting is safe: every stage is resumable and re-running picks up where it stopped. The first embed downloads a ~130MB model.
-
-A single source is much faster if you want to try it first:
-
-```bash
-wikipethia build --source consensusspecs
-```
-
-Check what you have:
-
-```bash
-wikipethia status
-```
-
-Connect it to Claude Code:
-
-```bash
+# connect the mcp server to to claude code
 claude mcp add wikipethia -- wikipethia mcp --db $(pwd)/corpus.sqlite
 ```
 
-Then ask Ethereum questions! The model cites forum posts, EIPs, and specs with URLs and dates.
+Then ask Ethereum protocol questions! The model cites forum posts, EIPs, and specs with URLs and dates.
+
+Run `wikipethia update` at any time to update the corpus.  It recrawls all the sources looking for new content.  Takes ~10 minutes.
+
+## Syncing the corpus locally
+
+```bash
+cd wikipethia
+
+# Build the corpus.  Runs three stages (fetch → index → embed):
+# Expect several hours, most of it embedding (CPU) and a forum-friendly one-request-per-second crawl. Interrupting is safe: every stage is resumable and re-running picks up where it stopped. The first embed downloads a ~130MB model.
+wikipethia build
+
+
+# Check what you have
+wikipethia status
+
+# connect the mcp server to to claude code
+claude mcp add wikipethia -- wikipethia mcp --db $(pwd)/corpus.sqlite
+```
+
+Then ask Ethereum protocol questions! The model cites forum posts, EIPs, and specs with URLs and dates.
+
+Run `wikipethia update` at any time to update the corpus.  It recrawls all the sources looking for new content.  Takes ~10 minutes.
 
 ## Commands
 
@@ -87,7 +91,7 @@ Then ask Ethereum questions! The model cites forum posts, EIPs, and specs with U
 | `sync` / `index` / `embed` | The three stages separately, for surgical use. |
 | `dedup` | Report near-duplicate documents across sources. |
 | `eval` | Retrieval eval: recall@10 over `tests/eval/questions.toml`. |
-| `mcp` | Serve the corpus to LLM clients over MCP — stdio by default, streamable HTTP with `--http`. |
+| `mcp` | Serve the corpus to LLM clients over MCP.  stdio by default, streamable HTTP with `--http`. |
 | `agent-eval` | Whole-loop eval through a headless Claude Code session. Consumes real usage. |
 | `publish` | Snapshot, compress, and release the corpus on GitHub. Maintainer command. |
 
@@ -107,9 +111,15 @@ Beyond ranked search, the MCP server answers exact spec identifiers directly: `l
 
 ## Licensing
 
-This repository's code is MIT-licensed ([LICENSE](LICENSE)). The corpus is a different matter: wikipethia does not own the material it indexes, and each source carries the license its authors and publishers chose.
+This repository's code is licensed under the MIT License([LICENSE](LICENSE)).
 
-**In short:** for non-commercial use (research, learning, personal projects) the whole corpus is available, with credit. For commercial use, everything except the two forums (ethresear.ch and Ethereum Magicians) is available. Every document already carries its author, date, and URL, so attribution comes for free.
+The corpus itself contains material obtained from multiple sources under different licences. It is therefore not offered under a single licence. Each source remains subject to its original applicable licence. The source and applicable licence are identified in the corpus metadata and summarized below.
+
+The compilation of material into this corpus does not relicense the underlying documents or expand the permissions granted by their original licences. Users must comply with the applicable licence for every document they download, reproduce, modify, distribute or use for model training or another purpose.
+
+In particular, some sources are licensed only for non-commercial use, while others require attribution, preservation of licence notices or distribution of adaptations under the same licence. Users intending commercial use should exclude non-commercially licensed sources and independently verify that their proposed use satisfies all applicable conditions.
+
+**In short:** for non-commercial use (research, learning, personal projects) the whole corpus is available, with credit. For commercial use, everything except the two forums (ethresear.ch and Ethereum Magicians) is available. Every document already carries its author, date, and URL, so attribution comes for free.  
 
 Every document, chunk, and search result also carries its `source`, so the corpus can be filtered down to whichever sources suit your licensing needs.
 
