@@ -5,6 +5,6 @@ members = ["wikipethia-core", "wikipethia-embed", "wikipethia-fetch", "wikipethi
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "AGPL-3.0-only"
 repository = "https://github.com/JossDuff/wikipethia"
 description = "A curated local corpus of Ethereum research and standards, with hybrid search, exposed to LLM clients over MCP."
