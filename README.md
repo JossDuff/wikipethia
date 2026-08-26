@@ -25,15 +25,13 @@ Needs Rust (stable, 2024 edition) and ~1.5GB of disk.
 
 ```bash
 git clone https://github.com/JossDuff/wikipethia && cd wikipethia
-# Binary for syncing the above sources and building the corpus
+# One binary: syncs the above sources, builds the corpus, and serves it over MCP
 cargo install --path wikipethia
-# MCP binary that queries the corpus
-cargo install --path wikipethia-mcp
 ```
 
-That puts `wikipethia` and `wikipethia-mcp` on your PATH. To run from the build directory instead, use `cargo build --release` and `./target/release/wikipethia`.
+That puts `wikipethia` on your PATH. To run from the build directory instead, use `cargo build --release` and `./target/release/wikipethia`.
 
-Run the corpus-building commands (`build`, `update`, `sync`, `index`) from the clone.  They read `sources.toml` and write `data/` relative to the working directory. `search`, `status`, and `wikipethia-mcp` work from anywhere; set `WIKIPETHIA_DB` or pass `--db` to point them at your corpus.
+Run the corpus-building commands (`build`, `update`, `sync`, `index`) from the clone.  They read `sources.toml` and write `data/` relative to the working directory. `search`, `status`, and `wikipethia mcp` work from anywhere; set `WIKIPETHIA_DB` or pass `--db` to point them at your corpus.
 
 ## Download a prebuilt corpus
 
@@ -73,7 +71,7 @@ wikipethia status
 Connect it to Claude Code:
 
 ```bash
-claude mcp add wikipethia -- wikipethia-mcp --db $(pwd)/corpus.sqlite
+claude mcp add wikipethia -- wikipethia mcp --db $(pwd)/corpus.sqlite
 ```
 
 Then ask Ethereum questions! The model cites forum posts, EIPs, and specs with URLs and dates.
@@ -89,6 +87,7 @@ Then ask Ethereum questions! The model cites forum posts, EIPs, and specs with U
 | `sync` / `index` / `embed` | The three stages separately, for surgical use. |
 | `dedup` | Report near-duplicate documents across sources. |
 | `eval` | Retrieval eval: recall@10 over `tests/eval/questions.toml`. |
+| `mcp` | Serve the corpus to LLM clients over MCP — stdio by default, streamable HTTP with `--http`. |
 | `agent-eval` | Whole-loop eval through a headless Claude Code session. Consumes real usage. |
 | `publish` | Snapshot, compress, and release the corpus on GitHub. Maintainer command. |
 

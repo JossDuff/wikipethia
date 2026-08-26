@@ -234,7 +234,7 @@ fn release_notes(tag: &str, stats: &[SourceStats], documents: usize, vectors: us
     let _ = writeln!(notes, "```");
     let _ = writeln!(notes, "sha256sum -c {tag}.sqlite.zst.sha256");
     let _ = writeln!(notes, "zstd -d {tag}.sqlite.zst -o corpus.sqlite");
-    let _ = writeln!(notes, "wikipethia-mcp --db corpus.sqlite");
+    let _ = writeln!(notes, "wikipethia mcp --db corpus.sqlite");
     let _ = writeln!(notes, "```");
     let _ = writeln!(notes);
     let _ = writeln!(notes, "`wikipethia update` keeps a downloaded corpus current — its sync checkpoints travel inside the file. Licensing is per source; see the [README's licensing table](../../blob/main/README.md#licensing) — every document carries its `source`, so the corpus can be filtered to the licenses a use needs.");
@@ -310,7 +310,7 @@ mod tests {
         let notes = release_notes("corpus-2026-08-25", &stats, 585, 1000);
         assert!(notes.contains("sha256sum -c corpus-2026-08-25.sqlite.zst.sha256"));
         assert!(notes.contains("zstd -d corpus-2026-08-25.sqlite.zst"));
-        assert!(notes.contains("wikipethia-mcp --db corpus.sqlite"));
+        assert!(notes.contains("wikipethia mcp --db corpus.sqlite"));
         assert!(notes.contains("| eips | 585 |"));
         assert!(notes.contains("585 documents"));
     }

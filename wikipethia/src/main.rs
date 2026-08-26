@@ -13,6 +13,7 @@ mod publish;
 mod report;
 
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -134,6 +135,23 @@ enum Command {
         #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
         db: PathBuf,
     },
+    /// Serve the corpus to LLM clients over MCP — stdio by default,
+    /// streamable HTTP with --http. HTTP mode has NO authentication:
+    /// bind loopback or a private interface, never a public address.
+    Mcp {
+        /// Database file to serve.
+        #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
+        db: PathBuf,
+        /// Serve streamable HTTP on this bind address (like 127.0.0.1:8642)
+        /// instead of stdio.
+        #[arg(long, value_name = "ADDR")]
+        http: Option<SocketAddr>,
+        /// Extra hostname to accept in HTTP mode on top of loopback and the
+        /// bind address (e.g. a Tailscale name). Bare hostname, no port —
+        /// it matches any port. Repeatable.
+        #[arg(long = "allow-host", value_name = "NAME")]
+        allow_host: Vec<String>,
+    },
     /// Snapshot the corpus and publish it as a GitHub release, so adopters
     /// download in minutes what a build spends hours (and a full polite
     /// crawl) producing. Maintainer command: runs `gh` locally, no CI.
@@ -210,8 +228,9 @@ enum Command {
         /// Artifacts directory; default eval-runs/<unix-epoch>/ (gitignored).
         #[arg(long)]
         out: Option<PathBuf>,
-        /// MCP server binary for the session to spawn.
-        #[arg(long, default_value = "target/release/wikipethia-mcp")]
+        /// Binary the session spawns (with the `mcp` subcommand) as its
+        /// MCP server.
+        #[arg(long, default_value = "target/release/wikipethia")]
         server_bin: PathBuf,
         /// Re-score an existing run directory's artifacts with the current
         /// grader — no sessions, no spend.
@@ -290,6 +309,10 @@ fn main() -> anyhow::Result<()> {
         } => dedup(&db, threshold, source.as_deref(), within_source),
         Command::Search { query, db, limit } => search(&query, &db, limit),
         Command::Status { db } => status(&db),
+        // In stdio mode stdout is the MCP wire: this arm must reach `run`
+        // without touching any of the CLI's stdout reporting, and nothing
+        // may print before dispatch. Diagnostics inside are stderr-only.
+        Command::Mcp { db, http, allow_host } => wikipethia_mcp::run(db, http, allow_host),
         Command::Publish { db, tag, out, dry_run } => {
             // Existence before the lock, same reason as Embed below: the
             // lock's own open would create an empty file at a typo'd path.

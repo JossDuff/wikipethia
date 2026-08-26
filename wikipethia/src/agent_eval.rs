@@ -30,7 +30,8 @@ pub struct Config {
     pub timeout_secs: u64,
     pub limit: Option<usize>,
     pub out_dir: Option<PathBuf>,
-    /// The wikipethia-mcp binary the headless session will spawn.
+    /// The wikipethia binary the headless session will spawn (with the
+    /// `mcp` subcommand) as its MCP server.
     pub server_bin: PathBuf,
     /// Re-score an existing run's artifacts with the current grader — no
     /// sessions, no spend. The escape hatch for grader fixes.
@@ -400,7 +401,7 @@ fn write_mcp_config(
 ) -> anyhow::Result<(PathBuf, Command)> {
     let server_bin = server_bin.canonicalize().with_context(|| {
         format!(
-            "wikipethia-mcp binary not found at {} — build it: cargo build --release -p wikipethia-mcp",
+            "wikipethia binary not found at {} — build it: cargo build --release -p wikipethia",
             server_bin.display()
         )
     })?;
@@ -420,14 +421,14 @@ fn write_mcp_config(
             "wikipethia": {
                 "type": "stdio",
                 "command": server_bin.display().to_string(),
-                "args": ["--db", db.display().to_string()],
+                "args": ["mcp", "--db", db.display().to_string()],
                 "env": { "FASTEMBED_CACHE_DIR": cache.display().to_string() },
             }
         }
     });
     fs::write(&path, serde_json::to_string_pretty(&config)?)?;
     let mut cmd = Command::new(&server_bin);
-    cmd.args(["--db", &db.display().to_string()])
+    cmd.args(["mcp", "--db", &db.display().to_string()])
         .env("FASTEMBED_CACHE_DIR", &cache)
         .current_dir(out_dir);
     Ok((path, cmd))
@@ -498,7 +499,7 @@ fn probe_server(cmd: &mut Command, timeout: Duration) -> anyhow::Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .context("spawning wikipethia-mcp for the pre-sweep probe")?;
+        .context("spawning wikipethia mcp for the pre-sweep probe")?;
     child
         .stdin
         .take()

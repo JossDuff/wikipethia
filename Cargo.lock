@@ -3418,6 +3418,7 @@ dependencies = [
  "wikipethia-core",
  "wikipethia-embed",
  "wikipethia-fetch",
+ "wikipethia-mcp",
  "zstd",
 ]
 
