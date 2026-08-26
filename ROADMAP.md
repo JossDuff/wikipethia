@@ -273,7 +273,7 @@ Candidate fixes, cheapest first:
 holding `{pid, command, started_unix}`, and releases on drop including on
 panic. `index`, `embed`, `build`, and `update` hold it; `build`/`update`
 hold one across both database stages rather than releasing in between.
-Readers never take it — blocking `wikipethia-mcp`'s queries behind a two-hour
+Readers never take it — blocking `wikipethia mcp`'s queries behind a two-hour
 embed would be worse than the bug. A lock whose pid is gone is taken over
 with a note naming the dead pid, and one older than 24h is taken over
 whatever its pid says, because pids are recycled and a permanently wedged
@@ -363,7 +363,7 @@ would otherwise delete nearly every document on the first update). A
 which used to be silently down-stamped on open.
 
 **Gate:** a stranger can download a published corpus and point
-`wikipethia-mcp` at it without building one.
+`wikipethia mcp` at it without building one.
 
 Worth stating plainly, because the old note here mis-attributed the cost: a
 clean build is ~7.5 hours, and **embedding is the largest share** (94k
@@ -803,7 +803,7 @@ What "published community tool" needs beyond M8's dataset publishing.
   guard that the README licensing table still covers every manifest source.
 
 **Already done ahead of the milestone:** the streamable-HTTP transport
-(`wikipethia-mcp --http`), so one host can serve several machines — with the
+(`wikipethia mcp --http`), so one host can serve several machines — with the
 standing caveat that it has no authentication and must bind loopback or a
 private interface.
 

@@ -6,6 +6,12 @@ license.workspace = true
 repository.workspace = true
 description.workspace = true
 
+# In stdio mode stdout is the MCP wire: a stray println! anywhere in this
+# crate corrupts the protocol stream at runtime, silently. CI's clippy run
+# (-D warnings) turns this into a build failure instead.
+[lints.clippy]
+print_stdout = "deny"
+
 [dependencies]
 anyhow = "1"
 # Serves rmcp's tower Service in --http mode; deliberately minimal features

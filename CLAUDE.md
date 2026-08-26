@@ -16,7 +16,7 @@ burying spec documents under forum volume.
 **Out of scope for now:** the public web frontend. No UI, no user accounts, no
 request handlers of our own. If a task seems to need them, stop and ask.
 
-The MCP server's HTTP transport (`wikipethia-mcp --http`) is not an exception to
+The MCP server's HTTP transport (`wikipethia mcp --http`) is not an exception to
 that: it mounts rmcp's own tower service and adds no handlers, auth, or
 pages. It also has **no authentication** — it must bind loopback or a private
 interface, never a public address.
@@ -35,8 +35,11 @@ wikipethia-core/    documents, parsing, chunking, spec extraction, index, search
                 — no I/O beyond the DB
 wikipethia-embed/   the fastembed Embedder impl — model cache and its one-time download
 wikipethia-fetch/   HTTP client, rate limiting, adapters — all crawl network lives here
-wikipethia-mcp/     MCP server (stdio by default, streamable HTTP with --http)
-wikipethia/         sync, index, embed, update, search, status, dedup, eval, agent-eval
+wikipethia-mcp/     MCP server library — the `wikipethia mcp` subcommand
+                (stdio by default, streamable HTTP with --http); builds no
+                binary of its own
+wikipethia/         the one binary: sync, index, embed, update, search, status,
+                dedup, eval, agent-eval, publish, mcp
 sources.toml        the manifest — source of truth for what is in the corpus
 ```
 
@@ -67,7 +70,7 @@ wikipethia eval                        # retrieval: recall@10
 wikipethia agent-eval [--limit N] [--model haiku]
 wikipethia agent-eval --regrade <dir>  # re-score, no spend
 wikipethia publish [--tag <t>] [--out dist] [--dry-run]  # maintainer: snapshot → zstd → GitHub release
-wikipethia-mcp [--db <path>] [--http <addr> [--allow-host <name>]]
+wikipethia mcp [--db <path>] [--http <addr> [--allow-host <name>]]
 ```
 
 `build` and `update` are the same pipeline; they differ in what they report,
@@ -92,7 +95,7 @@ still lists).
 `index` and `embed` take an advisory lock on the database (a `meta` row).
 A second writer fails fast rather than interleaving: `chunks.id` has no
 `AUTOINCREMENT`, so rowid reuse can otherwise attach a vector to text it was
-not computed from, silently. Readers, including `wikipethia-mcp`, never take it.
+not computed from, silently. Readers, including `wikipethia mcp`, never take it.
 
 `agent-eval` spawns a headless Claude Code session per question and consumes
 real usage (API credit or plan allowance, depending on how the `claude` CLI
