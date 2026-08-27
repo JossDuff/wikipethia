@@ -37,6 +37,25 @@ impl Run {
     }
 }
 
+/// `679.4 MB`, `1.2 GB`, `512 B`. Decimal units — the number a release
+/// page or `ls -l` roughly agrees with, not `du`'s binary ones.
+pub fn bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = n as f64;
+    let mut unit = 0;
+    // 999.95, not 1000: anything at or above it FORMATS as "1000.0", so it
+    // must roll to the next unit before rounding, not after.
+    while value >= 999.95 && unit < UNITS.len() - 1 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 /// `3m12s`, `0m48s`, `1h07m`. Long enough runs stop caring about seconds.
 pub fn hms(elapsed: Duration) -> String {
     let secs = elapsed.as_secs();
@@ -127,6 +146,24 @@ pub fn plural(n: usize) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bytes_picks_sensible_units() {
+        assert_eq!(bytes(0), "0 B");
+        assert_eq!(bytes(999), "999 B");
+        assert_eq!(bytes(1_000), "1.0 KB");
+        assert_eq!(bytes(679_400_000), "679.4 MB");
+        assert_eq!(bytes(1_234_000_000), "1.2 GB");
+    }
+
+    #[test]
+    fn bytes_rolls_over_at_the_rounding_boundary_not_after_it() {
+        // 999_949 rounds to 999.9, still KB; 999_950 would format as
+        // "1000.0 KB" unless the unit rolls first.
+        assert_eq!(bytes(999_949), "999.9 KB");
+        assert_eq!(bytes(999_950), "1.0 MB");
+        assert_eq!(bytes(999_950_000), "1.0 GB");
+    }
 
     fn stats(fetched: usize, updated: usize, skipped: usize, pages: usize) -> SyncStats {
         SyncStats {

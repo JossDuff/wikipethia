@@ -722,12 +722,39 @@ fn corpus_exists(db: &Path) -> anyhow::Result<()> {
 /// pure BM25 — so the first sign of trouble was an answer that felt slightly
 /// off, mid-conversation, with nothing to check it against.
 fn status(db: &Path) -> anyhow::Result<()> {
+    // On-disk size beside the path: capacity planning happens here (does
+    // this fit the droplet/laptop), and a WAL that has grown large is
+    // invisible everywhere else until a checkpoint absorbs it. Sampled
+    // BEFORE the store opens — open re-stamps `user_version`, which itself
+    // commits a WAL frame, so sampling after reports a sidecar this
+    // command just created. And from the CANONICAL path: SQLite puts the
+    // WAL beside the resolved file, not beside a symlink to it.
+    let canonical = db.canonicalize().unwrap_or_else(|_| db.to_path_buf());
+    // Absent is a real answer (a downloaded corpus has no WAL); any other
+    // stat failure must not print as a confident 0 B — status gets run
+    // during exactly the disk incidents that make stats fail.
+    let file_len = |p: &Path| match fs::metadata(p) {
+        Ok(m) => Some(m.len()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(0),
+        Err(_) => None,
+    };
+    let size = file_len(&canonical);
+    let mut wal_path = canonical.as_os_str().to_owned();
+    wal_path.push("-wal");
+    let wal = file_len(Path::new(&wal_path));
+
     let store = Store::open_existing(db).with_context(|| format!("opening {}", db.display()))?;
     let documents = store.count()?;
     let embedded = store.embedding_count()?;
     let missing = store.missing_embedding_count()?;
 
-    println!("corpus     {}", db.canonicalize().unwrap_or_else(|_| db.to_path_buf()).display());
+    let size = match (size, wal) {
+        (None, _) => "size unavailable".to_string(),
+        (Some(s), Some(0)) => report::bytes(s),
+        (Some(s), Some(w)) => format!("{} + {} WAL", report::bytes(s), report::bytes(w)),
+        (Some(s), None) => format!("{} + WAL size unavailable", report::bytes(s)),
+    };
+    println!("corpus     {} ({size})", canonical.display());
     // Whether the stored vectors were made by the model this build queries
     // with. `hybrid_search` drops the vector arm silently on a dimension
     // mismatch, and a same-dimension different model is worse — it returns
