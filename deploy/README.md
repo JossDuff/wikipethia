@@ -40,12 +40,11 @@ git clone https://github.com/JossDuff/wikipethia /var/lib/wikipethia/wikipethia
 cd /var/lib/wikipethia/wikipethia
 cargo install --path wikipethia --root /usr/local
 
-# Corpus: provision from the published release — the fast path, and this box
-# is exactly the "stranger" the M8 gate describes. Plain curl: the GitHub
-# API for the latest release is public, no tool or auth needed.
+# Corpus: provision from the published release — the fast path. One line on
+# purpose: a \-continued pipeline half-pastes into a command that LOOKS like
+# it ran (the bare curl prints JSON and downloads nothing).
 cd /var/lib/wikipethia
-curl -s https://api.github.com/repos/JossDuff/wikipethia/releases/latest \
-  | grep browser_download_url | cut -d '"' -f 4 | xargs -n1 curl -fLO
+curl -s https://api.github.com/repos/JossDuff/wikipethia/releases/latest | grep browser_download_url | cut -d '"' -f 4 | xargs -n1 curl -fLO
 sha256sum -c corpus-*.sqlite.zst.sha256
 zstd -d corpus-*.sqlite.zst -o corpus.sqlite
 chown -R wikipethia:wikipethia /var/lib/wikipethia
