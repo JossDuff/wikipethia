@@ -37,6 +37,23 @@ impl Run {
     }
 }
 
+/// `679.4 MB`, `1.2 GB`, `512 B`. Decimal units — the number a release
+/// page or `ls -l` roughly agrees with, not `du`'s binary ones.
+pub fn bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = n as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit < UNITS.len() - 1 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 /// `3m12s`, `0m48s`, `1h07m`. Long enough runs stop caring about seconds.
 pub fn hms(elapsed: Duration) -> String {
     let secs = elapsed.as_secs();
@@ -127,6 +144,15 @@ pub fn plural(n: usize) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bytes_picks_sensible_units() {
+        assert_eq!(bytes(0), "0 B");
+        assert_eq!(bytes(999), "999 B");
+        assert_eq!(bytes(1_000), "1.0 KB");
+        assert_eq!(bytes(679_400_000), "679.4 MB");
+        assert_eq!(bytes(1_234_000_000), "1.2 GB");
+    }
 
     fn stats(fetched: usize, updated: usize, skipped: usize, pages: usize) -> SyncStats {
         SyncStats {

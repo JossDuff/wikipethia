@@ -727,7 +727,22 @@ fn status(db: &Path) -> anyhow::Result<()> {
     let embedded = store.embedding_count()?;
     let missing = store.missing_embedding_count()?;
 
-    println!("corpus     {}", db.canonicalize().unwrap_or_else(|_| db.to_path_buf()).display());
+    // On-disk size beside the path: capacity planning happens here (does
+    // this fit the droplet/laptop), and a WAL that has grown large is
+    // invisible everywhere else until a checkpoint absorbs it.
+    let file_len = |p: &Path| fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let mut wal_path = db.as_os_str().to_owned();
+    wal_path.push("-wal");
+    let size = file_len(db);
+    let wal = file_len(Path::new(&wal_path));
+    let size = match wal {
+        0 => report::bytes(size),
+        w => format!("{} + {} WAL", report::bytes(size), report::bytes(w)),
+    };
+    println!(
+        "corpus     {} ({size})",
+        db.canonicalize().unwrap_or_else(|_| db.to_path_buf()).display()
+    );
     // Whether the stored vectors were made by the model this build queries
     // with. `hybrid_search` drops the vector arm silently on a dimension
     // mismatch, and a same-dimension different model is worse — it returns
