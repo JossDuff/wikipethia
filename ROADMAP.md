@@ -1004,6 +1004,31 @@ Decisions, so they don't get relitigated ad hoc:
 **Gate:** a stranger with no CLI adds the URL as a claude.ai custom connector
 and as a ChatGPT developer-mode connector, and gets cited answers in both.
 
+### [ ] Version skew between binary and corpus is a hard error
+
+Decided 2026-08-27. Today only one of the three skews refuses: a corpus with
+a NEWER schema fails loudly at every open path (`check_schema_version`), but
+an OLDER schema silently migrates forward, and a same-schema corpus whose
+source set differs from the manifest serves quietly — sources the binary
+doesn't know about are never synced or pruned, so they go stale without a
+word. Make all skew loud instead: stamp the publishing binary's version into
+the snapshot's `meta` at `publish` time, compare it on open, and refuse a
+mismatch with an error naming both versions and the fix (upgrade the binary,
+or download a matching corpus).
+
+Design questions to settle at implementation, not before: whether the silent
+forward migration stays behind an explicit flag (it is currently the thing
+that makes `update` seamless after a binary upgrade — a bare hard error would
+break the routine path, so the check likely wants "refuse by default, migrate
+on request" or a binary-version compare distinct from the schema compare);
+and whether readers (`mcp`, `search`) get a softer warn-and-serve than
+writers, since a hosted endpoint that refuses to serve over a version bump is
+its own outage.
+
+**Gate:** opening a corpus published by a different wikipethia version fails
+(or, for the flows deliberately exempted above, warns) with a message naming
+both versions and the command that fixes it.
+
 ---
 
 ## Source backlog
