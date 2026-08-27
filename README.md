@@ -59,6 +59,33 @@ Then ask Ethereum protocol questions! The model cites forum posts, EIPs, and spe
 
 Run `wikipethia update` at any time to update the corpus.  It recrawls all the sources looking for new content.  Takes ~10 minutes.
 
+## Use it from Claude or ChatGPT on the web
+
+No CLI needed: a hosted, read-only wikipethia endpoint lives at
+
+```
+https://mcp.wikipethia.org/mcp
+```
+
+> **Not live yet.** The endpoint is being deployed (ROADMAP M15) — delete
+> this notice when the gate passes. Until then, use the local setup below.
+
+**Claude (claude.ai)** — works on every plan, including Free:
+
+1. Settings → Connectors → **Add custom connector**
+2. Paste the URL above, no authentication needed
+3. Enable it from the chat's **+** menu and ask Ethereum questions
+
+On Team/Enterprise workspaces only an organization Owner can add connectors; members then just click Connect.
+
+**ChatGPT (chatgpt.com)** — needs Plus/Pro or above:
+
+1. Settings → enable **Developer mode** (beta)
+2. Add an MCP server with the URL above, authentication: none
+3. Pick wikipethia from the **+** menu in a chat
+
+The endpoint serves the same corpus the download gives you, read-only. It is run non-commercially: the two forums' content is [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/), and every answer's citations carry the author, date, and source URL that attribution requires. Hosting your own copy is `deploy/`'s runbook.
+
 ## Syncing the corpus locally
 
 ```bash
@@ -91,7 +118,7 @@ Run `wikipethia update` at any time to update the corpus.  It recrawls all the s
 | `sync` / `index` / `embed` | The three stages separately, for surgical use. |
 | `dedup` | Report near-duplicate documents across sources. |
 | `eval` | Retrieval eval: recall@10 over `tests/eval/questions.toml`. |
-| `mcp` | Serve the corpus to LLM clients over MCP.  stdio by default, streamable HTTP with `--http`. |
+| `mcp` | Serve the corpus to LLM clients over MCP.  stdio by default, streamable HTTP with `--http`; public hosting: see `deploy/`. |
 | `agent-eval` | Whole-loop eval through a headless Claude Code session. Consumes real usage. |
 | `publish` | Snapshot, compress, and release the corpus on GitHub. Maintainer command. |
 

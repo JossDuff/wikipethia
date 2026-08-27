@@ -1,0 +1,29 @@
+# One incremental corpus update: sync + index + embed, all resumable.
+# Runs from the repo clone because sync reads sources.toml and writes the
+# raw mirror to data/ relative to the working directory. Readers never take
+# the writer lock, so the MCP service keeps serving throughout.
+
+[Unit]
+Description=wikipethia corpus update (oneshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# oneshot units have NO default start timeout — without this, one wedged
+# crawl connection leaves the unit "activating" forever and every later
+# timer trigger merges into the stuck job: updates silently stop. Better a
+# visible failure; every stage is incremental, so tomorrow's run resumes.
+TimeoutStartSec=4h
+User=wikipethia
+Group=wikipethia
+WorkingDirectory=/var/lib/wikipethia/wikipethia
+ExecStart=/usr/local/bin/wikipethia update
+Environment=WIKIPETHIA_DB=/var/lib/wikipethia/corpus.sqlite
+Environment=FASTEMBED_CACHE_DIR=/var/lib/wikipethia/.fastembed_cache
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wikipethia
+PrivateTmp=true

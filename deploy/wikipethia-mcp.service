@@ -1,0 +1,35 @@
+# The hosted wikipethia MCP endpoint (see deploy/README.md).
+#
+# The binary binds loopback only — nginx owns the public edge (TLS, rate
+# limiting, the domain). Self-hosters: change mcp.wikipethia.org here AND in
+# nginx-mcp.conf's server_name; rmcp validates the Host header against
+# --allow-host, so the two must match.
+
+[Unit]
+Description=wikipethia MCP server (streamable HTTP on loopback)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=wikipethia
+Group=wikipethia
+ExecStart=/usr/local/bin/wikipethia mcp \
+    --db /var/lib/wikipethia/corpus.sqlite \
+    --http 127.0.0.1:8642 \
+    --allow-host mcp.wikipethia.org
+# Absolute on purpose: fastembed's cache defaults to .fastembed_cache
+# RELATIVE TO CWD, and a service has no meaningful cwd — a relative cache
+# means a silent model re-download on every start (or a hang offline).
+Environment=FASTEMBED_CACHE_DIR=/var/lib/wikipethia/.fastembed_cache
+Restart=on-failure
+RestartSec=5
+
+# Modest hardening: the service needs exactly one writable directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wikipethia
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

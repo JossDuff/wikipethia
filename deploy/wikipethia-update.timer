@@ -1,0 +1,14 @@
+# Daily corpus update. The randomized delay keeps the polite crawl from
+# hitting the forums at the same second every night; Persistent catches up
+# after downtime instead of skipping the day.
+
+[Unit]
+Description=Daily wikipethia corpus update
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

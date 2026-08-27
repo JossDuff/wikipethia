@@ -1,7 +1,8 @@
 # The manifest — source of truth for what is in the corpus (see CLAUDE.md).
 # Adding a source of an existing kind is an edit here and nothing else:
-#   corpus sync && corpus index && corpus embed
-# …plus one documentation duty: update the Sources table in README.md.
+#   wikipethia sync && wikipethia index && wikipethia embed
+# …plus one documentation duty: update BOTH README.md tables (Sources and
+# Licensing) — CI counts their rows against this file.
 #
 # Curation policy: Ethereum-canonical sources only —
 # the forums, the ethereum GitHub org, EF and vitalik's own writing.

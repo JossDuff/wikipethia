@@ -803,9 +803,9 @@ What "published community tool" needs beyond M8's dataset publishing.
   guard that the README licensing table still covers every manifest source.
 
 **Already done ahead of the milestone:** the streamable-HTTP transport
-(`wikipethia mcp --http`), so one host can serve several machines — with the
-standing caveat that it has no authentication and must bind loopback or a
-private interface.
+(`wikipethia mcp --http`), so one host can serve several machines — still with
+no authentication and a loopback-only bind for the bare port; public exposure
+happens only through the reverse-proxy shape M15 defines (see `deploy/`).
 
 **Still open:**
 
@@ -975,6 +975,34 @@ legal). The per-source README licensing-table duty still applies to every
 source is a `sources.toml` entry plus its adapter work and nothing else;
 README tables updated; eval questions added per source with recall
 recorded; per-batch eval delta reported.
+
+### [ ] M15 — Hosted endpoint
+
+One public, authless, read-only wikipethia endpoint, so claude.ai users (any
+plan, custom connector) and ChatGPT users (Plus+, developer mode) reach the
+corpus with no CLI at all. Both platforms verified 2026-08-26 to accept an
+unauthenticated streamable-HTTP server called from their backends — which
+`wikipethia mcp --http` already is.
+
+Decisions, so they don't get relitigated ad hoc:
+
+- **Authless, open to any MCP client**, abuse bounded by proxy rate limits —
+  not IP-allowlisted to Anthropic/OpenAI egress ranges. Allowlisting would
+  lock out every other client (Claude Code, Cursor, …) for a service whose
+  tools are read-only over public data; the adoption goal wins.
+- **The binary never owns the public edge.** It keeps its loopback bind and
+  no-auth design; TLS, rate limiting, and the domain live in a reverse proxy.
+  No handlers of our own — no /healthz (monitor with an MCP `initialize`
+  probe), no auth layer, no ChatGPT `search`/`fetch` contract tools.
+- **Non-commercial operation.** The forums' CC BY-NC-SA content flows through
+  this endpoint; citations carry the attribution.
+- Runs on a small DigitalOcean droplet (~$12–18/mo, 2GB is comfortable: the
+  server idles ~230MB RSS + the 648MB corpus on disk), provisioned from a
+  published corpus release — the box doubles as M8's stranger test. Configs
+  and runbook in `deploy/`.
+
+**Gate:** a stranger with no CLI adds the URL as a claude.ai custom connector
+and as a ChatGPT developer-mode connector, and gets cited answers in both.
 
 ---
 

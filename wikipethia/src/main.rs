@@ -140,8 +140,9 @@ enum Command {
         db: PathBuf,
     },
     /// Serve the corpus to LLM clients over MCP — stdio by default,
-    /// streamable HTTP with --http. HTTP mode has NO authentication:
-    /// bind loopback or a private interface, never a public address.
+    /// streamable HTTP with --http. HTTP mode has NO authentication: bind
+    /// loopback or a private interface; for public exposure put a
+    /// rate-limiting TLS proxy in front (see deploy/), never the bare port.
     Mcp {
         /// Database file to serve.
         #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]
@@ -156,6 +157,12 @@ enum Command {
         #[arg(long = "allow-host", value_name = "NAME", requires = "http",
               value_parser = parse_allow_host)]
         allow_host: Vec<String>,
+        /// Bind a public address anyway. The bare port has no auth and no
+        /// rate limits; the sanctioned public deployment is a TLS proxy in
+        /// front of a loopback bind (see deploy/). Only for the case where
+        /// this host really is its own proxy.
+        #[arg(long, requires = "http")]
+        public_bind: bool,
     },
     /// Snapshot the corpus and publish it as a GitHub release, so adopters
     /// download in minutes what a build spends hours (and a full polite
@@ -337,7 +344,9 @@ fn main() -> anyhow::Result<()> {
         // In stdio mode stdout is the MCP wire: this arm must reach `run`
         // without touching any of the CLI's stdout reporting, and nothing
         // may print before dispatch. Diagnostics inside are stderr-only.
-        Command::Mcp { db, http, allow_host } => wikipethia_mcp::run(db, http, allow_host),
+        Command::Mcp { db, http, allow_host, public_bind } => {
+            wikipethia_mcp::run(db, http, allow_host, public_bind)
+        }
         Command::Publish { db, tag, out, dry_run } => {
             // Existence before the lock, same reason as Embed below: the
             // lock's own open would create an empty file at a typo'd path.
