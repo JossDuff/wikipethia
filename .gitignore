@@ -10,3 +10,7 @@ ethereum-mcp-shot.txt
 wikipethia-shot.txt
 eval-runs/
 /dist/
+
+# Maintainer-local: planning notes and the HF export scripts stay out of the public repo
+/ROADMAP.md
+/hf_scripts/
