@@ -14,3 +14,4 @@ eval-runs/
 # Maintainer-local: planning notes and the HF export scripts stay out of the public repo
 /ROADMAP.md
 /hf_scripts/
+*-shot.txt
