@@ -101,7 +101,8 @@ async fn serve_http(
     // rmcp's default host allowlist is loopback-only (DNS-rebind
     // protection). A non-loopback bind is unreachable without its own
     // name in the list, so allow the bind address and any --allow-host
-    // names (e.g. a Tailscale hostname) on top of the loopback defaults.
+    // names (a Tailscale hostname, or the public domain a reverse proxy
+    // forwards) on top of the loopback defaults.
     // Port-less entries match any port in rmcp's matcher, so bare names
     // are all that is needed (the CLI's --allow-host parser rejects
     // host:port values).
@@ -122,8 +123,9 @@ async fn serve_http(
     let listener = tokio::net::TcpListener::bind(bind).await?;
     eprintln!(
         "wikipethia mcp: serving streamable HTTP on http://{bind}/mcp — no \
-         authentication; bind only to loopback or a private (Tailscale/\
-         WireGuard) interface, never a public one"
+         authentication; bind only loopback or a private (Tailscale/WireGuard) \
+         interface, and put a rate-limiting TLS proxy in front for public \
+         exposure (see deploy/) — never expose this port directly"
     );
 
     // One token drives both halves of shutdown: active MCP sessions

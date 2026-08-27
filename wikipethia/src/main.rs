@@ -140,8 +140,9 @@ enum Command {
         db: PathBuf,
     },
     /// Serve the corpus to LLM clients over MCP — stdio by default,
-    /// streamable HTTP with --http. HTTP mode has NO authentication:
-    /// bind loopback or a private interface, never a public address.
+    /// streamable HTTP with --http. HTTP mode has NO authentication: bind
+    /// loopback or a private interface; for public exposure put a
+    /// rate-limiting TLS proxy in front (see deploy/), never the bare port.
     Mcp {
         /// Database file to serve.
         #[arg(long, env = "WIKIPETHIA_DB", default_value = "corpus.sqlite")]

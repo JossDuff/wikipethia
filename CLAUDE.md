@@ -18,8 +18,12 @@ request handlers of our own. If a task seems to need them, stop and ask.
 
 The MCP server's HTTP transport (`wikipethia mcp --http`) is not an exception to
 that: it mounts rmcp's own tower service and adds no handlers, auth, or
-pages. It also has **no authentication** — it must bind loopback or a private
-interface, never a public address.
+pages. It has **no authentication**, and the bare port must bind loopback or a
+private interface — never the internet directly. Public exposure is sanctioned
+in exactly one shape (decided for M15): a TLS reverse proxy with rate limiting
+in front of the loopback bind, serving read-only public data to any MCP
+client. That deployment lives in `deploy/`; auth, health endpoints, and
+anything needing a handler of our own remain out of scope.
 
 ## Stack
 
@@ -41,6 +45,8 @@ wikipethia-mcp/     MCP server library — the `wikipethia mcp` subcommand
 wikipethia/         the one binary: sync, index, embed, update, search, status,
                 dedup, eval, agent-eval, publish, mcp
 sources.toml        the manifest — source of truth for what is in the corpus
+deploy/             the hosted-endpoint shape: systemd units, Caddyfile, runbook
+                — config only, no crate; cargo and CI never look at it
 ```
 
 ## Commands
