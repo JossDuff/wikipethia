@@ -2,9 +2,19 @@
 
 Give your LLM direct access to Ethereum specs, research, discussion, and history. All exposed as an MCP server.
 
+- [Sources](#sources)
+- [Quickstart: local](#quickstart-local)
+- [Quickstart: Use it in Claude or ChatGPT on the web](#quickstart-use-it-in-claude-or-chatgpt-on-the-web)
+- [Syncing the corpus locally](#syncing-the-corpus-locally)
+- [Commands](#commands)
+- [Better than grep](#better-than-grep)
+- [Licensing](#licensing)
+
 ## Sources
 
 Everything in the corpus, as declared in [`sources.toml`](sources.toml) keep this list and the [licensing table](#licensing) in sync when adding a source.
+
+Suggest more sources!
 
 | Source | What it is |
 |---|---|
@@ -13,31 +23,22 @@ Everything in the corpus, as declared in [`sources.toml`](sources.toml) keep thi
 | [ethereum/EIPs](https://github.com/ethereum/EIPs) | Core-protocol EIP specifications |
 | [ethereum/ERCs](https://github.com/ethereum/ERCs) | Application-level ERC standards |
 | [consensus-specs](https://github.com/ethereum/consensus-specs) | Consensus-layer specifications, per fork |
-| [execution-specs](https://github.com/ethereum/execution-specs) | EELS — the executable execution-layer spec, per fork, plus the shared state, trie, and crypto helpers the fork modules call |
+| [execution-specs](https://github.com/ethereum/execution-specs) | EELS. The executable execution-layer spec, per fork |
 | [execution-apis](https://github.com/ethereum/execution-apis) | Engine API specifications, per fork |
-| [ethereum/pm](https://github.com/ethereum/pm) | AllCoreDevs notes — what was decided, and when |
+| [ethereum/pm](https://github.com/ethereum/pm) | AllCoreDevs notes |
 | [vitalik.eth.limo](https://vitalik.eth.limo) | Vitalik's writing |
 | [EF blog](https://blog.ethereum.org) | Ethereum Foundation announcements and research |
 
-## Install
+## Quickstart: local
+
+Skip the multi-hour source sync by downloading the latest `corpus-*` release.
 
 Needs Rust (stable, 2024 edition) and ~1.5GB of disk.
 
 ```bash
 git clone https://github.com/JossDuff/wikipethia && cd wikipethia
+# Adds wikipethia to your PATH
 cargo install --path wikipethia
-```
-
-That puts `wikipethia` on your PATH. To run from the build directory instead, use `cargo build --release` and `./target/release/wikipethia`.
-
-Run the corpus-building commands (`build`, `update`, `sync`, `index`) from the clone.  They read `sources.toml` and write `data/` relative to the working directory. `search`, `status`, and `wikipethia mcp` work from anywhere; set `WIKIPETHIA_DB` or pass `--db` to point them at your corpus.
-
-## Quickstart
-
-Skip the multi-hour source sync by downloading the latest `corpus-*` release.
-
-```bash
-cd wikipethia
 
 # Download the latest released corpus
 gh release download --pattern 'corpus-*'   # or grab the assets from the Releases page
@@ -59,7 +60,7 @@ Then ask Ethereum protocol questions! The model cites forum posts, EIPs, and spe
 
 Run `wikipethia update` at any time to update the corpus.  It recrawls all the sources looking for new content.  Takes ~10 minutes.
 
-## Use it from Claude or ChatGPT on the web
+## Quickstart: Use it in Claude or ChatGPT on the web
 
 No CLI needed: a hosted, read-only wikipethia endpoint lives at
 
@@ -67,34 +68,31 @@ No CLI needed: a hosted, read-only wikipethia endpoint lives at
 https://mcp.wikipethia.org/mcp
 ```
 
-> **Not live yet.** The endpoint is being deployed (ROADMAP M15) — delete
-> this notice when the gate passes. Until then, use the local setup below.
-
-**Claude (claude.ai)** — works on every plan, including Free:
+**Claude (claude.ai)**:
+> On Team/Enterprise workspaces only an organization owner can add connectors; members then just click Connect.
 
 1. Settings → Connectors → **Add custom connector**
 2. Paste the URL above, no authentication needed
 3. Enable it from the chat's **+** menu and ask Ethereum questions
 
-On Team/Enterprise workspaces only an organization Owner can add connectors; members then just click Connect.
-
-**ChatGPT (chatgpt.com)** — needs Plus/Pro or above:
+**ChatGPT (chatgpt.com)**:
+> Needs Plus/Pro or above
 
 1. Settings → enable **Developer mode** (beta)
 2. Add an MCP server with the URL above, authentication: none
 3. Pick wikipethia from the **+** menu in a chat
 
-The endpoint serves the same corpus the download gives you, read-only. It is run non-commercially: the two forums' content is [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/), and every answer's citations carry the author, date, and source URL that attribution requires. Hosting your own copy is `deploy/`'s runbook.
+The endpoint serves the same corpus the download gives you. It is run non-commercially: the two forums' content is [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/), and every answer's citations carry the author, date, and source URL that attribution requires.
 
 ## Syncing the corpus locally
+
+Expect several hours, most of it embedding (CPU) and a forum-friendly one-request-per-second crawl. Interrupting is safe: every stage is resumable and re-running picks up where it stopped. The first embed downloads a ~130MB model.
 
 ```bash
 cd wikipethia
 
 # Build the corpus.  Runs three stages (fetch → index → embed):
-# Expect several hours, most of it embedding (CPU) and a forum-friendly one-request-per-second crawl. Interrupting is safe: every stage is resumable and re-running picks up where it stopped. The first embed downloads a ~130MB model.
 wikipethia build
-
 
 # Check what you have
 wikipethia status
