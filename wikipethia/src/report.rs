@@ -43,7 +43,9 @@ pub fn bytes(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = n as f64;
     let mut unit = 0;
-    while value >= 1000.0 && unit < UNITS.len() - 1 {
+    // 999.95, not 1000: anything at or above it FORMATS as "1000.0", so it
+    // must roll to the next unit before rounding, not after.
+    while value >= 999.95 && unit < UNITS.len() - 1 {
         value /= 1000.0;
         unit += 1;
     }
@@ -152,6 +154,15 @@ mod tests {
         assert_eq!(bytes(1_000), "1.0 KB");
         assert_eq!(bytes(679_400_000), "679.4 MB");
         assert_eq!(bytes(1_234_000_000), "1.2 GB");
+    }
+
+    #[test]
+    fn bytes_rolls_over_at_the_rounding_boundary_not_after_it() {
+        // 999_949 rounds to 999.9, still KB; 999_950 would format as
+        // "1000.0 KB" unless the unit rolls first.
+        assert_eq!(bytes(999_949), "999.9 KB");
+        assert_eq!(bytes(999_950), "1.0 MB");
+        assert_eq!(bytes(999_950_000), "1.0 GB");
     }
 
     fn stats(fetched: usize, updated: usize, skipped: usize, pages: usize) -> SyncStats {

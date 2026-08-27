@@ -125,8 +125,8 @@ pub fn run(cfg: &Config) -> anyhow::Result<()> {
 
     fs::write(&notes, release_notes(&tag, &stats, documents, vectors))?;
 
-    println!("artifact   {} ({})", artifact.display(), human_size(zst_size));
-    println!("uncompressed {} → {:.0}% of original", human_size(raw_size), zst_size as f64 / raw_size as f64 * 100.0);
+    println!("artifact   {} ({})", artifact.display(), crate::report::bytes(zst_size));
+    println!("uncompressed {} → {:.0}% of original", crate::report::bytes(raw_size), zst_size as f64 / raw_size as f64 * 100.0);
     println!("sha256     {digest}");
     println!("tag        {tag}");
 
@@ -245,14 +245,6 @@ fn release_notes(tag: &str, stats: &[SourceStats], documents: usize, vectors: us
         let _ = writeln!(notes, "| {} | {} |", source.id, source.count);
     }
     notes
-}
-
-fn human_size(bytes: u64) -> String {
-    if bytes >= 1 << 30 {
-        format!("{:.1}GB", bytes as f64 / (1u64 << 30) as f64)
-    } else {
-        format!("{:.0}MB", bytes as f64 / (1u64 << 20) as f64)
-    }
 }
 
 /// Today's UTC date as YYYY-MM-DD, for the default tag. Days-to-civil is
