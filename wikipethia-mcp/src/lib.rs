@@ -31,13 +31,55 @@ use tools::CorpusServer;
 /// so the crawl and index paths never run under one by accident.
 ///
 /// Flag validation (--allow-host needs --http, bare hostnames only) is
-/// clap's job in the CLI — this function trusts its arguments.
-pub fn run(db: PathBuf, http: Option<SocketAddr>, allow_hosts: Vec<String>) -> anyhow::Result<()> {
+/// clap's job in the CLI — this function trusts its arguments, except the
+/// bind check below: it depends on the parsed address, and getting it
+/// wrong exposes an authless, un-rate-limited server to the internet,
+/// so it is enforced here rather than stated in prose.
+pub fn run(
+    db: PathBuf,
+    http: Option<SocketAddr>,
+    allow_hosts: Vec<String>,
+    public_bind: bool,
+) -> anyhow::Result<()> {
+    if let Some(bind) = http
+        && !is_private_bind(&bind.ip())
+        && !public_bind
+    {
+        anyhow::bail!(
+            "refusing to bind {}: not a loopback or private address. The bare \
+             port has no auth and no rate limits — the sanctioned public \
+             deployment is a TLS proxy in front of a loopback bind (see \
+             deploy/). Bind a specific private address, or pass --public-bind \
+             if you really are your own proxy.",
+            bind.ip()
+        );
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("building tokio runtime")?
         .block_on(serve(db, http, allow_hosts))
+}
+
+/// Loopback, RFC1918, link-local, CGNAT (Tailscale hands these out), or
+/// IPv6 unique-local — the binds that don't face the internet. Notably
+/// excludes the unspecified addresses (0.0.0.0 / ::), which bind every
+/// interface including public ones.
+fn is_private_bind(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                // CGNAT 100.64.0.0/10
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 0x40)
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // unique-local fc00::/7
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+        }
+    }
 }
 
 async fn serve(
@@ -175,5 +217,43 @@ async fn wait_for_shutdown_signal() {
     tokio::select! {
         () = ctrl_c => {},
         () = terminate => {},
+    }
+}
+
+#[cfg(test)]
+mod bind_tests {
+    use super::*;
+
+    fn ip(s: &str) -> std::net::IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn private_binds_are_recognized() {
+        for private in [
+            "127.0.0.1", "10.0.0.5", "172.16.9.1", "192.168.1.2",
+            "100.101.4.7", "169.254.0.1", "::1", "fd7a:115c::1", "fe80::1",
+        ] {
+            assert!(is_private_bind(&ip(private)), "{private} should be private");
+        }
+    }
+
+    #[test]
+    fn public_and_unspecified_binds_are_not() {
+        for public in ["203.0.113.5", "167.99.148.37", "0.0.0.0", "2001:db8::1", "::"] {
+            assert!(!is_private_bind(&ip(public)), "{public} should not be private");
+        }
+    }
+
+    #[test]
+    fn run_refuses_a_public_bind_without_the_flag() {
+        let err = run(
+            std::path::PathBuf::from("does-not-matter.sqlite"),
+            Some("203.0.113.5:8642".parse().unwrap()),
+            Vec::new(),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("--public-bind"), "got: {err}");
     }
 }

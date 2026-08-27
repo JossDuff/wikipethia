@@ -10,6 +10,11 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# oneshot units have NO default start timeout — without this, one wedged
+# crawl connection leaves the unit "activating" forever and every later
+# timer trigger merges into the stuck job: updates silently stop. Better a
+# visible failure; every stage is incremental, so tomorrow's run resumes.
+TimeoutStartSec=4h
 User=wikipethia
 Group=wikipethia
 WorkingDirectory=/var/lib/wikipethia/wikipethia

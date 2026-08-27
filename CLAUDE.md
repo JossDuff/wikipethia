@@ -76,7 +76,7 @@ wikipethia eval                        # retrieval: recall@10
 wikipethia agent-eval [--limit N] [--model haiku]
 wikipethia agent-eval --regrade <dir>  # re-score, no spend
 wikipethia publish [--tag <t>] [--out dist] [--dry-run]  # maintainer: snapshot → zstd → GitHub release
-wikipethia mcp [--db <path>] [--http <addr> [--allow-host <name>]]
+wikipethia mcp [--db <path>] [--http <addr> [--allow-host <name>] [--public-bind]]
 ```
 
 `build` and `update` are the same pipeline; they differ in what they report,

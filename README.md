@@ -61,11 +61,14 @@ Run `wikipethia update` at any time to update the corpus.  It recrawls all the s
 
 ## Use it from Claude or ChatGPT on the web
 
-No CLI needed: a hosted, read-only wikipethia endpoint is available at
+No CLI needed: a hosted, read-only wikipethia endpoint lives at
 
 ```
 https://mcp.wikipethia.org/mcp
 ```
+
+> **Not live yet.** The endpoint is being deployed (ROADMAP M15) — delete
+> this notice when the gate passes. Until then, use the local setup below.
 
 **Claude (claude.ai)** — works on every plan, including Free:
 
