@@ -1,9 +1,9 @@
 # The hosted wikipethia MCP endpoint (see deploy/README.md).
 #
-# The binary binds loopback only — Caddy owns the public edge (TLS, rate
-# limiting, the domain). Replace mcp.example.org with your domain; it must
-# match the Caddyfile's site address, since rmcp validates the Host header
-# against --allow-host.
+# The binary binds loopback only — nginx owns the public edge (TLS, rate
+# limiting, the domain). Self-hosters: change mcp.wikipethia.org here AND in
+# nginx-mcp.conf's server_name; rmcp validates the Host header against
+# --allow-host, so the two must match.
 
 [Unit]
 Description=wikipethia MCP server (streamable HTTP on loopback)
@@ -16,7 +16,7 @@ Group=wikipethia
 ExecStart=/usr/local/bin/wikipethia mcp \
     --db /var/lib/wikipethia/corpus.sqlite \
     --http 127.0.0.1:8642 \
-    --allow-host mcp.example.org
+    --allow-host mcp.wikipethia.org
 # Absolute on purpose: fastembed's cache defaults to .fastembed_cache
 # RELATIVE TO CWD, and a service has no meaningful cwd — a relative cache
 # means a silent model re-download on every start (or a hang offline).

@@ -45,8 +45,8 @@ wikipethia-mcp/     MCP server library — the `wikipethia mcp` subcommand
 wikipethia/         the one binary: sync, index, embed, update, search, status,
                 dedup, eval, agent-eval, publish, mcp
 sources.toml        the manifest — source of truth for what is in the corpus
-deploy/             the hosted-endpoint shape: systemd units, Caddyfile, runbook
-                — config only, no crate; cargo and CI never look at it
+deploy/             the hosted-endpoint shape: systemd units, nginx config,
+                runbook — config only, no crate; cargo and CI never look at it
 ```
 
 ## Commands

@@ -64,10 +64,8 @@ Run `wikipethia update` at any time to update the corpus.  It recrawls all the s
 No CLI needed: a hosted, read-only wikipethia endpoint is available at
 
 ```
-https://mcp.example.org/mcp
+https://mcp.wikipethia.org/mcp
 ```
-
-<!-- placeholder: replace mcp.example.org with the real domain once deployed -->
 
 **Claude (claude.ai)** — works on every plan, including Free:
 
