@@ -136,7 +136,7 @@ Beyond ranked search, the MCP server answers exact spec identifiers directly: `l
 
 ## Licensing
 
-This repository's code is licensed under the GNU Affero General Public License v3.0 ([LICENSE](LICENSE)).
+This repository's code is collectively [licensed](LICENSE) under the combined [Source Seppuku License](./licenses/LicenseRef-Seppuku), [Viral Public License](./licenses/LicenseRef-VPL), and [GNU Affero General Public License v3.0](./licenses/AGPL-3.0-only).
 
 The corpus itself contains material obtained from multiple sources under different licences. It is therefore not offered under a single licence. Each source remains subject to its original applicable licence. The source and applicable licence are identified in the corpus metadata and summarized below.
 
