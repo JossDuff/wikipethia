@@ -82,7 +82,7 @@ https://mcp.wikipethia.org/mcp
 2. Add an MCP server with the URL above, authentication: none
 3. Pick wikipethia from the **+** menu in a chat
 
-The endpoint serves the same corpus the download gives you. It is run non-commercially: the two forums' content is [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/), and every answer's citations carry the author, date, and source URL that attribution requires.
+The endpoint serves the same corpus the download gives you, and follows new `corpus-*` releases on its own — a published snapshot is live there within about 15 minutes. It is run non-commercially: the two forums' content is [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/), and every answer's citations carry the author, date, and source URL that attribution requires.
 
 ## Syncing the corpus locally
 

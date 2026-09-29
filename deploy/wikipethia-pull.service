@@ -1,0 +1,35 @@
+# One check for a newer `corpus-*` release, and the swap if there is one
+# (see wikipethia-pull.sh's header). Triggered by wikipethia-pull.timer;
+# `systemctl start wikipethia-pull` runs it now.
+#
+# Runs as root, deliberately: the swap has to stop and start
+# wikipethia-mcp.service, and every unprivileged route to that (a sudoers
+# line, which NoNewPrivileges= breaks; a polkit rule, whose format differs
+# between Ubuntu LTS releases) is more machinery than the risk it removes.
+# The script downloads over HTTPS from GitHub, verifies the maintainer's
+# sha256 before opening anything, and writes to exactly one directory —
+# the sandboxing below holds it to that.
+
+[Unit]
+Description=wikipethia corpus pull (newest corpus-* GitHub release)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# oneshot units have NO default start timeout — a wedged download would
+# otherwise leave the unit "activating" forever and every later timer tick
+# merges into the stuck job. Better a visible failure; the next tick retries.
+TimeoutStartSec=30m
+ExecStart=/usr/local/bin/wikipethia-pull
+# `wikipethia status` on the staged file never loads the embedder, but the
+# cache dir is set anyway so a future preflight that does cannot re-download.
+Environment=FASTEMBED_CACHE_DIR=/var/lib/wikipethia/.fastembed_cache
+
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wikipethia
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

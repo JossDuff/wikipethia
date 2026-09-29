@@ -1,0 +1,16 @@
+# Poll for a new corpus release every 15 minutes. That is 4 unauthenticated
+# GitHub API calls an hour against a budget of 60, and the ceiling on how
+# long `wikipethia publish` takes to reach the endpoint. Not Persistent: a
+# missed tick means nothing, the next one does identical work. The small
+# random delay keeps a fleet of self-hosters off the same second.
+
+[Unit]
+Description=Poll for a new wikipethia corpus release
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=2m
+Persistent=false
+
+[Install]
+WantedBy=timers.target
