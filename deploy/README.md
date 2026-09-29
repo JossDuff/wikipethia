@@ -12,9 +12,13 @@ against that list, so the two must match.
 
 ## 1. Droplet and DNS
 
-- Basic droplet, 2GB RAM / 1 vCPU is comfortable: the server idles ~230MB
-  RSS; the corpus is ~650MB plus a ~130MB embedding model on disk, and the
-  update timer's raw mirror grows to a few GB over time. 50GB disk is plenty.
+- Basic droplet, 2GB RAM / 1 vCPU is comfortable for *serving*: the server
+  idles ~230MB RSS; the corpus is ~650MB plus a ~130MB embedding model on
+  disk, and a corpus pull peaks at ~2.2GB of disk (live + previous + staged
+  + the download). 50GB disk is plenty. It is NOT enough to build or
+  incrementally update the corpus — embed runs out of memory — which is why
+  the box follows published releases (§3) instead of running
+  `wikipethia-update.timer`.
 - DNS (Porkbun): Domain Management → wikipethia.org → DNS Records. Add an
   **A** record, host `mcp`, answer = the droplet's public IP, TTL default.
   Delete Porkbun's default parking records (the ALIAS on the apex and the
@@ -40,15 +44,14 @@ git clone https://github.com/JossDuff/wikipethia /var/lib/wikipethia/wikipethia
 cd /var/lib/wikipethia/wikipethia
 cargo install --path wikipethia --root /usr/local
 
-# Corpus: provision from the published release — the fast path. One line on
-# purpose: a \-continued pipeline half-pastes into a command that LOOKS like
-# it ran (the bare curl prints JSON and downloads nothing).
-cd /var/lib/wikipethia
-curl -s https://api.github.com/repos/JossDuff/wikipethia/releases/latest | grep browser_download_url | cut -d '"' -f 4 | xargs -n1 curl -fLO
-sha256sum -c corpus-*.sqlite.zst.sha256
-zstd -d corpus-*.sqlite.zst -o corpus.sqlite
+# Corpus: the same script the timer runs (§3) does the first provisioning —
+# newest corpus-* release, sha256-verified, decompressed, READY-checked by
+# this binary, installed read-only at /var/lib/wikipethia/corpus.sqlite.
+# No service exists yet, so it is told not to restart one.
+apt install -y jq zstd
+install -m 0755 deploy/wikipethia-pull.sh /usr/local/bin/wikipethia-pull
+WIKIPETHIA_SERVICE= wikipethia-pull
 chown -R wikipethia:wikipethia /var/lib/wikipethia
-sudo -u wikipethia WIKIPETHIA_DB=/var/lib/wikipethia/corpus.sqlite wikipethia status
 
 # Pre-warm the model cache BEFORE starting the service. The server builds
 # its embedder eagerly at startup (a release corpus always has embeddings),
@@ -66,11 +69,24 @@ sudo -u wikipethia env WIKIPETHIA_DB=/var/lib/wikipethia/corpus.sqlite \
 ```bash
 cd /var/lib/wikipethia/wikipethia   # the cp paths below are repo-relative
 
-cp deploy/wikipethia-mcp.service deploy/wikipethia-update.service \
-   deploy/wikipethia-update.timer /etc/systemd/system/
+cp deploy/wikipethia-mcp.service deploy/wikipethia-pull.service \
+   deploy/wikipethia-pull.timer /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now wikipethia-mcp.service wikipethia-update.timer
+systemctl enable --now wikipethia-mcp.service wikipethia-pull.timer
 ```
+
+The pull timer is how the corpus stays current: every 15 minutes it asks
+GitHub for the newest `corpus-*` release, and when one appears it downloads,
+verifies, READY-checks, swaps the file, and restarts the MCP service (a few
+seconds of 502s, the model reload). Publishing from a laptop with
+`wikipethia publish` is the whole update workflow — no ssh. The script's
+header comment is the reference; `wikipethia-pull --dry-run` shows what it
+would do, `wikipethia-pull --force` re-pulls the current tag.
+
+`wikipethia-update.service`/`.timer` (sync + index + embed on the box) stay in
+this directory for self-hosters with more memory, but do not run them
+alongside the pull timer: an update writes the corpus the pull replaces, and
+2GB cannot complete an embed anyway.
 
 nginx + certbot (both stock Ubuntu packages):
 
@@ -114,13 +130,36 @@ a question.
 ## 5. Monitoring and upkeep
 
 - There is deliberately no `/healthz` (the server adds no handlers of its
-  own): point any uptime checker at the `initialize` POST above and match on
-  `serverInfo`.
-- Corpus freshness: `wikipethia-update.timer` runs daily;
-  `journalctl -u wikipethia-update` shows each run's per-source table. The
-  MCP service keeps serving during updates — readers never take the writer
-  lock. A run that exceeds its 4h `TimeoutStartSec` fails visibly and the
-  next day's incremental run resumes where it left off.
+  own). The monitor is `.github/workflows/endpoint-probe.yml`: every 30
+  minutes it sends the `initialize` POST above from GitHub's runners,
+  fails unless `serverInfo` comes back, and then compares the document
+  count the endpoint reports against the newest release's notes (a
+  release under two hours old is given time to be pulled). A failed run
+  emails whoever last committed the workflow's cron line. Red means one of
+  three things, in order of likelihood: the droplet is down or nginx/TLS
+  is broken (the handshake step fails); a pull is failing (handshake fine,
+  freshness step fails → `journalctl -u wikipethia-pull` on the box); or
+  the release itself is unpullable (below). Note GitHub disables scheduled
+  workflows after 60 days without a commit — a quiet repo goes unmonitored
+  until re-enabled from the Actions tab.
+- Corpus freshness: `wikipethia-pull.timer`, every 15 minutes. A tick with
+  nothing new logs nothing; a pull logs `pulling <tag>` and `serving <tag>:
+  N documents`. State on the box: `/var/lib/wikipethia/corpus.release`
+  (the tag being served), `corpus.sqlite.prev` (the previous corpus, kept
+  for exactly one rollback), and `staging/` (exists only mid-pull or after
+  a refusal, holding the file to inspect).
+- Holding a release back: `gh release edit <tag> --prerelease` hides it
+  from the puller without deleting it; `--prerelease=false` releases it.
+- A release published by a **newer wikipethia** than the box runs (a schema
+  bump) is refused at the READY check and the old corpus keeps serving; the
+  probe goes red on freshness once the grace window passes. Fix by hand:
+  `git pull && cargo install --path wikipethia --root /usr/local` in the
+  clone, `systemctl restart wikipethia-mcp`, then `wikipethia-pull --force`.
+  Binary updates are the one remaining ssh — deliberately (ROADMAP M16).
+- If the restarted server does not answer `initialize` within 90s of a
+  swap, the script swaps `corpus.sqlite.prev` back and restarts again; the
+  rejected file is kept as `staging/corpus.sqlite.rejected`, and the unit
+  fails so the journal says why.
 - Rate limiting is layered (see nginx-mcp.conf's header comment): 60 req/min
   per MCP session, 600 req/min per IP, 100 connections per IP. Rejections
   show in nginx's error log as `limiting requests`/`limiting connections`

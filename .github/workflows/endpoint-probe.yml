@@ -1,0 +1,85 @@
+# Is the hosted endpoint up, and is it serving the latest corpus release?
+#
+# The droplet cannot send mail and the server adds no /healthz of its own
+# (CLAUDE.md), so this is the monitor: the MCP `initialize` handshake from
+# outside, every half hour, plus a freshness check against the newest
+# `corpus-*` release. A failed run is the alert — GitHub emails the person
+# who last committed the cron line below.
+#
+# Two things to know about scheduled workflows: GitHub runs them best-effort
+# (a tick can land many minutes late or be skipped under load), and it
+# disables them after 60 days without any commit to the repo — a quiet repo
+# silently stops being monitored. Re-enable from the Actions tab.
+#
+# This job reaches the network on purpose. CI's no-network rule is about
+# `cargo test`; nothing here runs cargo, checks out code, or looks at deploy/.
+name: Endpoint probe
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+env:
+  ENDPOINT: https://mcp.wikipethia.org/mcp
+  REPO: JossDuff/wikipethia
+  # A release younger than this may simply not have been pulled yet (the
+  # droplet polls every 15 minutes); the freshness check waits it out.
+  GRACE_SECONDS: 7200
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: initialize handshake
+        id: init
+        run: |
+          body=$(curl -sS --max-time 30 "$ENDPOINT" -X POST \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"endpoint-probe","version":"0"}}}')
+          if ! grep -q '"serverInfo"' <<<"$body"; then
+            echo "::error::$ENDPOINT did not answer initialize with serverInfo"
+            printf '%s\n' "$body" | head -c 2000
+            exit 1
+          fi
+          # The instructions string opens with the corpus size:
+          # "...hybrid lexical+semantic search: 57989 documents, 2017 to present".
+          served=$(grep -oE 'search: [0-9]+ documents' <<<"$body" | grep -oE '[0-9]+' | head -n1 || true)
+          echo "served=$served" >>"$GITHUB_OUTPUT"
+          echo "endpoint up, serving ${served:-?} documents"
+
+      - name: serving the newest release
+        env:
+          SERVED: ${{ steps.init.outputs.served }}
+        run: |
+          releases=$(curl -sS --retry 3 -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$REPO/releases?per_page=30")
+          tag=$(jq -r '.[] | select(.draft == false and .prerelease == false)
+                           | .tag_name
+                           | select(test("^corpus-[0-9]{4}-[0-9]{2}-[0-9]{2}$"))' \
+                  <<<"$releases" | sort -r | head -n1)
+          if [[ -z "$tag" ]]; then
+            echo "no corpus-* release published; nothing to compare against"
+            exit 0
+          fi
+          published=$(jq -r --arg tag "$tag" '.[] | select(.tag_name == $tag) | .published_at' <<<"$releases")
+          age=$(( $(date +%s) - $(date -d "$published" +%s) ))
+          # Release notes open with "A ready-built wikipethia corpus: N documents, ..."
+          # (wikipethia/src/publish.rs, release_notes).
+          expected=$(jq -r --arg tag "$tag" '.[] | select(.tag_name == $tag) | .body' <<<"$releases" \
+                     | grep -oE 'corpus: [0-9]+ documents' | grep -oE '[0-9]+' | head -n1 || true)
+          echo "newest release $tag ($published, ${age}s old) holds ${expected:-?} documents; endpoint serves ${SERVED:-?}"
+          if [[ -z "$expected" || -z "$SERVED" ]]; then
+            echo "::warning::could not parse a document count from the release notes or the served instructions — freshness not checked"
+            exit 0
+          fi
+          if [[ "$expected" != "$SERVED" ]]; then
+            if (( age < GRACE_SECONDS )); then
+              echo "release is $((age / 60)) minutes old, within the $((GRACE_SECONDS / 60))-minute grace window — the droplet may not have pulled yet"
+              exit 0
+            fi
+            echo "::error::endpoint serves $SERVED documents but $tag (published $published) holds $expected — the droplet has not pulled it; check journalctl -u wikipethia-pull"
+            exit 1
+          fi
+          echo "endpoint is serving $tag"
