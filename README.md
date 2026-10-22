@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="wikipethia-logo.png" alt="wikipethia logo" width="200">
+</p>
+
 # wikipethia
 
 Give your LLM direct access to Ethereum specs, research, discussion, and history. All exposed as an MCP server.
