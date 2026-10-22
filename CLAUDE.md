@@ -143,8 +143,8 @@ gitignored. They ship as release assets.
 
 **sources.toml changes update the README and the site — three tables.**
 README.md carries two tables that mirror the manifest: **Sources** and
-**Licensing**; `deploy/site/index.html` carries a third that merges them, one
-`<tr data-source="…">` per source. Whenever a source is added, removed, or
+**Licensing**; `deploy/site/index.html` carries a third (sources only, no licenses),
+one `<tr data-source="…">` per source. Whenever a source is added, removed, or
 re-tiered, update all four in the same commit.
 
 A new source's license must come from the publisher's own statement — not

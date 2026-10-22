@@ -97,14 +97,12 @@
   table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
   th, td { text-align: left; vertical-align: top; padding: 0.5rem 0.6rem 0.5rem 0; border-bottom: 1px solid var(--border); }
   th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
-  td:last-child, th:last-child { white-space: nowrap; }
   footer { margin-top: 3.5rem; padding-top: 1.25rem; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.9rem; }
   footer ul { list-style: none; padding: 0; margin: 0 0 0.75rem; display: flex; gap: 1.25rem; flex-wrap: wrap; }
   footer li { margin: 0; }
   @media (max-width: 480px) {
     header img { width: 72px; height: 72px; }
     header h1 { font-size: 1.8rem; }
-    td:last-child, th:last-child { white-space: normal; }
     .copy { position: static; margin-top: 0.4rem; }   /* below the box, not over its text */
     .snippet pre { padding-right: 1rem; }
   }
@@ -124,19 +122,19 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Source</th><th>What it is</th><th>License</th></tr>
+          <tr><th>Source</th><th>What it is</th></tr>
         </thead>
         <tbody>
-          <tr data-source="ethresearch"><td><a href="https://ethresear.ch">ethresear.ch</a></td><td>Protocol R&amp;D discussion, 2017–present</td><td><a href="https://creativecommons.org/licenses/by-nc-sa/3.0/">CC BY-NC-SA 3.0</a></td></tr>
-          <tr data-source="ethmagicians"><td><a href="https://ethereum-magicians.org">Ethereum Magicians</a></td><td>EIP process and hard-fork coordination</td><td><a href="https://creativecommons.org/licenses/by-nc-sa/3.0/">CC BY-NC-SA 3.0</a></td></tr>
-          <tr data-source="eips"><td><a href="https://github.com/ethereum/EIPs">ethereum/EIPs</a></td><td>Core-protocol EIP specifications</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
-          <tr data-source="ercs"><td><a href="https://github.com/ethereum/ERCs">ethereum/ERCs</a></td><td>Application-level ERC standards</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
-          <tr data-source="consensusspecs"><td><a href="https://github.com/ethereum/consensus-specs">consensus-specs</a></td><td>Consensus-layer specifications, per fork</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
-          <tr data-source="executionspecs"><td><a href="https://github.com/ethereum/execution-specs">execution-specs</a></td><td>EELS, the executable execution-layer spec, per fork</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
-          <tr data-source="executionapis"><td><a href="https://github.com/ethereum/execution-apis">execution-apis</a></td><td>Engine API specifications, per fork</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
-          <tr data-source="pm"><td><a href="https://github.com/ethereum/pm">ethereum/pm</a></td><td>AllCoreDevs notes</td><td><a href="https://creativecommons.org/licenses/by-sa/3.0/">CC BY-SA 3.0</a></td></tr>
-          <tr data-source="vitalik"><td><a href="https://vitalik.eth.limo">vitalik.eth.limo</a></td><td>Vitalik's writing</td><td><a href="http://www.wtfpl.net/">WTFPL</a></td></tr>
-          <tr data-source="efblog"><td><a href="https://blog.ethereum.org">EF blog</a></td><td>Ethereum Foundation announcements and research</td><td><a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a></td></tr>
+          <tr data-source="ethresearch"><td><a href="https://ethresear.ch">ethresear.ch</a></td><td>Protocol R&amp;D discussion, 2017–present</td></tr>
+          <tr data-source="ethmagicians"><td><a href="https://ethereum-magicians.org">Ethereum Magicians</a></td><td>EIP process and hard-fork coordination</td></tr>
+          <tr data-source="eips"><td><a href="https://github.com/ethereum/EIPs">ethereum/EIPs</a></td><td>Core-protocol EIP specifications</td></tr>
+          <tr data-source="ercs"><td><a href="https://github.com/ethereum/ERCs">ethereum/ERCs</a></td><td>Application-level ERC standards</td></tr>
+          <tr data-source="consensusspecs"><td><a href="https://github.com/ethereum/consensus-specs">consensus-specs</a></td><td>Consensus-layer specifications, per fork</td></tr>
+          <tr data-source="executionspecs"><td><a href="https://github.com/ethereum/execution-specs">execution-specs</a></td><td>EELS, the executable execution-layer spec, per fork</td></tr>
+          <tr data-source="executionapis"><td><a href="https://github.com/ethereum/execution-apis">execution-apis</a></td><td>Engine API specifications, per fork</td></tr>
+          <tr data-source="pm"><td><a href="https://github.com/ethereum/pm">ethereum/pm</a></td><td>AllCoreDevs notes</td></tr>
+          <tr data-source="vitalik"><td><a href="https://vitalik.eth.limo">vitalik.eth.limo</a></td><td>Vitalik's writing</td></tr>
+          <tr data-source="efblog"><td><a href="https://blog.ethereum.org">EF blog</a></td><td>Ethereum Foundation announcements and research</td></tr>
         </tbody>
       </table>
     </div>
@@ -210,7 +208,7 @@
 
   <section id="licensing">
     <h2>Licensing</h2>
-    <p>The corpus is not offered under a single license: each document stays under its source's own license, listed in the table above and carried in the corpus metadata.</p>
+    <p>The corpus is not offered under a single license: each document stays under its source's own license, carried in the corpus metadata.</p>
     <p>In short: for non-commercial use (research, learning, personal projects) the whole corpus is available, with credit. For commercial use, everything except the two forums (ethresear.ch and Ethereum Magicians) is available. Every document already carries its author, date, and URL, so attribution comes for free, and every result carries its source, so the corpus can be filtered to whichever sources suit your needs. The <a href="https://github.com/JossDuff/wikipethia#licensing">README</a> has the full statement.</p>
   </section>
 
