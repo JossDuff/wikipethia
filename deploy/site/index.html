@@ -151,7 +151,6 @@
       <li><strong>Semantic search</strong> (embeddings). Every chunk is mapped by a small local model to a point where meaning, not spelling, determines distance. A question about "PBS" finds proposer/builder-separation posts that never use the acronym.</li>
       <li><strong>Hybrid fusion</strong> (reciprocal rank fusion). Documents strong in either list surface, and exact-term hits are never diluted by the vector side.</li>
     </ul>
-    <p>Exact spec identifiers skip ranking altogether: <code>lookup_spec</code> reads the indexed consensus-specs and EIP documents themselves and returns a constant's value or a spec function's body, per fork, with citations. A constant defined once in phase0 can't be drowned out by forum posts that mention it more often.</p>
     <p>Every result carries a stable doc id, author, published date, URL, and its source's tier. Ethereum research supersedes itself, and a 2019 post can flatly contradict a 2024 one, so the server tells the model to weigh dates when sources disagree.</p>
   </section>
 
@@ -201,7 +200,7 @@
 
   <section id="self-host">
     <h2>Run it yourself</h2>
-    <p>The hosted endpoint is a convenience, not the product. The corpus is a single SQLite file, published as a <a href="https://github.com/JossDuff/wikipethia/releases"><code>corpus-*</code> release</a>, and the server is one Rust binary.</p>
+    <p>The hosted endpoint is a convenience. The corpus is a single SQLite file, published as a <a href="https://github.com/JossDuff/wikipethia/releases"><code>corpus-*</code> release</a>, and the server is one Rust binary.</p>
     <ul>
       <li><strong>Locally</strong>: download the latest release and serve it over stdio to Claude Code or any MCP client. The <a href="https://github.com/JossDuff/wikipethia#quickstart-local">README quickstart</a> is a few commands and needs about 1.5GB of disk.</li>
       <li><strong>From the sources</strong>: <code>wikipethia build</code> crawls everything itself, politely (one request per second to the forums) and resumably. Expect several hours.</li>
