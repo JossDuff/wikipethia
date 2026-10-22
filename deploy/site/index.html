@@ -118,6 +118,43 @@
   </header>
   <p class="tagline">Give your LLM direct access to Ethereum specs, research, discussion, and history. All exposed as an MCP server.</p>
 
+  <section id="corpus">
+    <h2>What's in it</h2>
+    <p>59,000+ documents across 10 sources, 2017 to present, as of October 2026. Everything comes from Ethereum's own forums, repositories, and blogs. Every source is declared in <a href="https://github.com/JossDuff/wikipethia/blob/main/sources.toml">sources.toml</a>.</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Source</th><th>What it is</th><th>License</th></tr>
+        </thead>
+        <tbody>
+          <tr data-source="ethresearch"><td><a href="https://ethresear.ch">ethresear.ch</a></td><td>Protocol R&amp;D discussion, 2017–present</td><td><a href="https://creativecommons.org/licenses/by-nc-sa/3.0/">CC BY-NC-SA 3.0</a></td></tr>
+          <tr data-source="ethmagicians"><td><a href="https://ethereum-magicians.org">Ethereum Magicians</a></td><td>EIP process and hard-fork coordination</td><td><a href="https://creativecommons.org/licenses/by-nc-sa/3.0/">CC BY-NC-SA 3.0</a></td></tr>
+          <tr data-source="eips"><td><a href="https://github.com/ethereum/EIPs">ethereum/EIPs</a></td><td>Core-protocol EIP specifications</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
+          <tr data-source="ercs"><td><a href="https://github.com/ethereum/ERCs">ethereum/ERCs</a></td><td>Application-level ERC standards</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
+          <tr data-source="consensusspecs"><td><a href="https://github.com/ethereum/consensus-specs">consensus-specs</a></td><td>Consensus-layer specifications, per fork</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
+          <tr data-source="executionspecs"><td><a href="https://github.com/ethereum/execution-specs">execution-specs</a></td><td>EELS, the executable execution-layer spec, per fork</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
+          <tr data-source="executionapis"><td><a href="https://github.com/ethereum/execution-apis">execution-apis</a></td><td>Engine API specifications, per fork</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
+          <tr data-source="pm"><td><a href="https://github.com/ethereum/pm">ethereum/pm</a></td><td>AllCoreDevs notes</td><td><a href="https://creativecommons.org/licenses/by-sa/3.0/">CC BY-SA 3.0</a></td></tr>
+          <tr data-source="vitalik"><td><a href="https://vitalik.eth.limo">vitalik.eth.limo</a></td><td>Vitalik's writing</td><td><a href="http://www.wtfpl.net/">WTFPL</a></td></tr>
+          <tr data-source="efblog"><td><a href="https://blog.ethereum.org">EF blog</a></td><td>Ethereum Foundation announcements and research</td><td><a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Missing a source? <a href="https://github.com/JossDuff/wikipethia/issues">Suggest one.</a></p>
+  </section>
+
+  <section id="how">
+    <h2>How it answers</h2>
+    <p>Search is hybrid, in three layers:</p>
+    <ul>
+      <li><strong>Ranked lexical search</strong> (FTS5 + BM25). Rare terms outweigh common ones, title and author hits outweigh body mentions, and stemming matches "exits" to "exit". Exact tokens like <code>EIP-4844</code> or an author name hit precisely.</li>
+      <li><strong>Semantic search</strong> (embeddings). Every chunk is mapped by a small local model to a point where meaning, not spelling, determines distance. A question about "PBS" finds proposer/builder-separation posts that never use the acronym.</li>
+      <li><strong>Hybrid fusion</strong> (reciprocal rank fusion). Documents strong in either list surface, and exact-term hits are never diluted by the vector side.</li>
+    </ul>
+    <p>Exact spec identifiers skip ranking altogether: <code>lookup_spec</code> reads the indexed consensus-specs and EIP documents themselves and returns a constant's value or a spec function's body, per fork, with citations. A constant defined once in phase0 can't be drowned out by forum posts that mention it more often.</p>
+    <p>Every result carries a stable doc id, author, published date, URL, and its source's tier. Ethereum research supersedes itself, and a 2019 post can flatly contradict a 2024 one, so the server tells the model to weigh dates when sources disagree.</p>
+  </section>
+
   <section id="connect">
     <h2>Connect</h2>
     <p>A hosted, read-only endpoint. No account, no key. It is rate limited and run non-commercially.</p>
@@ -160,43 +197,6 @@
       <button class="copy" type="button" aria-label="Copy the JSON config">Copy</button>
     </div>
     <p class="note">claude.ai, ChatGPT, and Claude Code have been tested against the endpoint. Other clients should work but have not been.</p>
-  </section>
-
-  <section id="corpus">
-    <h2>What's in it</h2>
-    <p>59,000+ documents across 10 sources, 2017 to present, as of October 2026. Everything comes from Ethereum's own forums, repositories, and blogs. Every source is declared in <a href="https://github.com/JossDuff/wikipethia/blob/main/sources.toml">sources.toml</a>.</p>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>Source</th><th>What it is</th><th>License</th></tr>
-        </thead>
-        <tbody>
-          <tr data-source="ethresearch"><td><a href="https://ethresear.ch">ethresear.ch</a></td><td>Protocol R&amp;D discussion, 2017–present</td><td><a href="https://creativecommons.org/licenses/by-nc-sa/3.0/">CC BY-NC-SA 3.0</a></td></tr>
-          <tr data-source="ethmagicians"><td><a href="https://ethereum-magicians.org">Ethereum Magicians</a></td><td>EIP process and hard-fork coordination</td><td><a href="https://creativecommons.org/licenses/by-nc-sa/3.0/">CC BY-NC-SA 3.0</a></td></tr>
-          <tr data-source="eips"><td><a href="https://github.com/ethereum/EIPs">ethereum/EIPs</a></td><td>Core-protocol EIP specifications</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
-          <tr data-source="ercs"><td><a href="https://github.com/ethereum/ERCs">ethereum/ERCs</a></td><td>Application-level ERC standards</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
-          <tr data-source="consensusspecs"><td><a href="https://github.com/ethereum/consensus-specs">consensus-specs</a></td><td>Consensus-layer specifications, per fork</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
-          <tr data-source="executionspecs"><td><a href="https://github.com/ethereum/execution-specs">execution-specs</a></td><td>EELS, the executable execution-layer spec, per fork</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
-          <tr data-source="executionapis"><td><a href="https://github.com/ethereum/execution-apis">execution-apis</a></td><td>Engine API specifications, per fork</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
-          <tr data-source="pm"><td><a href="https://github.com/ethereum/pm">ethereum/pm</a></td><td>AllCoreDevs notes</td><td><a href="https://creativecommons.org/licenses/by-sa/3.0/">CC BY-SA 3.0</a></td></tr>
-          <tr data-source="vitalik"><td><a href="https://vitalik.eth.limo">vitalik.eth.limo</a></td><td>Vitalik's writing</td><td><a href="http://www.wtfpl.net/">WTFPL</a></td></tr>
-          <tr data-source="efblog"><td><a href="https://blog.ethereum.org">EF blog</a></td><td>Ethereum Foundation announcements and research</td><td><a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a></td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="note">Missing a source? <a href="https://github.com/JossDuff/wikipethia/issues">Suggest one.</a></p>
-  </section>
-
-  <section id="how">
-    <h2>How it answers</h2>
-    <p>Search is hybrid, in three layers:</p>
-    <ul>
-      <li><strong>Ranked lexical search</strong> (FTS5 + BM25). Rare terms outweigh common ones, title and author hits outweigh body mentions, and stemming matches "exits" to "exit". Exact tokens like <code>EIP-4844</code> or an author name hit precisely.</li>
-      <li><strong>Semantic search</strong> (embeddings). Every chunk is mapped by a small local model to a point where meaning, not spelling, determines distance. A question about "PBS" finds proposer/builder-separation posts that never use the acronym.</li>
-      <li><strong>Hybrid fusion</strong> (reciprocal rank fusion). Documents strong in either list surface, and exact-term hits are never diluted by the vector side.</li>
-    </ul>
-    <p>Exact spec identifiers skip ranking altogether: <code>lookup_spec</code> reads the indexed consensus-specs and EIP documents themselves and returns a constant's value or a spec function's body, per fork, with citations. A constant defined once in phase0 can't be drowned out by forum posts that mention it more often.</p>
-    <p>Every result carries a stable doc id, author, published date, URL, and its source's tier. Ethereum research supersedes itself, and a 2019 post can flatly contradict a 2024 one, so the server tells the model to weigh dates when sources disagree.</p>
   </section>
 
   <section id="self-host">
