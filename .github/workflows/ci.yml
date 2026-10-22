@@ -35,23 +35,27 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
-      # CLAUDE.md's hard rule: sources.toml changes update the README. This
-      # compares row COUNTS only, so it catches a source added or removed
-      # without its table rows — not a renamed id, a re-tiered source, or a
-      # row describing the wrong source. Those still need a human.
+      # CLAUDE.md's hard rule: sources.toml changes update the README's two
+      # tables and the landing page's one (deploy/site/index.html, a
+      # `data-source` row per source). This compares row COUNTS only, so it
+      # catches a source added or removed without its table rows — not a
+      # renamed id, a re-tiered source, or a row describing the wrong source.
+      # Those still need a human.
       #
       # `|| true` on every count is load-bearing, not defensive noise: the
       # default shell here is `bash -e`, and `grep -c` exits 1 when it matches
       # nothing — so without it the step dies silently on exactly the
       # regression it exists to catch (a heading renamed, or table rows
       # reformatted), printing no counts and no ::error::.
-      - name: README tables have a row per manifest source
+      - name: README and site tables have a row per manifest source
         run: |
           manifest=$(grep -cP '^id = "' sources.toml || true)
           sources=$(sed -n '/^## Sources/,/^## /p' README.md | grep -c '^| \[' || true)
           licensing=$(sed -n '/^## Licensing/,$p' README.md | grep -c '^| \[' || true)
-          echo "sources.toml: $manifest | Sources table: $sources | Licensing table: $licensing"
+          site=$(grep -c 'data-source=' deploy/site/index.html || true)
+          echo "sources.toml: $manifest | Sources table: $sources | Licensing table: $licensing | site table: $site"
           fail=0
           [ "$manifest" -eq "$sources" ]   || { echo "::error::Sources table has $sources rows, manifest has $manifest"; fail=1; }
           [ "$manifest" -eq "$licensing" ] || { echo "::error::Licensing table has $licensing rows, manifest has $manifest"; fail=1; }
+          [ "$manifest" -eq "$site" ]      || { echo "::error::Site table has $site rows, manifest has $manifest"; fail=1; }
           exit $fail

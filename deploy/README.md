@@ -8,7 +8,8 @@ MCP client. Everything below assumes a fresh Ubuntu LTS DigitalOcean droplet.
 The configs are written for the canonical endpoint, `mcp.wikipethia.org`.
 Self-hosters: change the domain in `nginx-mcp.conf` (`server_name`) AND
 `wikipethia-mcp.service` (`--allow-host`) — rmcp validates the Host header
-against that list, so the two must match.
+against that list, so the two must match. The website's config,
+`nginx-site.conf`, names `wikipethia.org` the same way (§6).
 
 ## 1. Droplet and DNS
 
@@ -23,7 +24,8 @@ against that list, so the two must match.
   **A** record, host `mcp`, answer = the droplet's public IP, TTL default.
   Delete Porkbun's default parking records (the ALIAS on the apex and the
   wildcard CNAME) — the wildcard would otherwise catch every subdomain you
-  haven't defined. No AAAA record: the nginx config is IPv4-only on purpose
+  haven't defined; §6 adds the apex and `www` back as plain **A** records
+  for the website. No AAAA record: the nginx config is IPv4-only on purpose
   (see the comment on its `listen` line).
 - DigitalOcean cloud firewall: allow 22 (you), 80 (certbot's ACME
   challenges and the HTTP→HTTPS redirect), 443. Port 8642 stays unreachable
@@ -110,7 +112,8 @@ certbot --nginx -d mcp.wikipethia.org
 certbot rewrites the site config with the 443 block and certificate, and
 installs its own renewal timer — verify with `systemctl list-timers certbot`
 and `certbot renew --dry-run`. That timer is the one piece of TLS machinery
-to know exists: if it ever stops, the cert expires in 90 days.
+to know exists: if it ever stops, the certificates (the endpoint's, and the
+website's from §6) expire in 90 days.
 
 ## 4. Smoke test (from your laptop, not the box)
 
@@ -168,3 +171,41 @@ a question.
   fairness work.
 - After updating the binary: `systemctl restart wikipethia-mcp`. The startup
   stderr banner lands in `journalctl -u wikipethia-mcp`.
+
+## 6. The website (wikipethia.org)
+
+A static landing page — what wikipethia is and how to connect a client —
+served by the same nginx from files on disk. It is not the web frontend
+CLAUDE.md keeps out of scope: no search, no handlers, nothing dynamic. The
+page is `deploy/site/` in the repo; `nginx-site.conf` is its server block.
+
+- DNS (Porkbun): two more **A** records, host `@` (the apex) and host
+  `www`, both answering the droplet's public IP. No AAAA, as in §1.
+- Firewall: nothing new — 80 and 443 are already open.
+
+```bash
+cd /var/lib/wikipethia/wikipethia && git pull
+
+mkdir -p /var/www/wikipethia.org
+rsync -a --delete deploy/site/ /var/www/wikipethia.org/
+
+cp deploy/nginx-site.conf /etc/nginx/sites-available/wikipethia-site.conf
+ln -s /etc/nginx/sites-available/wikipethia-site.conf /etc/nginx/sites-enabled/
+nginx -t && systemctl reload nginx
+
+# Both names must resolve first (dig +short wikipethia.org www.wikipethia.org):
+certbot --nginx -d wikipethia.org -d www.wikipethia.org
+```
+
+certbot adds the 443 blocks and the HTTP→HTTPS redirect to the site config
+the way it did for the endpoint in §3, and the renewal timer from there
+covers the new certificate. Check from outside:
+
+```bash
+curl -sI https://wikipethia.org/ | grep -iE '^(HTTP|content-security)'   # 200 + the CSP header
+curl -sI http://www.wikipethia.org/ | grep -iE '^(HTTP|location)'       # 301 → https://wikipethia.org/
+```
+
+Updating the page is `git pull` and the same `rsync` — the second thing,
+after binary updates (§5), that still takes an ssh. The reload does not
+touch the MCP service; the §4 smoke test should answer throughout.

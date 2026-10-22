@@ -6,6 +6,8 @@
 
 Give your LLM direct access to Ethereum specs, research, discussion, and history. All exposed as an MCP server.
 
+Website: [wikipethia.org](https://wikipethia.org)
+
 - [Sources](#sources)
 - [Quickstart: local](#quickstart-local)
 - [Quickstart: Use it in Claude or ChatGPT on the web](#quickstart-use-it-in-claude-or-chatgpt-on-the-web)

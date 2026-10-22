@@ -14,7 +14,9 @@ fork). The second is why `lookup_spec` exists — ranked search alone kept
 burying spec documents under forum volume.
 
 **Out of scope for now:** the public web frontend. No UI, no user accounts, no
-request handlers of our own. If a task seems to need them, stop and ask.
+request handlers of our own. If a task seems to need them, stop and ask. The
+static landing page at wikipethia.org (`deploy/site/`) is not that frontend:
+files on disk served by nginx, no search, no handlers.
 
 The MCP server's HTTP transport (`wikipethia mcp --http`) is not an exception to
 that: it mounts rmcp's own tower service and adds no handlers, auth, or
@@ -46,7 +48,9 @@ wikipethia/         the one binary: sync, index, embed, update, search, status,
                 dedup, eval, agent-eval, publish, mcp
 sources.toml        the manifest — source of truth for what is in the corpus
 deploy/             the hosted-endpoint shape: systemd units, nginx config,
-                runbook — config only, no crate; cargo and CI never look at it
+                runbook, and site/ (the static landing page at wikipethia.org)
+                — config only, no crate; cargo never looks at it, and CI only
+                counts the site's source-table rows
 ```
 
 ## Commands
@@ -112,8 +116,8 @@ review, and the README duty above. Don't reintroduce one.
 
 Clippy must be clean before you call a task done. `cargo test` must pass without
 network access. CI (`.github/workflows/ci.yml`) runs both on every push and
-pull request, plus a guard that the README licensing table still covers every
-manifest source.
+pull request, plus a guard that the README tables and the site's source table
+still have a row per manifest source.
 
 ## Hard rules
 
@@ -137,10 +141,11 @@ threading a special case through.
 **Never commit the built index.** `corpus.sqlite` and embedding artifacts are
 gitignored. They ship as release assets.
 
-**sources.toml changes update the README — both tables.** README.md carries
-two tables that mirror the manifest: **Sources** and **Licensing**. Whenever
-a source is added, removed, or re-tiered, update all three in the same
-commit.
+**sources.toml changes update the README and the site — three tables.**
+README.md carries two tables that mirror the manifest: **Sources** and
+**Licensing**; `deploy/site/index.html` carries a third that merges them, one
+`<tr data-source="…">` per source. Whenever a source is added, removed, or
+re-tiered, update all four in the same commit.
 
 A new source's license must come from the publisher's own statement — not
 inferred from a sibling repository, not assumed from an organization's

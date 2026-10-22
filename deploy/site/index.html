@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wikipethia</title>
+<meta name="description" content="Give your LLM direct access to Ethereum specs, research, discussion, and history. An MCP server over a curated corpus: ethresear.ch, Ethereum Magicians, EIPs, ERCs, consensus-specs, execution-specs, and more.">
+<link rel="canonical" href="https://wikipethia.org/">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/logo.png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="wikipethia">
+<meta property="og:description" content="Give your LLM direct access to Ethereum specs, research, discussion, and history. All exposed as an MCP server.">
+<meta property="og:url" content="https://wikipethia.org/">
+<meta property="og:image" content="https://wikipethia.org/logo.png">
+<meta name="twitter:card" content="summary">
+<meta name="color-scheme" content="light dark">
+<style>
+  /* Everything on this page comes from this origin: inline styles, one
+     script, two images, system fonts. No CDN, no analytics, no web fonts.
+     The nginx config (deploy/nginx-site.conf) pins that with a CSP. */
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfd;
+    --fg: #1b1d2a;
+    --muted: #5c6075;
+    --accent: #4d5a9e;        /* the logo's diamond, mid tone */
+    --surface: #ffffff;
+    --border: #d9dbe6;
+    --code-bg: #f0f1f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14151c;
+      --fg: #e6e7ef;
+      --muted: #a0a4bd;
+      --accent: #9aa3dc;
+      --surface: #1c1e28;
+      --border: #30334a;
+      --code-bg: #20222f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
+  }
+  main { max-width: 44rem; margin: 0 auto; padding: 2.5rem 16px 3rem; }
+  a { color: var(--accent); }
+  a:hover { text-decoration-thickness: 2px; }
+  h1, h2, h3 { line-height: 1.2; margin: 0; }
+  h2 { font-size: 1.35rem; margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--border); }
+  h3 { font-size: 1.05rem; margin-top: 1.75rem; }
+  p { margin: 0.75rem 0; }
+  ol, ul { padding-left: 1.4rem; }
+  li { margin: 0.3rem 0; }
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 0.92em;
+  }
+  code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
+  pre {
+    margin: 0; padding: 0.85rem 1rem;
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; font-size: 0.9rem; }
+  .snippet { position: relative; margin: 0.75rem 0; }
+  .snippet pre { padding-right: 5rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .copy {
+    display: none;                     /* shown by site.js when the Clipboard API exists */
+    position: absolute; top: 0.5rem; right: 0.5rem;
+    font: inherit; font-size: 0.8rem;
+    padding: 0.2rem 0.6rem;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface); color: var(--fg);
+    cursor: pointer;
+  }
+  .copy:hover, .copy:focus-visible { border-color: var(--accent); color: var(--accent); }
+  html.js .copy { display: inline-block; }
+  header { display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap; }
+  header img { width: 96px; height: 96px; }
+  header h1 { font-size: 2.2rem; letter-spacing: -0.01em; }
+  .tagline { font-size: 1.15rem; color: var(--muted); margin: 1rem 0 0; max-width: 36rem; }
+  .endpoint pre { padding: 1rem 1.1rem; border-color: var(--accent); }
+  .endpoint pre code { font-size: 1.05rem; }
+  .note { color: var(--muted); font-size: 0.95rem; }
+  .callout {
+    border-left: 3px solid var(--accent);
+    padding: 0.1rem 0 0.1rem 0.9rem; margin: 0.75rem 0;
+    color: var(--muted); font-size: 0.95rem;
+  }
+  .table-wrap { overflow-x: auto; margin: 1rem 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+  th, td { text-align: left; vertical-align: top; padding: 0.5rem 0.6rem 0.5rem 0; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  td:last-child, th:last-child { white-space: nowrap; }
+  footer { margin-top: 3.5rem; padding-top: 1.25rem; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.9rem; }
+  footer ul { list-style: none; padding: 0; margin: 0 0 0.75rem; display: flex; gap: 1.25rem; flex-wrap: wrap; }
+  footer li { margin: 0; }
+  @media (max-width: 480px) {
+    header img { width: 72px; height: 72px; }
+    header h1 { font-size: 1.8rem; }
+    td:last-child, th:last-child { white-space: normal; }
+    .copy { position: static; margin-top: 0.4rem; }   /* below the box, not over its text */
+    .snippet pre { padding-right: 1rem; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="/logo.png" alt="" width="96" height="96">
+    <h1>wikipethia</h1>
+  </header>
+  <p class="tagline">Give your LLM direct access to Ethereum specs, research, discussion, and history. All exposed as an MCP server.</p>
+
+  <section id="connect">
+    <h2>Connect</h2>
+    <p>A hosted, read-only endpoint. No account, no key. It is rate limited and run non-commercially.</p>
+    <div class="snippet endpoint">
+      <pre><code>https://mcp.wikipethia.org/mcp</code></pre>
+      <button class="copy" type="button" aria-label="Copy the endpoint URL">Copy</button>
+    </div>
+    <p>It serves the same corpus the <a href="https://github.com/JossDuff/wikipethia/releases">downloadable releases</a> give you, and follows new releases on its own: a published snapshot is live within about 15 minutes.</p>
+
+    <h3>Claude (claude.ai)</h3>
+    <ol>
+      <li>Settings → Connectors → <strong>Add custom connector</strong></li>
+      <li>Paste the URL above. No authentication.</li>
+      <li>Enable it from the chat's <strong>+</strong> menu and ask Ethereum questions.</li>
+    </ol>
+    <p class="callout">On Team and Enterprise workspaces only an organization owner can add connectors; members then just click Connect.</p>
+
+    <h3>ChatGPT (chatgpt.com)</h3>
+    <ol>
+      <li>Settings → enable <strong>Developer mode</strong> (beta)</li>
+      <li>Add an MCP server with the URL above. Authentication: none.</li>
+      <li>Pick wikipethia from the <strong>+</strong> menu in a chat.</li>
+    </ol>
+    <p class="callout">Needs Plus/Pro or above.</p>
+
+    <h3>Claude Code</h3>
+    <div class="snippet">
+      <pre><code>claude mcp add --transport http wikipethia https://mcp.wikipethia.org/mcp</code></pre>
+      <button class="copy" type="button" aria-label="Copy the Claude Code command">Copy</button>
+    </div>
+
+    <h3>Other clients</h3>
+    <p>Any client that speaks MCP's streamable HTTP transport can use the URL directly. The usual config shape:</p>
+    <div class="snippet">
+      <pre><code>{
+  "mcpServers": {
+    "wikipethia": { "url": "https://mcp.wikipethia.org/mcp" }
+  }
+}</code></pre>
+      <button class="copy" type="button" aria-label="Copy the JSON config">Copy</button>
+    </div>
+    <p class="note">claude.ai, ChatGPT, and Claude Code have been tested against the endpoint. Other clients should work but have not been.</p>
+  </section>
+
+  <section id="corpus">
+    <h2>What's in it</h2>
+    <p>59,000+ documents across 10 sources, 2017 to present, as of October 2026. Everything comes from Ethereum's own forums, repositories, and blogs. Every source is declared in <a href="https://github.com/JossDuff/wikipethia/blob/main/sources.toml">sources.toml</a>.</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Source</th><th>What it is</th><th>License</th></tr>
+        </thead>
+        <tbody>
+          <tr data-source="ethresearch"><td><a href="https://ethresear.ch">ethresear.ch</a></td><td>Protocol R&amp;D discussion, 2017–present</td><td><a href="https://creativecommons.org/licenses/by-nc-sa/3.0/">CC BY-NC-SA 3.0</a></td></tr>
+          <tr data-source="ethmagicians"><td><a href="https://ethereum-magicians.org">Ethereum Magicians</a></td><td>EIP process and hard-fork coordination</td><td><a href="https://creativecommons.org/licenses/by-nc-sa/3.0/">CC BY-NC-SA 3.0</a></td></tr>
+          <tr data-source="eips"><td><a href="https://github.com/ethereum/EIPs">ethereum/EIPs</a></td><td>Core-protocol EIP specifications</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
+          <tr data-source="ercs"><td><a href="https://github.com/ethereum/ERCs">ethereum/ERCs</a></td><td>Application-level ERC standards</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
+          <tr data-source="consensusspecs"><td><a href="https://github.com/ethereum/consensus-specs">consensus-specs</a></td><td>Consensus-layer specifications, per fork</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
+          <tr data-source="executionspecs"><td><a href="https://github.com/ethereum/execution-specs">execution-specs</a></td><td>EELS, the executable execution-layer spec, per fork</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
+          <tr data-source="executionapis"><td><a href="https://github.com/ethereum/execution-apis">execution-apis</a></td><td>Engine API specifications, per fork</td><td><a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a></td></tr>
+          <tr data-source="pm"><td><a href="https://github.com/ethereum/pm">ethereum/pm</a></td><td>AllCoreDevs notes</td><td><a href="https://creativecommons.org/licenses/by-sa/3.0/">CC BY-SA 3.0</a></td></tr>
+          <tr data-source="vitalik"><td><a href="https://vitalik.eth.limo">vitalik.eth.limo</a></td><td>Vitalik's writing</td><td><a href="http://www.wtfpl.net/">WTFPL</a></td></tr>
+          <tr data-source="efblog"><td><a href="https://blog.ethereum.org">EF blog</a></td><td>Ethereum Foundation announcements and research</td><td><a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Missing a source? <a href="https://github.com/JossDuff/wikipethia/issues">Suggest one.</a></p>
+  </section>
+
+  <section id="how">
+    <h2>How it answers</h2>
+    <p>Search is hybrid, in three layers:</p>
+    <ul>
+      <li><strong>Ranked lexical search</strong> (FTS5 + BM25). Rare terms outweigh common ones, title and author hits outweigh body mentions, and stemming matches "exits" to "exit". Exact tokens like <code>EIP-4844</code> or an author name hit precisely.</li>
+      <li><strong>Semantic search</strong> (embeddings). Every chunk is mapped by a small local model to a point where meaning, not spelling, determines distance. A question about "PBS" finds proposer/builder-separation posts that never use the acronym.</li>
+      <li><strong>Hybrid fusion</strong> (reciprocal rank fusion). Documents strong in either list surface, and exact-term hits are never diluted by the vector side.</li>
+    </ul>
+    <p>Exact spec identifiers skip ranking altogether: <code>lookup_spec</code> reads the indexed consensus-specs and EIP documents themselves and returns a constant's value or a spec function's body, per fork, with citations. A constant defined once in phase0 can't be drowned out by forum posts that mention it more often.</p>
+    <p>Every result carries a stable doc id, author, published date, URL, and its source's tier. Ethereum research supersedes itself, and a 2019 post can flatly contradict a 2024 one, so the server tells the model to weigh dates when sources disagree.</p>
+  </section>
+
+  <section id="self-host">
+    <h2>Run it yourself</h2>
+    <p>The hosted endpoint is a convenience, not the product. The corpus is a single SQLite file, published as a <a href="https://github.com/JossDuff/wikipethia/releases"><code>corpus-*</code> release</a>, and the server is one Rust binary.</p>
+    <ul>
+      <li><strong>Locally</strong>: download the latest release and serve it over stdio to Claude Code or any MCP client. The <a href="https://github.com/JossDuff/wikipethia#quickstart-local">README quickstart</a> is a few commands and needs about 1.5GB of disk.</li>
+      <li><strong>From the sources</strong>: <code>wikipethia build</code> crawls everything itself, politely (one request per second to the forums) and resumably. Expect several hours.</li>
+      <li><strong>Your own endpoint</strong>: <a href="https://github.com/JossDuff/wikipethia/tree/main/deploy"><code>deploy/</code></a> holds the systemd units, nginx config, and runbook this one runs on.</li>
+    </ul>
+  </section>
+
+  <section id="licensing">
+    <h2>Licensing</h2>
+    <p>The corpus is not offered under a single license: each document stays under its source's own license, listed in the table above and carried in the corpus metadata.</p>
+    <p>In short: for non-commercial use (research, learning, personal projects) the whole corpus is available, with credit. For commercial use, everything except the two forums (ethresear.ch and Ethereum Magicians) is available. Every document already carries its author, date, and URL, so attribution comes for free, and every result carries its source, so the corpus can be filtered to whichever sources suit your needs. The <a href="https://github.com/JossDuff/wikipethia#licensing">README</a> has the full statement.</p>
+  </section>
+
+  <footer>
+    <ul>
+      <li><a href="https://github.com/JossDuff/wikipethia">GitHub</a></li>
+      <li><a href="https://github.com/JossDuff/wikipethia/releases">Releases</a></li>
+      <li><a href="https://github.com/JossDuff/wikipethia/issues">Issues</a></li>
+    </ul>
+    <p>Code licensed under the combined <a href="https://github.com/JossDuff/wikipethia/blob/main/LICENSE">Source Seppuku, Viral Public, and AGPL-3.0</a> licenses. The corpus keeps each source's own license.</p>
+  </footer>
+</main>
+<script src="/site.js" defer></script>
+</body>
+</html>
