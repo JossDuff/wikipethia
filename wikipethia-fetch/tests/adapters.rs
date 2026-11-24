@@ -1,4 +1,4 @@
-//! Offline tests of the repo and feed adapters: tarball unpack + filtering,
+//! Offline tests of the repo, feed and page adapters: tarball unpack + filtering,
 //! change detection, deletion pass, commit-feed dates, RSS walk, and the
 //! parse paths. A fake Fetcher serves committed fixtures — no network, no
 //! git binary, anywhere.
@@ -9,7 +9,9 @@ use std::fs;
 use std::path::Path;
 use std::rc::Rc;
 
-use wikipethia_fetch::{Adapter, FeedAdapter, FetchError, Fetcher, RepoAdapter, SyncIntent, SyncState};
+use wikipethia_fetch::{
+    Adapter, FeedAdapter, FetchError, Fetcher, PageAdapter, RepoAdapter, SyncIntent, SyncState,
+};
 use serde_json::Value;
 
 /// A plain sync: no cap, no widening, no forced refetch. What the CLI passes
@@ -606,4 +608,118 @@ fn a_full_content_feed_still_notices_corrections_to_old_articles() {
         .parse_file(&dir.path().join("posts/2025-07-31-lean-ethereum.json"))
         .unwrap();
     assert!(docs[0].content.contains("four pillars"));
+}
+
+const MANDATE_MD: &str = "https://ethereum.org/content/foundation/mandate/index.md";
+
+fn page_adapter(data_dir: &Path) -> PageAdapter {
+    PageAdapter {
+        source_id: "efmandate".into(),
+        url: MANDATE_MD.into(),
+        doc_url: "https://ethereum.org/foundation/mandate/".into(),
+        published: "2026-03-13".into(),
+        author: Some("Ethereum Foundation".into()),
+        data_dir: data_dir.to_path_buf(),
+    }
+}
+
+fn page_web(body: &str) -> FakeWeb {
+    let mut web = FakeWeb::default();
+    web.texts.insert(MANDATE_MD.into(), body.to_string());
+    web
+}
+
+/// A page is one request, every time: fetched, then unchanged, then updated
+/// when upstream edits it. No checkpoint — the body is the only state.
+#[test]
+fn a_page_sync_is_one_request_and_writes_only_what_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = page_adapter(dir.path());
+    let page = fixture_text("page_ef_mandate_excerpt.md");
+    assert!(adapter.raw_files().is_err(), "unsynced reads as an error, like the other kinds");
+
+    let mut web = page_web(&page);
+    let requests = Rc::clone(&web.requests);
+    let (stats, advanced) = adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
+    assert_eq!((stats.fetched, stats.updated, stats.skipped), (1, 0, 0));
+    assert!(advanced.is_none());
+    assert_eq!(*requests.borrow(), [MANDATE_MD]);
+    assert_eq!(adapter.raw_files().unwrap(), [dir.path().join("page.md")]);
+
+    let (stats, _) = adapter
+        .sync(&mut page_web(&page), &everything(), &SyncState::default())
+        .unwrap();
+    assert_eq!((stats.fetched, stats.updated, stats.skipped), (0, 0, 1));
+
+    let edited = page.replace("rests on two pillars", "rests on three pillars");
+    let (stats, _) = adapter
+        .sync(&mut page_web(&edited), &everything(), &SyncState::default())
+        .unwrap();
+    assert_eq!((stats.fetched, stats.updated, stats.skipped), (0, 1, 0));
+    let docs = adapter.parse_file(&dir.path().join("page.md")).unwrap();
+    assert!(docs[0].content.contains("three pillars"));
+}
+
+/// A moved endpoint answers 200 with the site's HTML shell. Writing that
+/// over the page would replace the source's only document with an error
+/// page at the next index.
+#[test]
+fn a_page_sync_refuses_a_reply_that_is_not_the_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = page_adapter(dir.path());
+    let page = fixture_text("page_ef_mandate_excerpt.md");
+    adapter
+        .sync(&mut page_web(&page), &everything(), &SyncState::default())
+        .unwrap();
+
+    for body in ["<!DOCTYPE html><html><body>Page not found</body></html>", "\n <html lang=\"en\">", "", "  \n"] {
+        let err = adapter
+            .sync(&mut page_web(body), &everything(), &SyncState::default())
+            .unwrap_err();
+        assert!(err.to_string().contains("did not return a Markdown document"), "{err}");
+    }
+    assert_eq!(
+        fs::read_to_string(dir.path().join("page.md")).unwrap(),
+        page,
+        "what was on disk is untouched"
+    );
+}
+
+/// Everything a citation needs comes out right: the id from the rendered
+/// page's path, the date and byline from the manifest, the title from the
+/// front matter — and a body free of the site's scaffolding, which a
+/// tokenizer would index as words.
+#[test]
+fn a_page_parses_into_one_citable_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = page_adapter(dir.path());
+    adapter
+        .sync(
+            &mut page_web(&fixture_text("page_ef_mandate_excerpt.md")),
+            &everything(),
+            &SyncState::default(),
+        )
+        .unwrap();
+    let docs = adapter.parse_file(&dir.path().join("page.md")).unwrap();
+    assert_eq!(docs.len(), 1);
+    let doc = &docs[0];
+    assert_eq!(doc.id, "efmandate/mandate");
+    assert_eq!(doc.source, "efmandate");
+    assert_eq!(doc.url, "https://ethereum.org/foundation/mandate/");
+    assert_eq!(doc.title, "The Ethereum Foundation Mandate");
+    assert_eq!(doc.author.as_deref(), Some("Ethereum Foundation"));
+    // The Mandate's own date, not the 2026-06-06 of the file's last edit.
+    assert_eq!(doc.published, "2026-03-13T00:00:00Z");
+
+    let body = &doc.content;
+    assert!(body.starts_with("This mandate was originally published"), "{body}");
+    assert!(body.contains("\n## I. ETHEREUM\n"), "anchor stripped:\n{body}");
+    assert!(body.contains("\n### Technical Pillar\n"), "{body}");
+    assert!(body.contains("\nSOURCE SEPPUKU LICENSE\n"), "the summary's words survive:\n{body}");
+    assert!(body.contains("> By inclusion of this license"), "{body}");
+    for scaffolding in ["{#", "<details", "<summary", "className", "</div>", "metaTitle", "hideEditButton"] {
+        assert!(!body.contains(scaffolding), "{scaffolding:?} left in:\n{body}");
+    }
+    // Inline Markdown is content and stays as written.
+    assert!(body.contains("[original mandate here](https://ethereum.foundation/ef-mandate.pdf)"));
 }

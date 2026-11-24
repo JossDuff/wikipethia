@@ -34,6 +34,7 @@ Suggest more sources!
 | [ethereum/pm](https://github.com/ethereum/pm) | AllCoreDevs notes |
 | [vitalik.eth.limo](https://vitalik.eth.limo) | Vitalik's writing |
 | [EF blog](https://blog.ethereum.org) | Ethereum Foundation announcements and research |
+| [EF Mandate](https://ethereum.org/foundation/mandate/) | The Ethereum Foundation's statement of its role, principles, and commitments |
 
 ## Quickstart: local
 
@@ -166,3 +167,4 @@ Every document, chunk, and search result also carries its `source`, so the corpu
 | [ethereum/pm](https://github.com/ethereum/pm) | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
 | [vitalik.eth.limo](https://vitalik.eth.limo) | [WTFPL](http://www.wtfpl.net/) |
 | [EF blog](https://blog.ethereum.org) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
+| [EF Mandate](https://ethereum.org/foundation/mandate/) | ["Free for anyone to read, reinterpret, and remix, forever"](https://blog.ethereum.org/en/2026/03/13/ef-mandate) |

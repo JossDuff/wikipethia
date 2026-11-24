@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, bail};
-use wikipethia_fetch::{Adapter, DiscourseAdapter, FeedAdapter, RepoAdapter};
+use wikipethia_fetch::{Adapter, DiscourseAdapter, FeedAdapter, PageAdapter, RepoAdapter};
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug)]
@@ -26,13 +26,19 @@ struct RawSource {
     kind: Kind,
     url: String,
     tier: String,
-    // repo-only fields — validated per kind below.
+    // Per-kind fields — validated per kind below.
+    // repo:
     branch: Option<String>,
     paths: Option<Vec<String>>,
+    /// repo: canonical-URL template. page: the rendered page to cite.
     doc_url: Option<String>,
     /// Extensions to ingest, without dots. Defaults to `["md"]`, which is
     /// every source that predates execution-specs' Python.
     file_types: Option<Vec<String>>,
+    // page:
+    /// The document's own publication date, `YYYY-MM-DD`.
+    published: Option<String>,
+    author: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -41,6 +47,7 @@ pub enum Kind {
     Discourse,
     Repo,
     Feed,
+    Page,
 }
 
 impl Kind {
@@ -49,12 +56,14 @@ impl Kind {
             Kind::Discourse => "discourse",
             Kind::Repo => "repo",
             Kind::Feed => "feed",
+            Kind::Page => "page",
         }
     }
 
     /// Kinds that run an open-ended crawl loop against their host. The
     /// per-host politeness rule is enforced by host-uniqueness for these;
-    /// repo sources make a bounded handful of requests and are exempt.
+    /// repo sources make a bounded handful of requests and are exempt, and
+    /// a page makes exactly one.
     fn crawls(self) -> bool {
         matches!(self, Kind::Discourse | Kind::Feed)
     }
@@ -87,6 +96,12 @@ pub enum SourceSpec {
         file_types: Vec<String>,
     },
     Feed,
+    Page {
+        doc_url: String,
+        /// `YYYY-MM-DD`, validated.
+        published: String,
+        author: Option<String>,
+    },
 }
 
 impl Manifest {
@@ -183,7 +198,82 @@ fn validate(raw: RawSource) -> anyhow::Result<Source> {
     }
 
     let spec = match raw.kind {
+        Kind::Page => {
+            for (name, set) in [
+                ("branch", raw.branch.is_some()),
+                ("paths", raw.paths.is_some()),
+                ("file_types", raw.file_types.is_some()),
+            ] {
+                if set {
+                    bail!(
+                        "sources.toml: `{name}` is a repo-only field, but {:?} is kind \"page\"",
+                        raw.id
+                    );
+                }
+            }
+            let doc_url = raw.doc_url.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "sources.toml: page {:?} needs `doc_url` — the rendered page a \
+                     citation should link, as opposed to `url`, the Markdown file fetched",
+                    raw.id
+                )
+            })?;
+            // The document id is "<id>/<last path segment>", so there must
+            // be one, and it has to be fit for an id.
+            let slug = doc_url
+                .strip_prefix("https://")
+                .or_else(|| doc_url.strip_prefix("http://"))
+                .map(|rest| rest.trim_end_matches('/'))
+                .and_then(|rest| rest.split_once('/'))
+                .and_then(|(_host, path)| path.rsplit('/').next())
+                .unwrap_or_default();
+            let ok_slug = !slug.is_empty()
+                && slug
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+            if !ok_slug {
+                bail!(
+                    "sources.toml: doc_url for page {:?} must be an absolute URL whose \
+                     last path segment is [a-z0-9_-] (it becomes the document id), got \
+                     {doc_url:?}",
+                    raw.id
+                );
+            }
+            let published = raw.published.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "sources.toml: page {:?} needs `published` (YYYY-MM-DD) — every search \
+                     result carries a date, and a page has no machine-readable one",
+                    raw.id
+                )
+            })?;
+            if !is_iso_date(&published) {
+                bail!(
+                    "sources.toml: `published` for {:?} must be a YYYY-MM-DD date, got \
+                     {published:?}",
+                    raw.id
+                );
+            }
+            if raw.author.as_deref().is_some_and(|a| a.trim().is_empty()) {
+                bail!("sources.toml: `author` for {:?} is empty — omit it instead", raw.id);
+            }
+            SourceSpec::Page {
+                doc_url,
+                published,
+                author: raw.author.clone(),
+            }
+        }
         Kind::Repo => {
+            for (name, set) in [
+                ("published", raw.published.is_some()),
+                ("author", raw.author.is_some()),
+            ] {
+                if set {
+                    bail!(
+                        "sources.toml: `{name}` is a page-only field, but {:?} is kind \"repo\"",
+                        raw.id
+                    );
+                }
+            }
             let branch = raw
                 .branch
                 .clone()
@@ -255,15 +345,17 @@ fn validate(raw: RawSource) -> anyhow::Result<Source> {
             }
         }
         kind => {
-            for (name, set) in [
-                ("branch", raw.branch.is_some()),
-                ("paths", raw.paths.is_some()),
-                ("doc_url", raw.doc_url.is_some()),
-                ("file_types", raw.file_types.is_some()),
+            for (name, owner, set) in [
+                ("branch", "repo-only", raw.branch.is_some()),
+                ("paths", "repo-only", raw.paths.is_some()),
+                ("doc_url", "repo- and page-only", raw.doc_url.is_some()),
+                ("file_types", "repo-only", raw.file_types.is_some()),
+                ("published", "page-only", raw.published.is_some()),
+                ("author", "page-only", raw.author.is_some()),
             ] {
                 if set {
                     bail!(
-                        "sources.toml: `{name}` is a repo-only field, but {:?} is kind {:?}",
+                        "sources.toml: `{name}` is a {owner} field, but {:?} is kind {:?}",
                         raw.id,
                         kind.name()
                     );
@@ -272,7 +364,7 @@ fn validate(raw: RawSource) -> anyhow::Result<Source> {
             match kind {
                 Kind::Discourse => SourceSpec::Discourse,
                 Kind::Feed => SourceSpec::Feed,
-                Kind::Repo => unreachable!(),
+                Kind::Repo | Kind::Page => unreachable!(),
             }
         }
     };
@@ -283,6 +375,22 @@ fn validate(raw: RawSource) -> anyhow::Result<Source> {
         tier: raw.tier,
         spec,
     })
+}
+
+/// `YYYY-MM-DD` with a plausible month and day. Not a calendar: 02-31 passes,
+/// and that is fine — the point is to refuse "March 13, 2026" and "2026-3-13",
+/// which would sort and compare wrongly as `published` strings.
+fn is_iso_date(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let digits = |range: std::ops::Range<usize>| bytes[range].iter().all(u8::is_ascii_digit);
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && digits(0..4)
+        && digits(5..7)
+        && digits(8..10)
+        && (1..=12).contains(&text[5..7].parse::<u8>().unwrap_or(0))
+        && (1..=31).contains(&text[8..10].parse::<u8>().unwrap_or(0))
 }
 
 fn host(url: &str) -> &str {
@@ -323,6 +431,18 @@ pub fn adapter_for(source: &Source) -> Box<dyn Adapter> {
         SourceSpec::Feed => Box::new(FeedAdapter {
             source_id: source.id.clone(),
             feed_url: source.url.clone(),
+            data_dir,
+        }),
+        SourceSpec::Page {
+            doc_url,
+            published,
+            author,
+        } => Box::new(PageAdapter {
+            source_id: source.id.clone(),
+            url: source.url.clone(),
+            doc_url: doc_url.clone(),
+            published: published.clone(),
+            author: author.clone(),
             data_dir,
         }),
     }
@@ -474,6 +594,75 @@ mod tests {
         // Bad id charset.
         let slash = GOOD.replace("\"ethmagicians\"", "\"eth/magicians\"");
         assert!(Manifest::parse(&slash).unwrap_err().to_string().contains("a-z0-9"));
+    }
+
+    const PAGE: &str = r#"
+        [[sources]]
+        id = "efmandate"
+        kind = "page"
+        url = "https://ethereum.org/content/foundation/mandate/index.md"
+        doc_url = "https://ethereum.org/foundation/mandate/"
+        published = "2026-03-13"
+        author = "Ethereum Foundation"
+        tier = "foundation"
+    "#;
+
+    #[test]
+    fn a_page_source_parses_and_builds_its_adapter() {
+        let manifest = Manifest::parse(PAGE).unwrap();
+        let source = &manifest.sources[0];
+        assert_eq!(source.kind, Kind::Page);
+        let SourceSpec::Page { doc_url, published, author } = &source.spec else {
+            panic!("not a page: {:?}", source.spec);
+        };
+        assert_eq!(doc_url, "https://ethereum.org/foundation/mandate/");
+        assert_eq!(published, "2026-03-13");
+        assert_eq!(author.as_deref(), Some("Ethereum Foundation"));
+        let _ = adapter_for(source);
+        // One request per sync is not a crawl: a page may share a host
+        // with a feed.
+        assert!(!Kind::Page.crawls());
+        // The author is optional.
+        assert!(Manifest::parse(&PAGE.replace("author = \"Ethereum Foundation\"", "")).is_ok());
+    }
+
+    /// Every search result carries a date and a citable URL, and a page can
+    /// supply neither by itself — so the manifest has to, in a usable form.
+    #[test]
+    fn a_page_must_declare_its_date_and_its_citable_url() {
+        let err = |text: String| Manifest::parse(&text).unwrap_err().to_string();
+
+        let no_date = err(PAGE.replace("published = \"2026-03-13\"", ""));
+        assert!(no_date.contains("needs `published`"), "{no_date}");
+        for bad in ["March 13, 2026", "2026-3-13", "2026-13-01", "2026-03-13T00:00:00Z"] {
+            let msg = err(PAGE.replace("2026-03-13", bad));
+            assert!(msg.contains("YYYY-MM-DD"), "{bad}: {msg}");
+        }
+
+        let no_url = err(PAGE.replace(
+            "doc_url = \"https://ethereum.org/foundation/mandate/\"",
+            "",
+        ));
+        assert!(no_url.contains("needs `doc_url`"), "{no_url}");
+        // The last path segment becomes the document id.
+        for bad in ["https://ethereum.org/", "https://ethereum.org", "https://x.org/a/Mandate.html"] {
+            let msg = err(PAGE.replace("https://ethereum.org/foundation/mandate/", bad));
+            assert!(msg.contains("last path segment"), "{bad}: {msg}");
+        }
+
+        let stray = err(PAGE.replace("tier = ", "branch = \"main\"\n        tier = "));
+        assert!(stray.contains("repo-only"), "{stray}");
+        // And the page's own fields mean nothing to the other kinds.
+        let on_feed = err(GOOD.replace(
+            "url = \"https://vitalik.eth.limo/feed.xml\"",
+            "url = \"https://vitalik.eth.limo/feed.xml\"\n        published = \"2026-03-13\"",
+        ));
+        assert!(on_feed.contains("page-only"), "{on_feed}");
+        let on_repo = err(GOOD.replace(
+            "paths = [\"EIPS\"]",
+            "paths = [\"EIPS\"]\n        author = \"someone\"",
+        ));
+        assert!(on_repo.contains("page-only"), "{on_repo}");
     }
 
     #[test]

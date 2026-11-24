@@ -14,8 +14,9 @@
 # kind: which adapter fetches and parses it. "discourse" walks a forum;
 #       "repo" snapshots a GitHub repository (tarball over HTTPS — the
 #       ROADMAP's "git adapter", no git involved); "feed" walks an RSS feed
-#       and fetches each article.
-# url:  the forum/repo/feed URL, no trailing slash.
+#       and fetches each article; "page" fetches one Markdown document.
+# url:  the forum/repo/feed URL, no trailing slash. For a page, the
+#       Markdown file itself.
 # tier: opaque source-quality label carried on every search result.
 #
 # repo kinds only:
@@ -24,6 +25,14 @@
 #   doc_url: canonical-URL template. {stem} = filename sans .md (doc ids
 #            become "<id>/<stem>"); {path} = repo-relative path (doc ids
 #            "<id>/<path sans .md>").
+#
+# page kinds only:
+#   doc_url:   the rendered page a citation links to. Its last path segment
+#              names the document: the doc id is "<id>/<segment>".
+#   published: the document's own date, YYYY-MM-DD. Declared, because a page
+#              states its date in prose if at all, and the file's last-commit
+#              date is when someone last fixed a typo.
+#   author:    optional byline.
 
 [[sources]]
 id = "ethresearch"
@@ -148,3 +157,28 @@ id = "efblog"
 kind = "feed"
 url = "https://blog.ethereum.org/en/feed.xml"
 tier = "blog"
+
+[[sources]]
+# The EF Mandate — the Foundation's statement of its role, principles, and
+# commitments. Before this, the corpus held only the blog post announcing it
+# (efblog/en/2026/03/13/ef-mandate), which says the Mandate exists and none
+# of what it says.
+#
+# `url` is ethereum.org's own Markdown rendering of its page, byte-identical
+# to public/content/foundation/mandate/index.md in
+# ethereum/ethereum-org-website. Not a `repo` source: that repository is
+# 1.6 GB and moves several times a day, so every update would pull its whole
+# tarball for this one 58 KB file.
+#
+# The canonical original is the PDF at ethereum.foundation/ef-mandate.pdf.
+# Checked 2026-11-24: 98.4% of this copy's words appear in order in the
+# PDF's text; the rest is the PDF's page numbers and table of contents.
+#
+# `published` is the Mandate's own date. The file was last edited 2026-06-06.
+id = "efmandate"
+kind = "page"
+url = "https://ethereum.org/content/foundation/mandate/index.md"
+doc_url = "https://ethereum.org/foundation/mandate/"
+published = "2026-03-13"
+author = "Ethereum Foundation"
+tier = "foundation"
