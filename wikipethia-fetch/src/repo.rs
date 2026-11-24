@@ -348,13 +348,10 @@ impl RepoAdapter {
                 // Frontmatter is a markdown convention; probing a .py file
                 // for it is meaningless. A body-stated date also settles
                 // the question without a request.
-                if FileKind::of(relpath) == Some(FileKind::Markdown)
+                let dates_itself = FileKind::of(relpath) == Some(FileKind::Markdown)
                     && (frontmatter(&content).is_some_and(|fm| fm.contains_key("created"))
-                        || body_date(&content).is_some())
-                {
-                    return false;
-                }
-                true
+                        || body_date(&content).is_some());
+                !dates_itself
             })
             .collect()
     }
