@@ -363,6 +363,53 @@ fn unmatched_terms_tells_a_joined_token_from_a_missing_word() {
     );
 }
 
+/// "Occurs" means as a whole index token. A hex selector written without
+/// its prefix is a different token from the one the corpus holds — the
+/// result says so, and the caller's wording has to be honest about it.
+#[test]
+fn unmatched_terms_knows_whole_tokens_not_substrings() {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .upsert(&[doc("test/1", "The magic value is 0x1626ba7e, returned by isValidSignature.")])
+        .unwrap();
+    assert_eq!(unmatched(&store, "0x1626ba7e"), []);
+    assert_eq!(unmatched(&store, "1626ba7e"), [pair("1626ba7e", &["1626ba7e"])]);
+}
+
+/// One word in brackets or behind a sigil is that word: one finding, shown
+/// bare, not a second entry "(in "(wexlurb)")".
+#[test]
+fn unmatched_terms_reports_a_wrapped_word_as_the_word() {
+    let store = wording_store();
+    assert_eq!(unmatched(&store, "wexlurb (wexlurb) $wexlurb"), [pair("wexlurb", &["wexlurb"])]);
+    assert_eq!(unmatched(&store, "(technical)"), []);
+    // A combining mark stays with its letter: decomposed "ü" is one word.
+    assert_eq!(
+        unmatched(&store, "Ju\u{0308}rgensen"),
+        [pair("Ju\u{0308}rgensen", &["Ju\u{0308}rgensen"])]
+    );
+}
+
+/// The query is caller-supplied and the probes run while the caller holds
+/// the store: the work is bounded however long the query is.
+#[test]
+fn unmatched_terms_bounds_the_work_a_query_can_ask_for() {
+    let store = wording_store();
+    let many_terms: String = (0..500).map(|i| format!("zq{i} ")).collect();
+    assert_eq!(store.unmatched_terms(&many_terms).unwrap().len(), 32);
+
+    // One token of 500 joined words: the first 64 are probed, no more.
+    let joined: String = (0..500).map(|i| format!("zq{i}")).collect::<Vec<_>>().join("-");
+    let found = store.unmatched_terms(&joined).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].absent_words.len(), 64);
+
+    // A long quoted sentence is still checked to its last word.
+    let sentence = "\"the technical committee reviewed blob duties under one pillar of the \
+                    design that validators stay cheap to wexlurb\"";
+    assert_eq!(store.unmatched_terms(sentence).unwrap()[0].absent_words, ["wexlurb"]);
+}
+
 #[test]
 fn unmatched_terms_only_opens_a_phrase_where_a_token_starts() {
     let store = wording_store();

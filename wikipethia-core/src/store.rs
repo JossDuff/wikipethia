@@ -540,26 +540,50 @@ impl Store {
     /// neighbours, so a full page of results says nothing about whether the
     /// one term that mattered matched. Always corpus-wide, whatever scope
     /// the search itself ran under. One `LIMIT 1` probe per term, plus one
-    /// per word of each term that missed.
+    /// per word of each term that missed — both capped, because the query is
+    /// caller-supplied and this runs while the caller holds the store.
+    ///
+    /// "Occurs" means as a whole index token. `1626ba7e` is reported absent
+    /// in a corpus full of `0x1626ba7e`: to the tokenizer those are different
+    /// words. A caller wording its claim must not promise more than that.
     pub fn unmatched_terms(&self, query: &str) -> Result<Vec<UnmatchedTerm>, CoreError> {
         let mut stmt = self
             .conn
             .prepare_cached("SELECT 1 FROM chunks_fts WHERE chunks_fts MATCH ?1 LIMIT 1")?;
         let mut exists = |text: &str| stmt.exists([fts_phrase(text)]);
-        let mut unmatched = Vec::new();
-        for term in query_terms(query) {
+        let mut unmatched: Vec<UnmatchedTerm> = Vec::new();
+        let mut reported = HashSet::new();
+        for term in query_terms(query).into_iter().take(MAX_PROBED_TERMS) {
             if exists(&term)? {
                 continue;
             }
-            let mut absent_words: Vec<String> = Vec::new();
-            for word in term.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()) {
-                if !absent_words.iter().any(|seen| seen.eq_ignore_ascii_case(word))
-                    && !exists(word)?
-                {
-                    absent_words.push(word.to_string());
+            // A combining mark belongs to the letter before it: splitting on
+            // it would cut a decomposed "ü" into two fragments.
+            let is_break = |c: char| !c.is_alphanumeric() && !('\u{0300}'..='\u{036F}').contains(&c);
+            let mut words = term.split(is_break).filter(|w| !w.is_empty());
+            let (first, second) = (words.next(), words.next());
+            let found = match (first, second) {
+                // One word wrapped in punctuation — "(wexlurb)", "$wexlurb".
+                // It is the word that is missing; report it as itself, so it
+                // is one finding with the bare "wexlurb" beside it.
+                (Some(word), None) => UnmatchedTerm {
+                    term: word.to_string(),
+                    absent_words: vec![word.to_string()],
+                },
+                _ => {
+                    let mut seen = HashSet::new();
+                    let mut absent_words = Vec::new();
+                    for word in first.into_iter().chain(second).chain(words).take(MAX_PROBED_WORDS) {
+                        if seen.insert(word.to_lowercase()) && !exists(word)? {
+                            absent_words.push(word.to_string());
+                        }
+                    }
+                    UnmatchedTerm { term, absent_words }
                 }
+            };
+            if reported.insert(found.term.to_lowercase()) {
+                unmatched.push(found);
             }
-            unmatched.push(UnmatchedTerm { term, absent_words });
         }
         Ok(unmatched)
     }
@@ -1314,6 +1338,14 @@ fn fts_query(user: &str) -> Option<String> {
         Some(terms.join(" OR "))
     }
 }
+
+/// Terms of one query that [`Store::unmatched_terms`] probes. No real query
+/// comes near it; a megabyte of distinct words must not become a megabyte of
+/// probes.
+const MAX_PROBED_TERMS: usize = 32;
+/// Words probed inside one unmatched term. Generous on purpose: agents quote
+/// whole sentences, and a word left unprobed would be reported as occurring.
+const MAX_PROBED_WORDS: usize = 64;
 
 /// One FTS5 phrase: the text double-quoted, embedded quotes doubled. Inside
 /// the quotes FTS5 has no operators. NUL is the one character that still
