@@ -507,6 +507,48 @@ impl Store {
         Ok(hits)
     }
 
+    /// The terms of `query` that occur in no indexed chunk, and whether any
+    /// word of the query matched at all. A term is a whitespace token or a
+    /// double-quoted phrase, matched through the same tokenizer search uses
+    /// — so a stemmed form counts as present, and `EIP-4844` is checked as
+    /// the phrase `eip 4844`.
+    ///
+    /// This is what lets a caller say "the corpus does not hold this
+    /// wording": search ORs its tokens and the vector arm always returns
+    /// neighbours, so a full page of results says nothing about whether the
+    /// one term that mattered matched. Always corpus-wide, whatever scope
+    /// the search itself ran under — absence everywhere is the only claim
+    /// strong enough to act on. One `LIMIT 1` probe per term.
+    ///
+    /// The flag is false only when lexical search had nothing to match, so
+    /// any results are vector neighbours alone. It is tracked per word, not
+    /// per term: search splits a quoted phrase and ORs its words, so an
+    /// absent phrase whose words occur apart still produced lexical hits.
+    pub fn absent_terms(&self, query: &str) -> Result<(Vec<String>, bool), CoreError> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT 1 FROM chunks_fts WHERE chunks_fts MATCH ?1 LIMIT 1")?;
+        let mut exists = |text: &str| stmt.exists([fts_phrase(text)]);
+        let mut absent = Vec::new();
+        let mut any_word_matched = false;
+        for term in query_terms(query) {
+            if exists(&term)? {
+                any_word_matched = true;
+                continue;
+            }
+            if !any_word_matched && term.contains(' ') {
+                for word in term.split(' ').filter(|w| w.chars().any(char::is_alphanumeric)) {
+                    if exists(word)? {
+                        any_word_matched = true;
+                        break;
+                    }
+                }
+            }
+            absent.push(term);
+        }
+        Ok((absent, any_word_matched))
+    }
+
     /// Resolve `tier` for already-cut hits: one documents point lookup plus
     /// one sources lookup per hit — never part of the ranking query.
     fn fill_tiers(&self, hits: &mut [SearchHit]) -> Result<(), CoreError> {
@@ -1249,13 +1291,49 @@ fn fts_query(user: &str) -> Option<String> {
     let terms: Vec<String> = user
         .split_whitespace()
         .filter(|t| t.chars().any(char::is_alphanumeric))
-        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .map(fts_phrase)
         .collect();
     if terms.is_empty() {
         None
     } else {
         Some(terms.join(" OR "))
     }
+}
+
+/// One FTS5 phrase: the text double-quoted, embedded quotes doubled. Inside
+/// the quotes FTS5 has no operators, so any user text is safe.
+fn fts_phrase(text: &str) -> String {
+    format!("\"{}\"", text.replace('"', "\"\""))
+}
+
+/// The units [`Store::absent_terms`] checks: every double-quoted span kept
+/// whole, and every other whitespace token — the tokens [`fts_query`]
+/// searches for. A quote with no partner is punctuation, not a phrase.
+/// Deduplicated case-insensitively, in query order.
+fn query_terms(user: &str) -> Vec<String> {
+    fn push(term: &str, seen: &mut HashSet<String>, terms: &mut Vec<String>) {
+        if term.chars().any(char::is_alphanumeric) && seen.insert(term.to_lowercase()) {
+            terms.push(term.to_string());
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut terms = Vec::new();
+    let mut rest = user;
+    while let Some((before, after)) = rest.split_once('"') {
+        let Some((phrase, tail)) = after.split_once('"') else {
+            break;
+        };
+        for token in before.split_whitespace() {
+            push(token, &mut seen, &mut terms);
+        }
+        let phrase = phrase.split_whitespace().collect::<Vec<_>>().join(" ");
+        push(&phrase, &mut seen, &mut terms);
+        rest = tail;
+    }
+    for token in rest.split_whitespace() {
+        push(token.trim_matches('"'), &mut seen, &mut terms);
+    }
+    terms
 }
 
 /// Replace a document's chunk rows. Delete-then-reinsert rather than upsert

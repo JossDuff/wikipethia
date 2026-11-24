@@ -88,6 +88,65 @@ pub fn excerpt(text: &str, max_chars: usize) -> String {
     format!("{}…", cut.trim_end())
 }
 
+/// Absent query terms a search notice names before counting the rest.
+pub const ABSENT_SHOWN: usize = 5;
+/// Characters of one absent term shown. Agents quote whole guessed
+/// sentences; the notice needs only enough to recognise which one.
+pub const ABSENT_TERM_CHARS: usize = 60;
+
+/// The line a search response opens with when terms of its query occur in
+/// no indexed document (`Store::absent_terms`); `None` when every term
+/// matched somewhere.
+///
+/// A prompt, not a log line: a full page of results reads as "keep going",
+/// and agents were measured rewording one search until their budget ran
+/// out. The claim is deliberately about the *terms* — it is true on
+/// searches that go on to succeed too, so it must not tell the reader to
+/// abandon the corpus, only that these words will not be found in it.
+pub fn absent_notice(absent: &[String], any_word_matched: bool) -> Option<String> {
+    if absent.is_empty() {
+        return None;
+    }
+    let mut named = absent
+        .iter()
+        .take(ABSENT_SHOWN)
+        .map(|term| format!("\"{}\"", excerpt(term, ABSENT_TERM_CHARS)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if absent.len() > ABSENT_SHOWN {
+        named.push_str(&format!(" and {} more", absent.len() - ABSENT_SHOWN));
+    }
+    if !any_word_matched {
+        // The lexical arm had nothing to match: whatever follows came from
+        // the vector side alone.
+        return Some(format!(
+            "Not in the corpus: none of this query's terms ({named}) appear in any \
+             indexed document. The results below are nearest neighbours by embedding \
+             only and are probably unrelated — do not treat them as matches; use \
+             another source."
+        ));
+    }
+    // Search ranks a quoted phrase as independent words, so an absent
+    // phrase's own words can be what the results matched.
+    let apart = if absent.iter().any(|term| term.contains(' ')) {
+        ", or a quoted phrase's words apart"
+    } else {
+        ""
+    };
+    let (this, it, wording) = if absent.len() == 1 {
+        ("this", "it", "this wording")
+    } else {
+        ("these", "them", "these words")
+    };
+    Some(format!(
+        "Not in the corpus: {named} — no indexed document contains {this} as written. \
+         The results below match only the query's other words{apart}. Rewording will \
+         not surface {it}: check the spelling or the identifier's real name; if the \
+         answer depends on a document that uses {wording}, it is not indexed here — \
+         use another source."
+    ))
+}
+
 /// Whole block up to `max_chars` characters; when cut, tells the model how
 /// to get the rest. Correct ONLY where get_post_context genuinely shows
 /// more than the caller did (search snippets, neighbor posts) — for text
@@ -160,6 +219,60 @@ pub fn post_label(meta: &Map<String, Value>) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn terms(list: &[&str]) -> Vec<String> {
+        list.iter().map(|t| t.to_string()).collect()
+    }
+
+    #[test]
+    fn absent_notice_is_silent_when_every_term_matched() {
+        assert_eq!(absent_notice(&[], true), None);
+        assert_eq!(absent_notice(&[], false), None);
+    }
+
+    #[test]
+    fn absent_notice_names_the_terms_and_keeps_the_rest_of_the_query_in_play() {
+        let one = absent_notice(&terms(&["incrementalist"]), true).unwrap();
+        assert!(one.starts_with("Not in the corpus: \"incrementalist\" — "), "{one}");
+        assert!(one.contains("contains this as written"), "{one}");
+        assert!(one.contains("match only the query's other words."), "{one}");
+
+        let two = absent_notice(&terms(&["incrementalist", "513,000"]), true).unwrap();
+        assert!(two.contains("\"incrementalist\", \"513,000\""), "{two}");
+        assert!(two.contains("contains these as written"), "{two}");
+    }
+
+    /// Search ORs the words of a quoted phrase, so an absent phrase is no
+    /// evidence its words went unmatched — the line must not imply it.
+    #[test]
+    fn absent_notice_admits_a_phrases_words_may_have_matched_apart() {
+        let out = absent_notice(&terms(&["Technical Pillar"]), true).unwrap();
+        assert!(out.contains("other words, or a quoted phrase's words apart."), "{out}");
+    }
+
+    /// With no word matched there are no "other words": the results are
+    /// vector neighbours only, and the line has to say that instead.
+    #[test]
+    fn absent_notice_says_so_when_no_word_matched_at_all() {
+        let out = absent_notice(&terms(&["Verhaeghe"]), false).unwrap();
+        assert!(out.contains("none of this query's terms (\"Verhaeghe\")"), "{out}");
+        assert!(out.contains("nearest neighbours by embedding only"), "{out}");
+        assert!(!out.contains("other words"), "{out}");
+    }
+
+    #[test]
+    fn absent_notice_caps_the_list_and_the_length_of_each_term() {
+        let many = terms(&["a1", "b2", "c3", "d4", "e5", "f6", "g7"]);
+        let out = absent_notice(&many, true).unwrap();
+        assert!(out.contains("\"e5\" and 2 more"), "{out}");
+        assert!(!out.contains("f6"), "{out}");
+
+        let sentence = "only a small number of people can understand how the protocol \
+                        works and why it is secure";
+        let out = absent_notice(&terms(&[sentence]), true).unwrap();
+        assert!(out.contains("…\""), "long term is cut:\n{out}");
+        assert!(!out.contains("why it is secure"), "{out}");
+    }
 
     #[test]
     fn citation_shape_with_and_without_tier() {

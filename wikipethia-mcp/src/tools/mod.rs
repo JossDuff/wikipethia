@@ -22,8 +22,8 @@ use serde_json::Value;
 
 use format::{
     FUNCTION_MAX_CHARS, INDEX_EXCERPT_CHARS, MAX_CONTEXT, MAX_DEFINITIONS, MAX_LIMIT,
-    NEIGHBOR_MAX_CHARS, OP_MAX_CHARS, REPLY_PAGE, RESULT_EXCERPT_CHARS, citation, date, excerpt,
-    fork_label, post_label, spec_status, truncate_block, window,
+    NEIGHBOR_MAX_CHARS, OP_MAX_CHARS, REPLY_PAGE, RESULT_EXCERPT_CHARS, absent_notice, citation,
+    date, excerpt, fork_label, post_label, spec_status, truncate_block, window,
 };
 
 /// The "identical in …" line for a definition, or `None` when there is
@@ -249,8 +249,10 @@ impl CorpusServer {
              or \"scheduled\" date is a projection as of the post's published \
              date. Check it against today's date, and report a lapsed \
              projection as a past expectation, not a current fact. Coverage is \
-             limited to the indexed sources: when the corpus has nothing relevant, \
-             say so and fall back to web search."
+             limited to the indexed sources. search_posts opens with a \"Not in the \
+             corpus:\" line when a query term or quoted phrase occurs in no indexed \
+             document — stop rewording that search when you see it. When the corpus \
+             has nothing relevant, say so and fall back to web search."
         );
         if embedder.is_none() {
             instructions.push_str(
@@ -281,7 +283,7 @@ impl CorpusServer {
 
     #[tool(
         name = "search_posts",
-        description = "Search a local, curated corpus of Ethereum protocol research and standards: tens of thousands of posts from the ethresear.ch and Ethereum Magicians (ethereum-magicians.org) forums, 2017 to present, plus the full EIP and ERC specifications, the consensus-layer specs, the executable execution-layer spec (EELS, Python, per fork), the Engine API specs, AllCoreDevs meeting notes (what core devs decided and when), and articles from vitalik.eth.limo and blog.ethereum.org. Use this BEFORE web search for anything touching Ethereum research or the EIP process: sharding and danksharding, EIP-4844/blobs, account abstraction (EIP-4337/7702), proposer-builder separation (PBS), MEV, rollups, data availability sampling, statelessness, casper/consensus, staking economics, EIP and hard-fork coordination, or the cryptography behind them. Ranking is hybrid lexical+semantic, so exact tokens (\"EIP-4844\", an author's username) and natural-language questions both work. Every result carries a doc_id (the input to get_topic, get_post_context, and find_similar), author, published date, source tier, and a citable URL. Ethereum research goes stale in specific ways — a 2019 design post can be flatly superseded by a 2024 one — so always weigh the published dates when results disagree. But for questions about the current or upcoming state of the protocol (e.g. which hardfork is next), recency and thread volume mislead: fork planning pipelines overlap, so the fork after next has the newest, loudest discussion — resolve such questions from the status fields of the \"Hardfork Meta\" EIPs, not from what was posted most recently. Likewise, treat forward-looking dates in results (\"expected mid-2025\") as projections from that post's published date, not current facts — check them against today's date before repeating them. A top hit is often a reply from the middle of a thread: call get_post_context or get_topic with its doc_id to recover the original post and the surrounding argument; EIPs, specs, and blog articles are standalone documents, and get_post_context returns them whole. If nothing relevant returns, say so and fall back to web search rather than forcing a weak match."
+        description = "Search a local, curated corpus of Ethereum protocol research and standards: tens of thousands of posts from the ethresear.ch and Ethereum Magicians (ethereum-magicians.org) forums, 2017 to present, plus the full EIP and ERC specifications, the consensus-layer specs, the executable execution-layer spec (EELS, Python, per fork), the Engine API specs, AllCoreDevs meeting notes (what core devs decided and when), and articles from vitalik.eth.limo and blog.ethereum.org. Use this BEFORE web search for anything touching Ethereum research or the EIP process: sharding and danksharding, EIP-4844/blobs, account abstraction (EIP-4337/7702), proposer-builder separation (PBS), MEV, rollups, data availability sampling, statelessness, casper/consensus, staking economics, EIP and hard-fork coordination, or the cryptography behind them. Ranking is hybrid lexical+semantic, so exact tokens (\"EIP-4844\", an author's username) and natural-language questions both work. Every result carries a doc_id (the input to get_topic, get_post_context, and find_similar), author, published date, source tier, and a citable URL. Ethereum research goes stale in specific ways — a 2019 design post can be flatly superseded by a 2024 one — so always weigh the published dates when results disagree. But for questions about the current or upcoming state of the protocol (e.g. which hardfork is next), recency and thread volume mislead: fork planning pipelines overlap, so the fork after next has the newest, loudest discussion — resolve such questions from the status fields of the \"Hardfork Meta\" EIPs, not from what was posted most recently. Likewise, treat forward-looking dates in results (\"expected mid-2025\") as projections from that post's published date, not current facts — check them against today's date before repeating them. A top hit is often a reply from the middle of a thread: call get_post_context or get_topic with its doc_id to recover the original post and the surrounding argument; EIPs, specs, and blog articles are standalone documents, and get_post_context returns them whole. When a query term or quoted phrase occurs in no indexed document, the response opens with a \"Not in the corpus:\" line naming it, and the results under it match only the query's other words. Take that line at face value and do not keep rewording the same search: correct the term if it was a guessed spelling or identifier, otherwise treat the corpus as not holding it. If nothing relevant returns, say so and fall back to web search rather than forcing a weak match."
     )]
     async fn search_posts(
         &self,
@@ -345,6 +347,15 @@ impl CorpusServer {
             ));
         }
         let mut out = format!("{} results for {:?}\n", hits.len(), p.query);
+        // Directly under the header, before any result: a full page reads
+        // as "found something" unless the response itself says which of the
+        // query's words matched nothing. A rule in the tool description
+        // alone does not survive a long session.
+        let (absent, any_word_matched) = store.absent_terms(&p.query).map_err(internal)?;
+        if let Some(notice) = absent_notice(&absent, any_word_matched) {
+            out.push_str(&notice);
+            out.push('\n');
+        }
         for (i, hit) in hits.iter().enumerate() {
             let label = store
                 .get(&hit.doc_id)
@@ -1663,6 +1674,53 @@ mod tests {
         assert!(out.contains("lexical-only"), "no-embedder note missing");
         // limit honored: at most 2 numbered entries.
         assert!(!out.contains("\n3. "));
+    }
+
+    /// The line sits directly under the header, names only the word that
+    /// matched nothing, and leaves the results in place.
+    #[test]
+    fn search_posts_names_query_terms_no_document_contains() {
+        let out = server()
+            .search_posts_impl(SearchPostsParams {
+                query: "zorbling wexlurb".into(),
+                limit: None,
+                scope: None,
+            })
+            .unwrap();
+        let notice = out.lines().nth(1).unwrap();
+        assert!(notice.starts_with("Not in the corpus: \"wexlurb\" — "), "{out}");
+        assert!(!notice.contains("zorbling"), "{out}");
+        assert!(out.contains("ethresearch/post/7001"), "results still follow:\n{out}");
+    }
+
+    /// Both words occur, in different topics, so search returns hits for
+    /// the quoted phrase — and the response has to say the phrase itself
+    /// is nowhere, without claiming its words went unmatched.
+    #[test]
+    fn search_posts_flags_a_quoted_phrase_whose_words_only_occur_apart() {
+        let out = server()
+            .search_posts_impl(SearchPostsParams {
+                query: "\"zorbling flumph\"".into(),
+                limit: None,
+                scope: None,
+            })
+            .unwrap();
+        let notice = out.lines().nth(1).unwrap();
+        assert!(notice.starts_with("Not in the corpus: \"zorbling flumph\" — "), "{out}");
+        assert!(notice.contains("a quoted phrase's words apart"), "{out}");
+        assert!(out.contains("\n1. "), "{out}");
+    }
+
+    #[test]
+    fn search_posts_has_no_absent_line_when_every_term_matched() {
+        let out = server()
+            .search_posts_impl(SearchPostsParams {
+                query: "\"zorbling proposal\" reply".into(),
+                limit: None,
+                scope: None,
+            })
+            .unwrap();
+        assert!(!out.contains("Not in the corpus"), "{out}");
     }
 
     #[test]

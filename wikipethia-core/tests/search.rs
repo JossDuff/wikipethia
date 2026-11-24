@@ -266,3 +266,88 @@ fn limit_caps_distinct_documents() {
     assert_eq!(store.search("plasma", 1).unwrap().len(), 1);
     assert!(store.search("plasma", 0).unwrap().is_empty());
 }
+
+/// Two documents for `absent_terms`: "technical" and "pillar" both occur,
+/// never adjacent, and "validators" occurs only in the plural.
+fn wording_store() -> Store {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .upsert(&[
+            doc("test/1", "The technical committee reviewed blob duties under EIP-4844."),
+            doc("test/2", "One pillar of the design is that validators stay cheap to run."),
+        ])
+        .unwrap();
+    store
+}
+
+fn absent(store: &Store, query: &str) -> Vec<String> {
+    store.absent_terms(query).unwrap().0
+}
+
+#[test]
+fn absent_terms_names_only_the_words_no_document_contains() {
+    let store = wording_store();
+    assert_eq!(absent(&store, "technical committee duties"), Vec::<String>::new());
+    assert_eq!(absent(&store, "technical wexlurb duties"), ["wexlurb"]);
+    // Repeats are one finding, whatever their case.
+    assert_eq!(absent(&store, "wexlurb Wexlurb WEXLURB"), ["wexlurb"]);
+}
+
+/// The check goes through the index's own tokenizer, so it agrees with
+/// search about what counts as the same word.
+#[test]
+fn absent_terms_matches_the_way_search_does() {
+    let store = wording_store();
+    // Stemming: only the plural is in the corpus.
+    assert_eq!(absent(&store, "validator"), Vec::<String>::new());
+    // A hyphenated identifier is one unit: "eip" alone is everywhere, and
+    // that must not make EIP-9999 look present.
+    assert_eq!(absent(&store, "EIP-4844"), Vec::<String>::new());
+    assert_eq!(absent(&store, "EIP-9999?"), ["EIP-9999?"]);
+}
+
+/// The case the notice exists for: an agent hunting an exact wording. Both
+/// words are in the corpus, the phrase is not — and search, which ORs the
+/// halves, returns a full page for it.
+#[test]
+fn absent_terms_checks_a_quoted_phrase_as_a_phrase() {
+    let store = wording_store();
+    assert_eq!(absent(&store, "technical pillar"), Vec::<String>::new());
+    assert_eq!(
+        absent(&store, "committee \"Technical   Pillar\" design"),
+        ["Technical Pillar"]
+    );
+    assert_eq!(absent(&store, "\"technical committee\""), Vec::<String>::new());
+    assert!(!store.search("\"Technical Pillar\"", 10).unwrap().is_empty());
+}
+
+/// The flag separates "these words are missing" from "nothing matched, the
+/// results are vector neighbours only" — and a phrase whose words occur
+/// apart is the first kind, because search matched those words.
+#[test]
+fn absent_terms_reports_whether_any_word_matched() {
+    let store = wording_store();
+    assert!(store.absent_terms("technical wexlurb").unwrap().1);
+    assert!(store.absent_terms("\"technical pillar\"").unwrap().1);
+    assert!(!store.absent_terms("wexlurb \"flumph zorb\"").unwrap().1);
+    assert_eq!(store.absent_terms("").unwrap(), (Vec::new(), false));
+}
+
+#[test]
+fn absent_terms_never_errors_on_hostile_queries() {
+    let store = wording_store();
+    for query in [
+        "what's EIP-4844?",
+        "\"unbalanced",
+        "\"\" \"   \" \"???\"",
+        "AND OR NOT",
+        "???",
+        "   ",
+        "a AND* (b OR c) NEAR/3 d",
+        "title:technical \"col:\"\"x\"",
+    ] {
+        store.absent_terms(query).unwrap();
+    }
+    // A lone quote is punctuation: the word is still checked, and shown bare.
+    assert_eq!(absent(&store, "\"wexlurb technical"), ["wexlurb"]);
+}
