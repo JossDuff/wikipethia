@@ -879,7 +879,7 @@ fn parse_loose_date(text: &str) -> Option<String> {
 
 /// Flat `key: value` frontmatter between `---` lines; None when the file
 /// doesn't open with one, or the block never closes.
-fn frontmatter(content: &str) -> Option<HashMap<String, String>> {
+pub(crate) fn frontmatter(content: &str) -> Option<HashMap<String, String>> {
     let rest = content.strip_prefix("---")?;
     let end = rest.find("\n---")?;
     let mut map = HashMap::new();
@@ -894,7 +894,7 @@ fn frontmatter(content: &str) -> Option<HashMap<String, String>> {
     Some(map)
 }
 
-fn body_after_frontmatter(content: &str) -> &str {
+pub(crate) fn body_after_frontmatter(content: &str) -> &str {
     let Some(rest) = content.strip_prefix("---") else {
         return content;
     };

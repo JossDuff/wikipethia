@@ -299,9 +299,9 @@ fn main() -> anyhow::Result<()> {
                 // "--topic" means anything for it.
                 let adapter = match entry.kind {
                     Kind::Discourse => manifest::discourse_adapter(entry),
-                    Kind::Repo | Kind::Feed => bail!(
+                    Kind::Repo | Kind::Feed | Kind::Page => bail!(
                         "--topic only applies to discourse sources; {:?} is kind {:?} \
-                         (repo/feed sources refresh wholesale — just run sync)",
+                         (every other kind refreshes wholesale — just run sync)",
                         entry.id,
                         entry.kind
                     ),
@@ -516,6 +516,7 @@ fn announce_build_cost(selected: &[&manifest::Source]) {
     let forums = selected.iter().filter(|s| s.kind == Kind::Discourse).count();
     let repos = selected.iter().filter(|s| s.kind == Kind::Repo).count();
     let feeds = selected.iter().filter(|s| s.kind == Kind::Feed).count();
+    let pages = selected.iter().filter(|s| s.kind == Kind::Page).count();
     if forums > 0 {
         println!(
             "  {forums} forum crawl{}: hours, at one request per second per host —",
@@ -533,6 +534,9 @@ fn announce_build_cost(selected: &[&manifest::Source]) {
     }
     if feeds > 0 {
         println!("  {feeds} feed{}: minutes.", report::plural(feeds));
+    }
+    if pages > 0 {
+        println!("  {pages} page{}: seconds.", report::plural(pages));
     }
     println!("  Safe to interrupt at any point; re-running resumes where it stopped.");
 }
@@ -660,6 +664,9 @@ fn sync_sources(
 ///   costs nothing.
 /// - A forum mirror is only rebuilt by an explicit `--full` walk; errors
 ///   propagate as Err, so Ok means every fetch landed.
+/// - A page is fetched once and then never again, so most Ok syncs fetch
+///   nothing. It rebuilds its mirror exactly when it did fetch, and that is
+///   the only time it returns an advanced checkpoint.
 ///
 /// `--limit` caps any walk to an arbitrary slice and clears nothing.
 fn mirror_rebuilt(kind: Kind, opts: &SyncIntent, advanced: bool) -> bool {
@@ -670,6 +677,7 @@ fn mirror_rebuilt(kind: Kind, opts: &SyncIntent, advanced: bool) -> bool {
         Kind::Repo => advanced,
         Kind::Feed => false,
         Kind::Discourse => opts.full,
+        Kind::Page => advanced,
     }
 }
 
@@ -1055,7 +1063,7 @@ fn index_with(
     // Record every manifest source's url/tier, not just the selected ones —
     // a filtered index run must still keep tiers fresh.
     for entry in &manifest.sources {
-        store.upsert_source(&entry.id, &entry.url, &entry.tier)?;
+        store.upsert_source(&entry.id, entry.public_url(), &entry.tier)?;
     }
 
     let mut total = IndexOutcome::default();
@@ -1310,6 +1318,12 @@ mod tests {
         assert!(mirror_rebuilt(Kind::Discourse, &full, true));
         assert!(mirror_rebuilt(Kind::Discourse, &full, false));
         assert!(!mirror_rebuilt(Kind::Discourse, &plain, true));
+
+        // Page: fetched once. The sync that fetched it advances the
+        // checkpoint; every later one makes no request and rebuilds nothing —
+        // which is every sync a downloaded corpus ever runs.
+        assert!(mirror_rebuilt(Kind::Page, &plain, true));
+        assert!(!mirror_rebuilt(Kind::Page, &plain, false));
 
         // --limit caps any walk to an arbitrary slice.
         assert!(!mirror_rebuilt(Kind::Discourse, &limited, true));
