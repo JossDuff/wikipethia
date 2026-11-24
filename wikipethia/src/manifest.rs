@@ -85,6 +85,18 @@ pub struct Source {
     pub spec: SourceSpec,
 }
 
+impl Source {
+    /// The URL to show a reader for this source: where its documents live,
+    /// not necessarily what is fetched. They differ for a page, whose `url`
+    /// is a raw Markdown file and whose `doc_url` is the page people cite.
+    pub fn public_url(&self) -> &str {
+        match &self.spec {
+            SourceSpec::Page { doc_url, .. } => doc_url,
+            _ => &self.url,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum SourceSpec {
     Discourse,
@@ -143,6 +155,28 @@ impl Manifest {
                     "sources.toml: {:?} shares a host with an earlier crawling source — \
                      two crawls on one host would each get their own rate limiter and \
                      break the one-request-per-second-per-host rule",
+                    source.id
+                );
+            }
+            // A page is one request from a fresh client, which nothing
+            // throttles: next to another page on its host, or at either end
+            // of a crawl of it, that request lands inside the same second.
+            // Fetched once, so it could only happen on the first build — and
+            // the rule has no "only once" clause.
+            let meets_a_page = |a: &Source, b: &Source| {
+                (a.kind == Kind::Page && (b.kind == Kind::Page || b.kind.crawls()))
+                    && host(&a.url) == host(&b.url)
+            };
+            if let Some(other) = sources
+                .iter()
+                .find(|s| meets_a_page(s, &source) || meets_a_page(&source, s))
+            {
+                bail!(
+                    "sources.toml: {:?} and {:?} are on the same host, and a page's one \
+                     request is not rate-limited against another source's — that would \
+                     break the one-request-per-second-per-host rule. A second page on a \
+                     host needs a limiter shared between sources first",
+                    other.id,
                     source.id
                 );
             }
@@ -218,20 +252,9 @@ fn validate(raw: RawSource) -> anyhow::Result<Source> {
                     raw.id
                 )
             })?;
-            // The document id is "<id>/<last path segment>", so there must
-            // be one, and it has to be fit for an id.
-            let slug = doc_url
-                .strip_prefix("https://")
-                .or_else(|| doc_url.strip_prefix("http://"))
-                .map(|rest| rest.trim_end_matches('/'))
-                .and_then(|rest| rest.split_once('/'))
-                .and_then(|(_host, path)| path.rsplit('/').next())
-                .unwrap_or_default();
-            let ok_slug = !slug.is_empty()
-                && slug
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
-            if !ok_slug {
+            // The document id is "<id>/<slug>": the adapter derives the slug
+            // from this URL, so it must have one — asked of the same function.
+            if wikipethia_fetch::page::slug(&doc_url).is_none() {
                 bail!(
                     "sources.toml: doc_url for page {:?} must be an absolute URL whose \
                      last path segment is [a-z0-9_-] (it becomes the document id), got \
@@ -619,9 +642,10 @@ mod tests {
         assert_eq!(published, "2026-03-13");
         assert_eq!(author.as_deref(), Some("Ethereum Foundation"));
         let _ = adapter_for(source);
-        // One request per sync is not a crawl: a page may share a host
-        // with a feed.
         assert!(!Kind::Page.crawls());
+        // What a reader is shown is the page, not the Markdown endpoint.
+        assert_eq!(source.public_url(), "https://ethereum.org/foundation/mandate/");
+        assert_eq!(Manifest::parse(GOOD).unwrap().sources[0].public_url(), "https://ethresear.ch");
         // The author is optional.
         assert!(Manifest::parse(&PAGE.replace("author = \"Ethereum Foundation\"", "")).is_ok());
     }
@@ -663,6 +687,35 @@ mod tests {
             "paths = [\"EIPS\"]\n        author = \"someone\"",
         ));
         assert!(on_repo.contains("page-only"), "{on_repo}");
+    }
+
+    /// A page's request comes from a fresh client that nothing throttles,
+    /// so it must be the only rate-bound thing on its host. Repos are
+    /// exempt as they always were.
+    #[test]
+    fn a_page_must_have_its_host_to_itself() {
+        let err = |text: String| Manifest::parse(&text).unwrap_err().to_string();
+        let second_page = PAGE.replace("id = \"efmandate\"", "id = \"other\"").replace(
+            "content/foundation/mandate/index.md",
+            "content/whitepaper/index.md",
+        );
+        let two_pages = err(format!("{PAGE}{second_page}"));
+        assert!(two_pages.contains("same host"), "{two_pages}");
+        assert!(two_pages.contains("\"efmandate\"") && two_pages.contains("\"other\""), "{two_pages}");
+
+        let feed = r#"
+            [[sources]]
+            id = "orgblog"
+            kind = "feed"
+            url = "https://ethereum.org/feed.xml"
+            tier = "blog"
+        "#;
+        // Whichever is declared first.
+        assert!(err(format!("{PAGE}{feed}")).contains("same host"));
+        assert!(err(format!("{feed}{PAGE}")).contains("same host"));
+
+        // A page beside sources on other hosts, repos included, is fine.
+        assert_eq!(Manifest::parse(&format!("{GOOD}{PAGE}")).unwrap().sources.len(), 6);
     }
 
     #[test]

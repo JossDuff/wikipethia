@@ -29,9 +29,14 @@
 # page kinds only:
 #   doc_url:   the rendered page a citation links to. Its last path segment
 #              names the document: the doc id is "<id>/<segment>".
-#   published: the document's own date, YYYY-MM-DD. Declared, because a page
-#              states its date in prose if at all, and the file's last-commit
-#              date is when someone last fixed a typo.
+#   published: the document's own date, as a quoted string: "YYYY-MM-DD".
+#              Declared, because a page states its date in prose if at all,
+#              and the file's last-commit date is when someone last fixed a
+#              typo.
+#
+# A page is fetched ONCE. After that a sync makes no request for it; edit
+# `url`, or run `wikipethia sync --force --source <id>`, to fetch it again.
+# A page must also be the only page or crawled source on its host.
 #   author:    optional byline.
 
 [[sources]]

@@ -430,6 +430,7 @@ fn a_checkpoint_survives_its_json_round_trip() {
         bumped_watermark: "2026-01-01T00:00:00.000Z".into(),
         head_sha: "abc123".into(),
         config_fingerprint: "main|eips|md".into(),
+        page_url: "https://example.org/page.md".into(),
     };
     assert_eq!(SyncState::from_json(&state.to_json()), state);
 }

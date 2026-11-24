@@ -99,8 +99,9 @@ while set, sync declines the full-listings walk and index skips its prune
 pass (both assume the local raw mirror is complete, and a download ships
 without one). Cleared only on real evidence of a rebuilt mirror — a
 completed `sync --full` for a forum, a checkpoint-advancing tarball run for
-a repo, any completed sync for a page (one request fetches all of it), never
-for a feed (a feed can only re-mirror what its live feed.xml still lists).
+a repo, the one sync that fetches a page (pages are fetched once, then never
+again), never for a feed (a feed can only re-mirror what its live feed.xml
+still lists).
 
 `index` and `embed` take an advisory lock on the database (a `meta` row).
 A second writer fails fast rather than interleaving: `chunks.id` has no

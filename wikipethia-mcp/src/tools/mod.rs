@@ -219,8 +219,9 @@ impl CorpusServer {
                     .map(|u| u.trim_start_matches("https://").trim_start_matches("http://"))
                     .unwrap_or(&s.id);
                 format!(
-                    "{} documents from {host} (tier: {})",
+                    "{} document{} from {host} (tier: {})",
                     s.count,
+                    if s.count == 1 { "" } else { "s" },
                     s.tier.as_deref().unwrap_or("untiered")
                 )
             })

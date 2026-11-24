@@ -91,6 +91,9 @@ pub struct SyncState {
     /// Repo: which manifest settings decided what was kept from that commit.
     /// Guards the SHA comparison — see [`crate::repo`].
     pub config_fingerprint: String,
+    /// Page: the URL the document on record was fetched from. A page is
+    /// fetched once; this is what says it has been — see [`crate::page`].
+    pub page_url: String,
 }
 
 impl SyncState {
@@ -104,7 +107,7 @@ impl SyncState {
     }
 
     pub fn to_json(&self) -> String {
-        serde_json::to_string(self).expect("three strings always serialize")
+        serde_json::to_string(self).expect("a struct of strings always serializes")
     }
 }
 

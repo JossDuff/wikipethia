@@ -629,10 +629,11 @@ fn page_web(body: &str) -> FakeWeb {
     web
 }
 
-/// A page is one request, every time: fetched, then unchanged, then updated
-/// when upstream edits it. No checkpoint — the body is the only state.
+/// A page is fetched once. The sync that fetches it returns the record that
+/// stops every later request; only `--force`, or a `url` edited in the
+/// manifest, asks again.
 #[test]
-fn a_page_sync_is_one_request_and_writes_only_what_changed() {
+fn a_page_is_fetched_once_and_then_never_asked_for_again() {
     let dir = tempfile::tempdir().unwrap();
     let adapter = page_adapter(dir.path());
     let page = fixture_text("page_ef_mandate_excerpt.md");
@@ -642,27 +643,61 @@ fn a_page_sync_is_one_request_and_writes_only_what_changed() {
     let requests = Rc::clone(&web.requests);
     let (stats, advanced) = adapter.sync(&mut web, &everything(), &SyncState::default()).unwrap();
     assert_eq!((stats.fetched, stats.updated, stats.skipped), (1, 0, 0));
-    assert!(advanced.is_none());
     assert_eq!(*requests.borrow(), [MANDATE_MD]);
     assert_eq!(adapter.raw_files().unwrap(), [dir.path().join("page.md")]);
+    let recorded = advanced.expect("the fetch is recorded");
+    assert_eq!(recorded.page_url, MANDATE_MD);
 
-    let (stats, _) = adapter
-        .sync(&mut page_web(&page), &everything(), &SyncState::default())
-        .unwrap();
+    // With that record: no request. This web serves nothing, so any request
+    // would be an error.
+    let mut offline = FakeWeb::default();
+    let requests = Rc::clone(&offline.requests);
+    let (stats, advanced) = adapter.sync(&mut offline, &everything(), &recorded).unwrap();
     assert_eq!((stats.fetched, stats.updated, stats.skipped), (0, 0, 1));
+    assert!(advanced.is_none(), "nothing was fetched, so nothing is claimed");
+    assert!(requests.borrow().is_empty());
 
-    let edited = page.replace("rests on two pillars", "rests on three pillars");
-    let (stats, _) = adapter
-        .sync(&mut page_web(&edited), &everything(), &SyncState::default())
+    // The record travels in the corpus database; the raw file does not. A
+    // downloaded corpus has the one without the other, and still must not
+    // fetch — the document is already in its index.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let downloaded = page_adapter(elsewhere.path());
+    let (_, advanced) = downloaded
+        .sync(&mut FakeWeb::default(), &everything(), &recorded)
         .unwrap();
+    assert!(advanced.is_none());
+    assert!(downloaded.raw_files().is_err(), "and no mirror appeared");
+
+    // --force asks again, and takes what upstream now says.
+    let edited = page.replace("rests on two pillars", "rests on three pillars");
+    let force = SyncIntent { force: true, ..SyncIntent::default() };
+    let (stats, advanced) = adapter.sync(&mut page_web(&edited), &force, &recorded).unwrap();
     assert_eq!((stats.fetched, stats.updated, stats.skipped), (0, 1, 0));
+    assert!(advanced.is_some());
     let docs = adapter.parse_file(&dir.path().join("page.md")).unwrap();
     assert!(docs[0].content.contains("three pillars"));
+
+    // So does a record made from another URL: `url` was edited in the
+    // manifest, and what is on record is no longer what is declared.
+    let moved = SyncState {
+        page_url: "https://ethereum.org/content/old-path/index.md".into(),
+        head_sha: "kept".into(),
+        ..SyncState::default()
+    };
+    let mut web = page_web(&edited);
+    let requests = Rc::clone(&web.requests);
+    let (stats, advanced) = adapter.sync(&mut web, &everything(), &moved).unwrap();
+    assert_eq!(requests.borrow().len(), 1);
+    assert_eq!(stats.skipped, 1, "same bytes as on disk: fetched, not rewritten");
+    let advanced = advanced.unwrap();
+    assert_eq!(advanced.page_url, MANDATE_MD);
+    assert_eq!(advanced.head_sha, "kept", "other kinds' fields ride along untouched");
 }
 
-/// A moved endpoint answers 200 with the site's HTML shell. Writing that
-/// over the page would replace the source's only document with an error
-/// page at the next index.
+/// The one fetch is kept, so it has to be the document. A moved endpoint
+/// answers 200 with the site's HTML shell, a proxy with a one-line error;
+/// any of these would be indexed under the page's title and — fetched once
+/// — never replaced.
 #[test]
 fn a_page_sync_refuses_a_reply_that_is_not_the_document() {
     let dir = tempfile::tempdir().unwrap();
@@ -672,11 +707,19 @@ fn a_page_sync_refuses_a_reply_that_is_not_the_document() {
         .sync(&mut page_web(&page), &everything(), &SyncState::default())
         .unwrap();
 
-    for body in ["<!DOCTYPE html><html><body>Page not found</body></html>", "\n <html lang=\"en\">", "", "  \n"] {
-        let err = adapter
-            .sync(&mut page_web(body), &everything(), &SyncState::default())
-            .unwrap_err();
-        assert!(err.to_string().contains("did not return a Markdown document"), "{err}");
+    for body in [
+        "<!DOCTYPE html><html><body>Page not found</body></html>",
+        "<!-- build 123 --><!DOCTYPE html><html><body>shell</body></html>",
+        "\u{feff}\n <html lang=\"en\"><body>shell</body></html>",
+        "",
+        "  \n",
+        "Not Found",
+        "{\"error\":\"not found\"}",
+        "---\ntitle: The Ethereum Foundation Mandate\n---\n\n<details>\n</details>\n",
+    ] {
+        let result = adapter.sync(&mut page_web(body), &everything(), &SyncState::default());
+        let err = result.err().unwrap_or_else(|| panic!("accepted {body:?}"));
+        assert!(err.to_string().contains("not a Markdown document"), "{body:?}: {err}");
     }
     assert_eq!(
         fs::read_to_string(dir.path().join("page.md")).unwrap(),
@@ -722,4 +765,13 @@ fn a_page_parses_into_one_citable_document() {
     }
     // Inline Markdown is content and stays as written.
     assert!(body.contains("[original mandate here](https://ethereum.foundation/ef-mandate.pdf)"));
+
+    // A byte-order mark in front of the front matter hides neither it nor
+    // the title.
+    let with_bom = dir.path().join("bom.md");
+    let bom_then_page = String::from('\u{feff}') + &fixture_text("page_ef_mandate_excerpt.md");
+    fs::write(&with_bom, bom_then_page).unwrap();
+    let doc = &adapter.parse_file(&with_bom).unwrap()[0];
+    assert_eq!(doc.title, "The Ethereum Foundation Mandate");
+    assert!(doc.content.starts_with("This mandate was originally published"), "{}", doc.content);
 }
