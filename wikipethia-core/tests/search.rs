@@ -266,3 +266,183 @@ fn limit_caps_distinct_documents() {
     assert_eq!(store.search("plasma", 1).unwrap().len(), 1);
     assert!(store.search("plasma", 0).unwrap().is_empty());
 }
+
+/// Two documents for `unmatched_terms`: "technical" and "pillar" both
+/// occur, never adjacent, and "validators" occurs only in the plural.
+fn wording_store() -> Store {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .upsert(&[
+            doc("test/1", "The technical committee reviewed blob duties under EIP-4844."),
+            doc("test/2", "One pillar of the design is that validators stay cheap to run."),
+        ])
+        .unwrap();
+    store
+}
+
+/// `(term, absent_words)` per unmatched term.
+fn unmatched(store: &Store, query: &str) -> Vec<(String, Vec<String>)> {
+    store
+        .unmatched_terms(query)
+        .unwrap()
+        .into_iter()
+        .map(|u| (u.term, u.absent_words))
+        .collect()
+}
+
+fn pair(term: &str, absent_words: &[&str]) -> (String, Vec<String>) {
+    (term.to_string(), absent_words.iter().map(|w| w.to_string()).collect())
+}
+
+#[test]
+fn unmatched_terms_names_only_the_words_no_document_contains() {
+    let store = wording_store();
+    assert_eq!(unmatched(&store, "technical committee duties"), []);
+    assert_eq!(unmatched(&store, "technical wexlurb duties"), [pair("wexlurb", &["wexlurb"])]);
+    // Repeats are one finding, whatever their case or trailing punctuation.
+    assert_eq!(
+        unmatched(&store, "is wexlurb technical? Wexlurb, WEXLURB. `wexlurb`"),
+        [pair("wexlurb", &["wexlurb"])]
+    );
+}
+
+/// The check goes through the index's own tokenizer, so it agrees with
+/// search about what counts as the same word.
+#[test]
+fn unmatched_terms_matches_the_way_search_does() {
+    let store = wording_store();
+    // Stemming: only the plural is in the corpus.
+    assert_eq!(unmatched(&store, "validator"), []);
+    assert_eq!(unmatched(&store, "EIP-4844"), []);
+    // A hyphenated identifier is one sequence: "eip" alone is everywhere and
+    // must not make EIP-9999 look present. Which half is missing is named.
+    assert_eq!(unmatched(&store, "EIP-9999?"), [pair("EIP-9999", &["9999"])]);
+}
+
+/// The case the notice exists for: an agent hunting an exact wording. Both
+/// words are in the corpus, the phrase is not — and search, which ORs the
+/// halves, returns a full page for it. No word is missing, so none is named.
+#[test]
+fn unmatched_terms_checks_a_quoted_phrase_as_a_phrase() {
+    let store = wording_store();
+    assert_eq!(unmatched(&store, "technical pillar"), []);
+    assert_eq!(
+        unmatched(&store, "committee \"Technical   Pillar\" design"),
+        [pair("Technical Pillar", &[])]
+    );
+    assert_eq!(unmatched(&store, "\"technical committee\""), []);
+    assert!(!store.search("\"Technical Pillar\"", 10).unwrap().is_empty());
+    // Curly quotes are what a chat client or a pasted document sends.
+    assert_eq!(
+        unmatched(&store, "\u{201C}Technical Pillar\u{201D}"),
+        [pair("Technical Pillar", &[])]
+    );
+}
+
+/// Two indexed words joined by punctuation are one token to search, and
+/// that token is probed as a sequence. It matched nothing, but nothing is
+/// missing from the corpus — the difference between "search the parts" and
+/// "look elsewhere".
+#[test]
+fn unmatched_terms_tells_a_joined_token_from_a_missing_word() {
+    let store = wording_store();
+    assert_eq!(unmatched(&store, "technical/pillar"), [pair("technical/pillar", &[])]);
+    // "tester" is only in the author column, "design" only in a body.
+    assert_eq!(unmatched(&store, "design:tester"), [pair("design:tester", &[])]);
+    // One half really is missing: say which.
+    assert_eq!(unmatched(&store, "technical/wexlurb"), [pair("technical/wexlurb", &["wexlurb"])]);
+    // A typo inside an identifier is pinned to the fragment that is wrong.
+    assert_eq!(
+        unmatched(&store, "BLOB_DUTEIS_COMMITTEE"),
+        [pair("BLOB_DUTEIS_COMMITTEE", &["DUTEIS"])]
+    );
+    // A missing word inside a quoted phrase is named, not hidden behind it.
+    assert_eq!(
+        unmatched(&store, "duties \"wexlurb committee\""),
+        [pair("wexlurb committee", &["wexlurb"])]
+    );
+}
+
+/// "Occurs" means as a whole index token. A hex selector written without
+/// its prefix is a different token from the one the corpus holds — the
+/// result says so, and the caller's wording has to be honest about it.
+#[test]
+fn unmatched_terms_knows_whole_tokens_not_substrings() {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .upsert(&[doc("test/1", "The magic value is 0x1626ba7e, returned by isValidSignature.")])
+        .unwrap();
+    assert_eq!(unmatched(&store, "0x1626ba7e"), []);
+    assert_eq!(unmatched(&store, "1626ba7e"), [pair("1626ba7e", &["1626ba7e"])]);
+}
+
+/// One word in brackets or behind a sigil is that word: one finding, shown
+/// bare, not a second entry "(in "(wexlurb)")".
+#[test]
+fn unmatched_terms_reports_a_wrapped_word_as_the_word() {
+    let store = wording_store();
+    assert_eq!(unmatched(&store, "wexlurb (wexlurb) $wexlurb"), [pair("wexlurb", &["wexlurb"])]);
+    assert_eq!(unmatched(&store, "(technical)"), []);
+    // A combining mark stays with its letter: decomposed "ü" is one word.
+    assert_eq!(
+        unmatched(&store, "Ju\u{0308}rgensen"),
+        [pair("Ju\u{0308}rgensen", &["Ju\u{0308}rgensen"])]
+    );
+}
+
+/// The query is caller-supplied and the probes run while the caller holds
+/// the store: the work is bounded however long the query is.
+#[test]
+fn unmatched_terms_bounds_the_work_a_query_can_ask_for() {
+    let store = wording_store();
+    let many_terms: String = (0..500).map(|i| format!("zq{i} ")).collect();
+    assert_eq!(store.unmatched_terms(&many_terms).unwrap().len(), 32);
+
+    // One token of 500 joined words: the first 64 are probed, no more.
+    let joined: String = (0..500).map(|i| format!("zq{i}")).collect::<Vec<_>>().join("-");
+    let found = store.unmatched_terms(&joined).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].absent_words.len(), 64);
+
+    // A long quoted sentence is still checked to its last word.
+    let sentence = "\"the technical committee reviewed blob duties under one pillar of the \
+                    design that validators stay cheap to wexlurb\"";
+    assert_eq!(store.unmatched_terms(sentence).unwrap()[0].absent_words, ["wexlurb"]);
+}
+
+#[test]
+fn unmatched_terms_only_opens_a_phrase_where_a_token_starts() {
+    let store = wording_store();
+    // A quote glued inside a token is punctuation; search reads these as
+    // the tokens `technical"wexlurb` and `pillar"`.
+    assert_eq!(
+        unmatched(&store, "technical\"wexlurb pillar\""),
+        [pair("technical\"wexlurb", &["wexlurb"])]
+    );
+    // A lone quote is punctuation too: the word is checked, and shown bare.
+    assert_eq!(unmatched(&store, "\"wexlurb technical"), [pair("wexlurb", &["wexlurb"])]);
+    // Brackets are not trimmed — that would unbalance an identifier.
+    assert_eq!(unmatched(&store, "Wexlurb(uint256)"), [pair("Wexlurb(uint256)", &["Wexlurb", "uint256"])]);
+}
+
+#[test]
+fn unmatched_terms_never_errors_on_hostile_queries() {
+    let store = wording_store();
+    for query in [
+        "what's EIP-4844?",
+        "\"unbalanced",
+        "\"\" \"   \" \"???\"",
+        "AND OR NOT",
+        "???",
+        "",
+        "   ",
+        "a AND* (b OR c) NEAR/3 d",
+        "title:technical \"col:\"\"x\"",
+        "technical\u{0}pillar \"wex\u{0}lurb\"",
+    ] {
+        store.unmatched_terms(query).unwrap();
+        // The same NUL used to fail the search itself: SQLite reads the
+        // MATCH string as a C string and found the quote unterminated.
+        store.search(query, 5).unwrap();
+    }
+}

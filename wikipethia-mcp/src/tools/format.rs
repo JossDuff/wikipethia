@@ -2,6 +2,7 @@
 //! comes through here, so the shapes are tested.
 
 use serde_json::{Map, Value};
+use wikipethia_core::UnmatchedTerm;
 
 /// Full post shown for the requested/original post before truncating.
 pub const OP_MAX_CHARS: usize = 8_000;
@@ -88,6 +89,105 @@ pub fn excerpt(text: &str, max_chars: usize) -> String {
     format!("{}…", cut.trim_end())
 }
 
+/// Unmatched query terms a search notice names, per kind, before counting
+/// the rest.
+pub const ABSENT_SHOWN: usize = 5;
+/// Characters of one unmatched term shown. Agents quote whole guessed
+/// sentences; the notice needs only enough to recognise which one.
+pub const ABSENT_TERM_CHARS: usize = 60;
+
+/// The lines a search response carries when terms of its query matched
+/// nothing as written (`Store::unmatched_terms`); `None` when every term
+/// matched somewhere.
+///
+/// A prompt, not a log line: a full page of results reads as "keep going",
+/// and agents were measured rewording one search until their budget ran
+/// out. Two claims of different strength, kept apart on purpose:
+///
+/// - "Not in the corpus" — a word that is no token of any indexed chunk.
+///   Exact as stated, which is why it is stated as "a whole word".
+/// - "No exact match" — every word occurs, never as this sequence. Weaker:
+///   it is also what two indexed identifiers joined by a slash look like,
+///   and a real phrase split by a link. So it says to search the words
+///   separately, and names the limit of the check.
+///
+/// Neither line describes the results below it. Whether those matched other
+/// words or are embedding neighbours depends on scope and on the vector
+/// arm, and a wrong guess ("probably unrelated") was measured sending an
+/// agent away from the right documents after a one-letter typo.
+pub fn absent_notice(unmatched: &[UnmatchedTerm]) -> Option<String> {
+    // The query is echoed into text a model reads, so it is escaped the way
+    // the header's `{:?}` escapes it: no raw control characters, and a quote
+    // inside a term cannot close the quotes around it.
+    let quoted = |term: &str| {
+        let mut out = String::from('"');
+        for c in excerpt(term, ABSENT_TERM_CHARS).chars() {
+            if c.is_control() || c == '"' || c == '\\' {
+                out.extend(c.escape_debug());
+            } else {
+                out.push(c);
+            }
+        }
+        out.push('"');
+        out
+    };
+    let mut words: Vec<String> = Vec::new();
+    let mut sequences: Vec<String> = Vec::new();
+    for item in unmatched {
+        let term = quoted(&item.term);
+        if item.absent_words.is_empty() {
+            sequences.push(term.clone());
+        }
+        for word in &item.absent_words {
+            // Name the word, and where it came from when that is not obvious:
+            // "EFECTIVE" alone would not tell the reader which identifier.
+            let shown = if word.eq_ignore_ascii_case(&item.term) {
+                quoted(word)
+            } else {
+                format!("{} (in {term})", quoted(word))
+            };
+            if !words.contains(&shown) {
+                words.push(shown);
+            }
+        }
+    }
+    let list = |items: &[String]| {
+        let mut named = items.iter().take(ABSENT_SHOWN).cloned().collect::<Vec<_>>().join(", ");
+        if items.len() > ABSENT_SHOWN {
+            named.push_str(&format!(" and {} more", items.len() - ABSENT_SHOWN));
+        }
+        named
+    };
+    let mut lines = Vec::new();
+    if !words.is_empty() {
+        // "As a whole word" is the whole claim: the index knows tokens, and
+        // `1626ba7e` is not the token `0x1626ba7e`. Saying a document cannot
+        // contain it, or that no rewording will find it, would be false there.
+        let (this, one, it_is, it) = if words.len() == 1 {
+            ("this as a whole word", "it", "it is", "it")
+        } else {
+            ("these as whole words", "one", "they are", "them")
+        };
+        lines.push(format!(
+            "Not in the corpus: {} — no indexed document contains {this} ({one} can \
+             still sit inside a longer token, such as a 0x-prefixed literal). Check \
+             the spelling or the identifier's real name; if {it_is} right, the corpus \
+             does not hold {it} as written.",
+            list(&words)
+        ));
+    }
+    if !sequences.is_empty() {
+        lines.push(format!(
+            "No exact match: {} — every word occurs in the corpus, but not together \
+             in this order. Search the words separately. Matching is per passage of \
+             raw Markdown, so a phrase split by a link or a section break can be \
+             missed; otherwise no indexed document uses this exact wording.",
+            list(&sequences)
+        ));
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
 /// Whole block up to `max_chars` characters; when cut, tells the model how
 /// to get the rest. Correct ONLY where get_post_context genuinely shows
 /// more than the caller did (search snippets, neighbor posts) — for text
@@ -160,6 +260,120 @@ pub fn post_label(meta: &Map<String, Value>) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A term none of whose words is missing: only the sequence is unmatched.
+    fn sequence(term: &str) -> UnmatchedTerm {
+        UnmatchedTerm { term: term.into(), absent_words: Vec::new() }
+    }
+
+    fn missing(term: &str, words: &[&str]) -> UnmatchedTerm {
+        UnmatchedTerm {
+            term: term.into(),
+            absent_words: words.iter().map(|w| w.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn absent_notice_is_silent_when_every_term_matched() {
+        assert_eq!(absent_notice(&[]), None);
+    }
+
+    #[test]
+    fn absent_notice_names_words_that_are_nowhere_and_asks_for_a_spelling_check() {
+        let one = absent_notice(&[missing("wexlurb", &["wexlurb"])]).unwrap();
+        assert!(one.starts_with("Not in the corpus: \"wexlurb\" — "), "{one}");
+        assert!(one.contains("contains this as a whole word"), "{one}");
+        assert!(one.contains("Check the spelling or the identifier's real name"), "{one}");
+        assert!(!one.contains("No exact match"), "{one}");
+
+        let two = absent_notice(&[
+            missing("wexlurb", &["wexlurb"]),
+            missing("Verhaeghe", &["Verhaeghe"]),
+        ])
+        .unwrap();
+        assert!(two.contains("\"wexlurb\", \"Verhaeghe\""), "{two}");
+        assert!(two.contains("contains these as whole words"), "{two}");
+    }
+
+    /// A typo inside an identifier: naming the bare fragment would not tell
+    /// the reader which identifier to fix.
+    #[test]
+    fn absent_notice_says_which_term_a_missing_word_came_from() {
+        let out = absent_notice(&[missing("MAX_EFECTIVE_BALANCE", &["EFECTIVE"])]).unwrap();
+        assert!(out.contains("\"EFECTIVE\" (in \"MAX_EFECTIVE_BALANCE\")"), "{out}");
+    }
+
+    /// Every word indexed, the sequence not: a quoted phrase nobody wrote,
+    /// or two real identifiers joined by a slash. It must not be called
+    /// absent, and must say how to find the parts.
+    #[test]
+    fn absent_notice_keeps_an_unmatched_sequence_apart_from_a_missing_word() {
+        let out =
+            absent_notice(&[sequence("Technical Pillar"), sequence("EIP-7702/EIP-3074")]).unwrap();
+        assert!(
+            out.starts_with("No exact match: \"Technical Pillar\", \"EIP-7702/EIP-3074\" — "),
+            "{out}"
+        );
+        assert!(out.contains("Search the words separately"), "{out}");
+        assert!(!out.contains("Not in the corpus"), "{out}");
+
+        let both = absent_notice(&[missing("wexlurb", &["wexlurb"]), sequence("a b")]).unwrap();
+        let lines: Vec<&str> = both.lines().collect();
+        assert_eq!(lines.len(), 2, "{both}");
+        assert!(lines[0].starts_with("Not in the corpus: \"wexlurb\""), "{both}");
+        assert!(lines[1].starts_with("No exact match: \"a b\""), "{both}");
+    }
+
+    /// The line is about the query's terms. It was measured misdescribing
+    /// the results (calling the right documents "probably unrelated"), so
+    /// it no longer says anything about them, or tells the reader to leave.
+    #[test]
+    fn absent_notice_does_not_describe_the_results() {
+        let out = absent_notice(&[missing("wexlurb", &["wexlurb"]), sequence("a b")]).unwrap();
+        for claim in ["results below", "unrelated", "use another source", "neighbours"] {
+            assert!(!out.contains(claim), "{claim:?} in:\n{out}");
+        }
+    }
+
+    /// The index knows whole tokens: `1626ba7e` is absent from a corpus full
+    /// of `0x1626ba7e`. The line may not claim more than that, or promise
+    /// that no other search will find it.
+    #[test]
+    fn absent_notice_claims_only_a_whole_word_miss() {
+        let out = absent_notice(&[missing("1626ba7e", &["1626ba7e"])]).unwrap();
+        assert!(out.contains("as a whole word"), "{out}");
+        assert!(out.contains("inside a longer token"), "{out}");
+        assert!(out.ends_with("does not hold it as written."), "{out}");
+        assert!(!out.contains("will not find"), "{out}");
+    }
+
+    /// The query is caller-supplied text echoed to a model.
+    #[test]
+    fn absent_notice_escapes_what_it_echoes() {
+        let out = absent_notice(&[
+            missing("x\u{1b}[31mwexlurb", &["wexlurb"]),
+            sequence("say \"hi\" \\ there\u{0}"),
+        ])
+        .unwrap();
+        assert!(!out.contains('\u{1b}') && !out.contains('\u{0}'), "{out:?}");
+        assert!(out.contains("(in \"x\\u{1b}[31mwexlurb\")"), "{out}");
+        assert!(out.contains("\"say \\\"hi\\\" \\\\ there\\0\""), "{out}");
+    }
+
+    #[test]
+    fn absent_notice_caps_the_list_and_the_length_of_each_term() {
+        let many: Vec<UnmatchedTerm> =
+            ["a1", "b2", "c3", "d4", "e5", "f6", "g7"].iter().map(|t| sequence(t)).collect();
+        let out = absent_notice(&many).unwrap();
+        assert!(out.contains("\"e5\" and 2 more"), "{out}");
+        assert!(!out.contains("f6"), "{out}");
+
+        let sentence = "only a small number of people can understand how the protocol \
+                        works and why it is secure";
+        let out = absent_notice(&[sequence(sentence)]).unwrap();
+        assert!(out.contains("…\""), "long term is cut:\n{out}");
+        assert!(!out.contains("why it is secure"), "{out}");
+    }
 
     #[test]
     fn citation_shape_with_and_without_tier() {
