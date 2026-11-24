@@ -138,6 +138,17 @@ pub struct SearchHit {
     pub score: f64,
 }
 
+/// A query term that matched nothing as written — see
+/// [`Store::unmatched_terms`] for what the two shapes mean.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnmatchedTerm {
+    /// The term as the query wrote it, punctuation trimmed from its edges.
+    pub term: String,
+    /// Words of the term that occur in no indexed chunk. Empty when every
+    /// word occurs somewhere and only the exact sequence is unmatched.
+    pub absent_words: Vec<String>,
+}
+
 /// One row of [`Store::source_stats`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceStats {
@@ -507,46 +518,50 @@ impl Store {
         Ok(hits)
     }
 
-    /// The terms of `query` that occur in no indexed chunk, and whether any
-    /// word of the query matched at all. A term is a whitespace token or a
-    /// double-quoted phrase, matched through the same tokenizer search uses
-    /// — so a stemmed form counts as present, and `EIP-4844` is checked as
-    /// the phrase `eip 4844`.
+    /// The terms of `query` that matched nothing as written, each with the
+    /// words of it that occur in no indexed chunk at all. A term is a
+    /// whitespace token or a double-quoted phrase, probed as one FTS5 phrase
+    /// through the index's own tokenizer — so a stemmed form counts as
+    /// present, and `EIP-4844` is checked as the sequence `eip 4844`.
+    ///
+    /// The two cases mean different things and a caller must not merge them:
+    ///
+    /// - `absent_words` non-empty: those words are nowhere in the corpus.
+    ///   Exact — it is the index saying so.
+    /// - `absent_words` empty: every word occurs somewhere, only never as
+    ///   this sequence. That is a weaker claim. It is what a quoted phrase
+    ///   nobody wrote looks like, but also `EIP-7702/EIP-3074` (two indexed
+    ///   identifiers joined by a slash), and a real phrase that a Markdown
+    ///   link or a chunk boundary happens to split, since the probe runs
+    ///   over chunks of raw markup.
     ///
     /// This is what lets a caller say "the corpus does not hold this
     /// wording": search ORs its tokens and the vector arm always returns
     /// neighbours, so a full page of results says nothing about whether the
     /// one term that mattered matched. Always corpus-wide, whatever scope
-    /// the search itself ran under — absence everywhere is the only claim
-    /// strong enough to act on. One `LIMIT 1` probe per term.
-    ///
-    /// The flag is false only when lexical search had nothing to match, so
-    /// any results are vector neighbours alone. It is tracked per word, not
-    /// per term: search splits a quoted phrase and ORs its words, so an
-    /// absent phrase whose words occur apart still produced lexical hits.
-    pub fn absent_terms(&self, query: &str) -> Result<(Vec<String>, bool), CoreError> {
+    /// the search itself ran under. One `LIMIT 1` probe per term, plus one
+    /// per word of each term that missed.
+    pub fn unmatched_terms(&self, query: &str) -> Result<Vec<UnmatchedTerm>, CoreError> {
         let mut stmt = self
             .conn
             .prepare_cached("SELECT 1 FROM chunks_fts WHERE chunks_fts MATCH ?1 LIMIT 1")?;
         let mut exists = |text: &str| stmt.exists([fts_phrase(text)]);
-        let mut absent = Vec::new();
-        let mut any_word_matched = false;
+        let mut unmatched = Vec::new();
         for term in query_terms(query) {
             if exists(&term)? {
-                any_word_matched = true;
                 continue;
             }
-            if !any_word_matched && term.contains(' ') {
-                for word in term.split(' ').filter(|w| w.chars().any(char::is_alphanumeric)) {
-                    if exists(word)? {
-                        any_word_matched = true;
-                        break;
-                    }
+            let mut absent_words: Vec<String> = Vec::new();
+            for word in term.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()) {
+                if !absent_words.iter().any(|seen| seen.eq_ignore_ascii_case(word))
+                    && !exists(word)?
+                {
+                    absent_words.push(word.to_string());
                 }
             }
-            absent.push(term);
+            unmatched.push(UnmatchedTerm { term, absent_words });
         }
-        Ok((absent, any_word_matched))
+        Ok(unmatched)
     }
 
     /// Resolve `tier` for already-cut hits: one documents point lookup plus
@@ -1301,37 +1316,54 @@ fn fts_query(user: &str) -> Option<String> {
 }
 
 /// One FTS5 phrase: the text double-quoted, embedded quotes doubled. Inside
-/// the quotes FTS5 has no operators, so any user text is safe.
+/// the quotes FTS5 has no operators. NUL is the one character that still
+/// breaks out: SQLite reads the MATCH string as a C string and stops there,
+/// leaving the quote unterminated — so it becomes a space.
 fn fts_phrase(text: &str) -> String {
-    format!("\"{}\"", text.replace('"', "\"\""))
+    format!("\"{}\"", text.replace('"', "\"\"").replace('\0', " "))
 }
 
-/// The units [`Store::absent_terms`] checks: every double-quoted span kept
-/// whole, and every other whitespace token — the tokens [`fts_query`]
-/// searches for. A quote with no partner is punctuation, not a phrase.
-/// Deduplicated case-insensitively, in query order.
+/// The units [`Store::unmatched_terms`] checks: every double-quoted span kept
+/// whole, and every other whitespace token. Curly quotes count as quotes. A
+/// quote only opens a phrase where a token starts — one glued inside a token
+/// (`5"`, `foo"bar`) or left without a partner is punctuation.
+///
+/// Sentence punctuation is trimmed from each term's edges, so `wexlurb,` and
+/// `wexlurb?` are one finding and are shown the way the word is spelled.
+/// Brackets are left alone: trimming them would turn `Panic(uint256)` into
+/// `Panic(uint256`. Deduplicated case-insensitively, in query order.
 fn query_terms(user: &str) -> Vec<String> {
-    fn push(term: &str, seen: &mut HashSet<String>, terms: &mut Vec<String>) {
+    const EDGE: &[char] = &[',', '.', ';', ':', '!', '?', '\'', '"', '`'];
+    let text: String = user
+        .chars()
+        .map(|c| if matches!(c, '\u{201C}'..='\u{201F}') { '"' } else { c })
+        .collect();
+    let mut seen = HashSet::new();
+    let mut terms = Vec::new();
+    let mut push = |raw: &str| {
+        let flat = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        let term = flat.trim_matches(|c: char| EDGE.contains(&c) || c.is_whitespace());
         if term.chars().any(char::is_alphanumeric) && seen.insert(term.to_lowercase()) {
             terms.push(term.to_string());
         }
-    }
-    let mut seen = HashSet::new();
-    let mut terms = Vec::new();
-    let mut rest = user;
-    while let Some((before, after)) = rest.split_once('"') {
-        let Some((phrase, tail)) = after.split_once('"') else {
-            break;
-        };
-        for token in before.split_whitespace() {
-            push(token, &mut seen, &mut terms);
+    };
+    let mut rest = text.as_str();
+    loop {
+        let open = rest
+            .match_indices('"')
+            .map(|(at, _)| at)
+            .find(|&at| at == 0 || rest[..at].ends_with(char::is_whitespace));
+        let Some(open) = open else { break };
+        let inside = &rest[open + 1..];
+        let Some(close) = inside.find('"') else { break };
+        for token in rest[..open].split_whitespace() {
+            push(token);
         }
-        let phrase = phrase.split_whitespace().collect::<Vec<_>>().join(" ");
-        push(&phrase, &mut seen, &mut terms);
-        rest = tail;
+        push(&inside[..close]);
+        rest = &inside[close + 1..];
     }
     for token in rest.split_whitespace() {
-        push(token.trim_matches('"'), &mut seen, &mut terms);
+        push(token);
     }
     terms
 }

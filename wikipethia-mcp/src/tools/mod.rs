@@ -249,10 +249,14 @@ impl CorpusServer {
              or \"scheduled\" date is a projection as of the post's published \
              date. Check it against today's date, and report a lapsed \
              projection as a past expectation, not a current fact. Coverage is \
-             limited to the indexed sources. search_posts opens with a \"Not in the \
-             corpus:\" line when a query term or quoted phrase occurs in no indexed \
-             document — stop rewording that search when you see it. When the corpus \
-             has nothing relevant, say so and fall back to web search."
+             limited to the indexed sources. search_posts says when a query word \
+             occurs in no indexed document (\"Not in the corpus:\") and when a quoted \
+             phrase or joined identifier has no exact match (\"No exact match:\"). \
+             Act on those lines instead of rewording the same search: correct a \
+             guessed spelling or identifier once, or search a phrase's words \
+             separately, and if that does not find it, treat the corpus as not \
+             holding it. When the corpus has nothing relevant, say so and fall \
+             back to web search."
         );
         if embedder.is_none() {
             instructions.push_str(
@@ -283,7 +287,7 @@ impl CorpusServer {
 
     #[tool(
         name = "search_posts",
-        description = "Search a local, curated corpus of Ethereum protocol research and standards: tens of thousands of posts from the ethresear.ch and Ethereum Magicians (ethereum-magicians.org) forums, 2017 to present, plus the full EIP and ERC specifications, the consensus-layer specs, the executable execution-layer spec (EELS, Python, per fork), the Engine API specs, AllCoreDevs meeting notes (what core devs decided and when), and articles from vitalik.eth.limo and blog.ethereum.org. Use this BEFORE web search for anything touching Ethereum research or the EIP process: sharding and danksharding, EIP-4844/blobs, account abstraction (EIP-4337/7702), proposer-builder separation (PBS), MEV, rollups, data availability sampling, statelessness, casper/consensus, staking economics, EIP and hard-fork coordination, or the cryptography behind them. Ranking is hybrid lexical+semantic, so exact tokens (\"EIP-4844\", an author's username) and natural-language questions both work. Every result carries a doc_id (the input to get_topic, get_post_context, and find_similar), author, published date, source tier, and a citable URL. Ethereum research goes stale in specific ways — a 2019 design post can be flatly superseded by a 2024 one — so always weigh the published dates when results disagree. But for questions about the current or upcoming state of the protocol (e.g. which hardfork is next), recency and thread volume mislead: fork planning pipelines overlap, so the fork after next has the newest, loudest discussion — resolve such questions from the status fields of the \"Hardfork Meta\" EIPs, not from what was posted most recently. Likewise, treat forward-looking dates in results (\"expected mid-2025\") as projections from that post's published date, not current facts — check them against today's date before repeating them. A top hit is often a reply from the middle of a thread: call get_post_context or get_topic with its doc_id to recover the original post and the surrounding argument; EIPs, specs, and blog articles are standalone documents, and get_post_context returns them whole. When a query term or quoted phrase occurs in no indexed document, the response opens with a \"Not in the corpus:\" line naming it, and the results under it match only the query's other words. Take that line at face value and do not keep rewording the same search: correct the term if it was a guessed spelling or identifier, otherwise treat the corpus as not holding it. If nothing relevant returns, say so and fall back to web search rather than forcing a weak match."
+        description = "Search a local, curated corpus of Ethereum protocol research and standards: tens of thousands of posts from the ethresear.ch and Ethereum Magicians (ethereum-magicians.org) forums, 2017 to present, plus the full EIP and ERC specifications, the consensus-layer specs, the executable execution-layer spec (EELS, Python, per fork), the Engine API specs, AllCoreDevs meeting notes (what core devs decided and when), and articles from vitalik.eth.limo and blog.ethereum.org. Use this BEFORE web search for anything touching Ethereum research or the EIP process: sharding and danksharding, EIP-4844/blobs, account abstraction (EIP-4337/7702), proposer-builder separation (PBS), MEV, rollups, data availability sampling, statelessness, casper/consensus, staking economics, EIP and hard-fork coordination, or the cryptography behind them. Ranking is hybrid lexical+semantic, so exact tokens (\"EIP-4844\", an author's username) and natural-language questions both work. Every result carries a doc_id (the input to get_topic, get_post_context, and find_similar), author, published date, source tier, and a citable URL. Ethereum research goes stale in specific ways — a 2019 design post can be flatly superseded by a 2024 one — so always weigh the published dates when results disagree. But for questions about the current or upcoming state of the protocol (e.g. which hardfork is next), recency and thread volume mislead: fork planning pipelines overlap, so the fork after next has the newest, loudest discussion — resolve such questions from the status fields of the \"Hardfork Meta\" EIPs, not from what was posted most recently. Likewise, treat forward-looking dates in results (\"expected mid-2025\") as projections from that post's published date, not current facts — check them against today's date before repeating them. A top hit is often a reply from the middle of a thread: call get_post_context or get_topic with its doc_id to recover the original post and the surrounding argument; EIPs, specs, and blog articles are standalone documents, and get_post_context returns them whole. When a query word occurs in no indexed document, the response says so in a \"Not in the corpus:\" line under its header; when a quoted phrase or a joined identifier has no exact match although its words occur, it says \"No exact match:\". Act on those lines instead of rewording the same search: correct a guessed spelling or identifier once, or search a phrase's words separately, and if that does not find it, treat the corpus as not holding it. If nothing relevant returns, say so and fall back to web search rather than forcing a weak match."
     )]
     async fn search_posts(
         &self,
@@ -318,6 +322,12 @@ impl CorpusServer {
         let hits = store
             .hybrid_search_scoped(&p.query, query_vec.as_deref(), p.scope.as_deref(), limit)
             .map_err(internal)?;
+        // Which of the query's terms matched nothing as written. Advisory:
+        // a probe that fails costs the notice, never a search that worked.
+        let notice = store
+            .unmatched_terms(&p.query)
+            .ok()
+            .and_then(|terms| absent_notice(&terms));
         if hits.is_empty() {
             // A scoped miss is usually a scope problem, not a coverage
             // problem — say so, or the client wrongly abandons the corpus.
@@ -331,29 +341,46 @@ impl CorpusServer {
                     "the scope does not start with any indexed source id, so it can \
                      never match — retry without scope or fix it"
                 };
-                return Ok(format!(
+                let mut out = format!(
                     "No results for {:?} within scope {scope:?}: {hint}. Indexed \
                      sources: {}.",
                     p.query,
                     known.join(", ")
-                ));
+                );
+                // The check is corpus-wide, so this spares the unscoped retry
+                // when the word is nowhere at all.
+                if let Some(notice) = &notice {
+                    out.push('\n');
+                    out.push_str(notice);
+                }
+                return Ok(out);
             }
-            return Ok(format!(
-                "No results in the corpus for {:?}. Coverage is a curated slice of the \
-                 indexed sources (research forums, EIP/ERC and consensus specs, \
-                 core-dev blogs) — try different key terms, or fall back to web \
-                 search.",
-                p.query
-            ));
+            return Ok(match &notice {
+                // The notice says what to do about the terms. "Try different
+                // key terms" beside it would restart the loop it exists to end.
+                Some(notice) => format!(
+                    "No results in the corpus for {:?}.\n{notice}\nCoverage is a \
+                     curated slice of the indexed sources (research forums, EIP/ERC and \
+                     consensus specs, core-dev blogs) — fall back to web search for \
+                     what it does not hold.",
+                    p.query
+                ),
+                None => format!(
+                    "No results in the corpus for {:?}. Coverage is a curated slice of \
+                     the indexed sources (research forums, EIP/ERC and consensus specs, \
+                     core-dev blogs) — try different key terms, or fall back to web \
+                     search.",
+                    p.query
+                ),
+            });
         }
         let mut out = format!("{} results for {:?}\n", hits.len(), p.query);
         // Directly under the header, before any result: a full page reads
         // as "found something" unless the response itself says which of the
-        // query's words matched nothing. A rule in the tool description
+        // query's terms matched nothing. A rule in the tool description
         // alone does not survive a long session.
-        let (absent, any_word_matched) = store.absent_terms(&p.query).map_err(internal)?;
-        if let Some(notice) = absent_notice(&absent, any_word_matched) {
-            out.push_str(&notice);
+        if let Some(notice) = &notice {
+            out.push_str(notice);
             out.push('\n');
         }
         for (i, hit) in hits.iter().enumerate() {
@@ -1677,9 +1704,9 @@ mod tests {
     }
 
     /// The line sits directly under the header, names only the word that
-    /// matched nothing, and leaves the results in place.
+    /// is nowhere, and leaves the results in place.
     #[test]
-    fn search_posts_names_query_terms_no_document_contains() {
+    fn search_posts_names_query_words_no_document_contains() {
         let out = server()
             .search_posts_impl(SearchPostsParams {
                 query: "zorbling wexlurb".into(),
@@ -1694,8 +1721,8 @@ mod tests {
     }
 
     /// Both words occur, in different topics, so search returns hits for
-    /// the quoted phrase — and the response has to say the phrase itself
-    /// is nowhere, without claiming its words went unmatched.
+    /// the quoted phrase. The response says the phrase has no exact match —
+    /// and does not call words that are in the corpus absent.
     #[test]
     fn search_posts_flags_a_quoted_phrase_whose_words_only_occur_apart() {
         let out = server()
@@ -1706,9 +1733,27 @@ mod tests {
             })
             .unwrap();
         let notice = out.lines().nth(1).unwrap();
-        assert!(notice.starts_with("Not in the corpus: \"zorbling flumph\" — "), "{out}");
-        assert!(notice.contains("a quoted phrase's words apart"), "{out}");
+        assert!(notice.starts_with("No exact match: \"zorbling flumph\" — "), "{out}");
+        assert!(!out.contains("Not in the corpus"), "{out}");
         assert!(out.contains("\n1. "), "{out}");
+    }
+
+    /// Two indexed words joined by a slash are one token to search, and
+    /// that token matches nothing. Calling it absent sent agents away from
+    /// a corpus that held both halves.
+    #[test]
+    fn search_posts_does_not_call_a_joined_token_absent() {
+        let out = server()
+            .search_posts_impl(SearchPostsParams {
+                query: "zorbling/flumph reply".into(),
+                limit: None,
+                scope: None,
+            })
+            .unwrap();
+        let notice = out.lines().nth(1).unwrap();
+        assert!(notice.starts_with("No exact match: \"zorbling/flumph\" — "), "{out}");
+        assert!(notice.contains("Search the words separately"), "{out}");
+        assert!(!out.contains("Not in the corpus"), "{out}");
     }
 
     #[test]
@@ -1721,6 +1766,47 @@ mod tests {
             })
             .unwrap();
         assert!(!out.contains("Not in the corpus"), "{out}");
+        assert!(!out.contains("No exact match"), "{out}");
+    }
+
+    /// A reply with no results used to say "try different key terms" even
+    /// when the only term is in no document — the reword loop, invited.
+    #[test]
+    fn search_posts_empty_result_carries_the_line_and_drops_the_reword_advice() {
+        let s = server();
+        let out = s
+            .search_posts_impl(SearchPostsParams {
+                query: "wexlurb".into(),
+                limit: None,
+                scope: None,
+            })
+            .unwrap();
+        assert!(out.contains("Not in the corpus: \"wexlurb\""), "{out}");
+        assert!(!out.contains("try different key terms"), "{out}");
+
+        // Scoped: the check is corpus-wide, so the reader learns the word is
+        // nowhere without first retrying unscoped.
+        let scoped = s
+            .search_posts_impl(SearchPostsParams {
+                query: "wexlurb".into(),
+                limit: None,
+                scope: Some("ethresearch/post/8".into()),
+            })
+            .unwrap();
+        assert!(scoped.contains("within scope"), "{scoped}");
+        assert!(scoped.contains("Not in the corpus: \"wexlurb\""), "{scoped}");
+    }
+
+    #[test]
+    fn search_posts_survives_a_nul_in_the_query() {
+        let out = server()
+            .search_posts_impl(SearchPostsParams {
+                query: "zorbling\u{0}proposal".into(),
+                limit: None,
+                scope: None,
+            })
+            .unwrap();
+        assert!(out.contains("results for"), "{out}");
     }
 
     #[test]

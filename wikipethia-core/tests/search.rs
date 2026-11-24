@@ -267,8 +267,8 @@ fn limit_caps_distinct_documents() {
     assert!(store.search("plasma", 0).unwrap().is_empty());
 }
 
-/// Two documents for `absent_terms`: "technical" and "pillar" both occur,
-/// never adjacent, and "validators" occurs only in the plural.
+/// Two documents for `unmatched_terms`: "technical" and "pillar" both
+/// occur, never adjacent, and "validators" occurs only in the plural.
 fn wording_store() -> Store {
     let mut store = Store::open_in_memory().unwrap();
     store
@@ -280,61 +280,106 @@ fn wording_store() -> Store {
     store
 }
 
-fn absent(store: &Store, query: &str) -> Vec<String> {
-    store.absent_terms(query).unwrap().0
+/// `(term, absent_words)` per unmatched term.
+fn unmatched(store: &Store, query: &str) -> Vec<(String, Vec<String>)> {
+    store
+        .unmatched_terms(query)
+        .unwrap()
+        .into_iter()
+        .map(|u| (u.term, u.absent_words))
+        .collect()
+}
+
+fn pair(term: &str, absent_words: &[&str]) -> (String, Vec<String>) {
+    (term.to_string(), absent_words.iter().map(|w| w.to_string()).collect())
 }
 
 #[test]
-fn absent_terms_names_only_the_words_no_document_contains() {
+fn unmatched_terms_names_only_the_words_no_document_contains() {
     let store = wording_store();
-    assert_eq!(absent(&store, "technical committee duties"), Vec::<String>::new());
-    assert_eq!(absent(&store, "technical wexlurb duties"), ["wexlurb"]);
-    // Repeats are one finding, whatever their case.
-    assert_eq!(absent(&store, "wexlurb Wexlurb WEXLURB"), ["wexlurb"]);
+    assert_eq!(unmatched(&store, "technical committee duties"), []);
+    assert_eq!(unmatched(&store, "technical wexlurb duties"), [pair("wexlurb", &["wexlurb"])]);
+    // Repeats are one finding, whatever their case or trailing punctuation.
+    assert_eq!(
+        unmatched(&store, "is wexlurb technical? Wexlurb, WEXLURB. `wexlurb`"),
+        [pair("wexlurb", &["wexlurb"])]
+    );
 }
 
 /// The check goes through the index's own tokenizer, so it agrees with
 /// search about what counts as the same word.
 #[test]
-fn absent_terms_matches_the_way_search_does() {
+fn unmatched_terms_matches_the_way_search_does() {
     let store = wording_store();
     // Stemming: only the plural is in the corpus.
-    assert_eq!(absent(&store, "validator"), Vec::<String>::new());
-    // A hyphenated identifier is one unit: "eip" alone is everywhere, and
-    // that must not make EIP-9999 look present.
-    assert_eq!(absent(&store, "EIP-4844"), Vec::<String>::new());
-    assert_eq!(absent(&store, "EIP-9999?"), ["EIP-9999?"]);
+    assert_eq!(unmatched(&store, "validator"), []);
+    assert_eq!(unmatched(&store, "EIP-4844"), []);
+    // A hyphenated identifier is one sequence: "eip" alone is everywhere and
+    // must not make EIP-9999 look present. Which half is missing is named.
+    assert_eq!(unmatched(&store, "EIP-9999?"), [pair("EIP-9999", &["9999"])]);
 }
 
 /// The case the notice exists for: an agent hunting an exact wording. Both
 /// words are in the corpus, the phrase is not — and search, which ORs the
-/// halves, returns a full page for it.
+/// halves, returns a full page for it. No word is missing, so none is named.
 #[test]
-fn absent_terms_checks_a_quoted_phrase_as_a_phrase() {
+fn unmatched_terms_checks_a_quoted_phrase_as_a_phrase() {
     let store = wording_store();
-    assert_eq!(absent(&store, "technical pillar"), Vec::<String>::new());
+    assert_eq!(unmatched(&store, "technical pillar"), []);
     assert_eq!(
-        absent(&store, "committee \"Technical   Pillar\" design"),
-        ["Technical Pillar"]
+        unmatched(&store, "committee \"Technical   Pillar\" design"),
+        [pair("Technical Pillar", &[])]
     );
-    assert_eq!(absent(&store, "\"technical committee\""), Vec::<String>::new());
+    assert_eq!(unmatched(&store, "\"technical committee\""), []);
     assert!(!store.search("\"Technical Pillar\"", 10).unwrap().is_empty());
+    // Curly quotes are what a chat client or a pasted document sends.
+    assert_eq!(
+        unmatched(&store, "\u{201C}Technical Pillar\u{201D}"),
+        [pair("Technical Pillar", &[])]
+    );
 }
 
-/// The flag separates "these words are missing" from "nothing matched, the
-/// results are vector neighbours only" — and a phrase whose words occur
-/// apart is the first kind, because search matched those words.
+/// Two indexed words joined by punctuation are one token to search, and
+/// that token is probed as a sequence. It matched nothing, but nothing is
+/// missing from the corpus — the difference between "search the parts" and
+/// "look elsewhere".
 #[test]
-fn absent_terms_reports_whether_any_word_matched() {
+fn unmatched_terms_tells_a_joined_token_from_a_missing_word() {
     let store = wording_store();
-    assert!(store.absent_terms("technical wexlurb").unwrap().1);
-    assert!(store.absent_terms("\"technical pillar\"").unwrap().1);
-    assert!(!store.absent_terms("wexlurb \"flumph zorb\"").unwrap().1);
-    assert_eq!(store.absent_terms("").unwrap(), (Vec::new(), false));
+    assert_eq!(unmatched(&store, "technical/pillar"), [pair("technical/pillar", &[])]);
+    // "tester" is only in the author column, "design" only in a body.
+    assert_eq!(unmatched(&store, "design:tester"), [pair("design:tester", &[])]);
+    // One half really is missing: say which.
+    assert_eq!(unmatched(&store, "technical/wexlurb"), [pair("technical/wexlurb", &["wexlurb"])]);
+    // A typo inside an identifier is pinned to the fragment that is wrong.
+    assert_eq!(
+        unmatched(&store, "BLOB_DUTEIS_COMMITTEE"),
+        [pair("BLOB_DUTEIS_COMMITTEE", &["DUTEIS"])]
+    );
+    // A missing word inside a quoted phrase is named, not hidden behind it.
+    assert_eq!(
+        unmatched(&store, "duties \"wexlurb committee\""),
+        [pair("wexlurb committee", &["wexlurb"])]
+    );
 }
 
 #[test]
-fn absent_terms_never_errors_on_hostile_queries() {
+fn unmatched_terms_only_opens_a_phrase_where_a_token_starts() {
+    let store = wording_store();
+    // A quote glued inside a token is punctuation; search reads these as
+    // the tokens `technical"wexlurb` and `pillar"`.
+    assert_eq!(
+        unmatched(&store, "technical\"wexlurb pillar\""),
+        [pair("technical\"wexlurb", &["wexlurb"])]
+    );
+    // A lone quote is punctuation too: the word is checked, and shown bare.
+    assert_eq!(unmatched(&store, "\"wexlurb technical"), [pair("wexlurb", &["wexlurb"])]);
+    // Brackets are not trimmed — that would unbalance an identifier.
+    assert_eq!(unmatched(&store, "Wexlurb(uint256)"), [pair("Wexlurb(uint256)", &["Wexlurb", "uint256"])]);
+}
+
+#[test]
+fn unmatched_terms_never_errors_on_hostile_queries() {
     let store = wording_store();
     for query in [
         "what's EIP-4844?",
@@ -342,12 +387,15 @@ fn absent_terms_never_errors_on_hostile_queries() {
         "\"\" \"   \" \"???\"",
         "AND OR NOT",
         "???",
+        "",
         "   ",
         "a AND* (b OR c) NEAR/3 d",
         "title:technical \"col:\"\"x\"",
+        "technical\u{0}pillar \"wex\u{0}lurb\"",
     ] {
-        store.absent_terms(query).unwrap();
+        store.unmatched_terms(query).unwrap();
+        // The same NUL used to fail the search itself: SQLite reads the
+        // MATCH string as a C string and found the quote unterminated.
+        store.search(query, 5).unwrap();
     }
-    // A lone quote is punctuation: the word is still checked, and shown bare.
-    assert_eq!(absent(&store, "\"wexlurb technical"), ["wexlurb"]);
 }
